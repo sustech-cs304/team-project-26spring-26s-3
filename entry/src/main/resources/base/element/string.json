@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Canvas notebook entry module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Main ability for the Canvas notebook app"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Canvas Notebook"
+    }
+  ]
+}
