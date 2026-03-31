@@ -1,11 +1,12 @@
 import common from '@ohos.app.ability.common';
-import preferences from '@ohos.data.preferences';
 import { NotePage } from '../models/NotePage';
+import { KeyValueStore, openKeyValueStore } from './KeyValueStore';
+import { formatError } from '../utils/ErrorUtils';
 
 const NOTEBOOK_PREFERENCES_NAME = 'canvas_notebook_store';
 
 export class NotePageRepository {
-  constructor(private context: common.Context) {}
+  constructor(private context: common.Context | undefined) {}
 
   async listByNotebook(notebookId: string): Promise<NotePage[]> {
     const pages = await this.loadPages(notebookId);
@@ -53,11 +54,11 @@ export class NotePageRepository {
     return target;
   }
 
-  private async getStore(): Promise<preferences.Preferences> {
+  private async getStore(): Promise<KeyValueStore> {
     try {
-      return await preferences.getPreferences(this.context, NOTEBOOK_PREFERENCES_NAME);
+      return await openKeyValueStore(this.context, NOTEBOOK_PREFERENCES_NAME);
     } catch (error) {
-      throw new Error(`Failed to open page preferences: ${JSON.stringify(error)}`);
+      throw new Error(`Failed to open page preferences: ${formatError(error)}`);
     }
   }
 
@@ -71,7 +72,7 @@ export class NotePageRepository {
       const rawValue = await store.get(this.getPagesKey(notebookId), '[]') as string;
       return this.parse(rawValue, notebookId);
     } catch (error) {
-      throw new Error(`Failed to load pages: ${JSON.stringify(error)}`);
+      throw new Error(`Failed to load pages: ${formatError(error)}`);
     }
   }
 
@@ -82,7 +83,7 @@ export class NotePageRepository {
       await store.put(this.getPagesKey(notebookId), serialized);
       await store.flush();
     } catch (error) {
-      throw new Error(`Failed to save pages: ${JSON.stringify(error)}`);
+      throw new Error(`Failed to save pages: ${formatError(error)}`);
     }
   }
 

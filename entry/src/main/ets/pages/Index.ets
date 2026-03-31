@@ -1,6 +1,7 @@
 import common from '@ohos.app.ability.common';
 import { Notebook } from '../models/Notebook';
 import { NotebookRepository } from '../services/NotebookRepository';
+import { formatError } from '../utils/ErrorUtils';
 
 @Entry
 @Component
@@ -329,12 +330,9 @@ struct Index {
     return this.repository;
   }
 
-  private getHostContext(): common.Context {
+  private getHostContext(): common.Context | undefined {
     const hostContext = this.getUIContext().getHostContext();
-    if (!hostContext) {
-      throw new Error('UI host context is unavailable.');
-    }
-    return hostContext as common.Context;
+    return hostContext as common.Context | undefined;
   }
 
   private formatDate(timestamp: number): string {
@@ -348,6 +346,6 @@ struct Index {
   }
 
   private stringifyError(error: Object): string {
-    return JSON.stringify(error);
+    return formatError(error);
   }
 }

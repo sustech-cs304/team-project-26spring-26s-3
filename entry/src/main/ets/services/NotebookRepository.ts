@@ -1,12 +1,13 @@
 import common from '@ohos.app.ability.common';
-import preferences from '@ohos.data.preferences';
 import { Notebook } from '../models/Notebook';
+import { KeyValueStore, openKeyValueStore } from './KeyValueStore';
+import { formatError } from '../utils/ErrorUtils';
 
 const NOTEBOOK_PREFERENCES_NAME = 'canvas_notebook_store';
 const NOTEBOOKS_KEY = 'notebooks';
 
 export class NotebookRepository {
-  constructor(private context: common.Context) {}
+  constructor(private context: common.Context | undefined) {}
 
   async list(): Promise<Notebook[]> {
     const records = await this.loadAll();
@@ -68,11 +69,11 @@ export class NotebookRepository {
     return target;
   }
 
-  private async getStore(): Promise<preferences.Preferences> {
+  private async getStore(): Promise<KeyValueStore> {
     try {
-      return await preferences.getPreferences(this.context, NOTEBOOK_PREFERENCES_NAME);
+      return await openKeyValueStore(this.context, NOTEBOOK_PREFERENCES_NAME);
     } catch (error) {
-      throw new Error(`Failed to open notebook preferences: ${JSON.stringify(error)}`);
+      throw new Error(`Failed to open notebook preferences: ${formatError(error)}`);
     }
   }
 
@@ -82,7 +83,7 @@ export class NotebookRepository {
       const rawValue = await store.get(NOTEBOOKS_KEY, '[]') as string;
       return this.parse(rawValue);
     } catch (error) {
-      throw new Error(`Failed to load notebooks: ${JSON.stringify(error)}`);
+      throw new Error(`Failed to load notebooks: ${formatError(error)}`);
     }
   }
 
@@ -93,7 +94,7 @@ export class NotebookRepository {
       await store.put(NOTEBOOKS_KEY, serialized);
       await store.flush();
     } catch (error) {
-      throw new Error(`Failed to save notebooks: ${JSON.stringify(error)}`);
+      throw new Error(`Failed to save notebooks: ${formatError(error)}`);
     }
   }
 

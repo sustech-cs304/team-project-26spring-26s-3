@@ -6,6 +6,7 @@ import { Notebook } from '../models/Notebook';
 import { NotePageRepository } from '../services/NotePageRepository';
 import { NotebookRepository } from '../services/NotebookRepository';
 import { StrokeRepository } from '../services/StrokeRepository';
+import { formatError } from '../utils/ErrorUtils';
 
 interface NotebookRouteParams {
   notebookId?: string;
@@ -365,12 +366,9 @@ struct NotebookDetail {
     return this.strokeRepository;
   }
 
-  private getHostContext(): common.Context {
+  private getHostContext(): common.Context | undefined {
     const hostContext = this.getUIContext().getHostContext();
-    if (!hostContext) {
-      throw new Error('UI host context is unavailable.');
-    }
-    return hostContext as common.Context;
+    return hostContext as common.Context | undefined;
   }
 
   private readNotebookId(): string {
@@ -392,7 +390,7 @@ struct NotebookDetail {
   }
 
   private stringifyError(error: Object): string {
-    return JSON.stringify(error);
+    return formatError(error);
   }
 
   private handleRefreshSignalChange(): void {

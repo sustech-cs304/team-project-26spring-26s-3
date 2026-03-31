@@ -149,11 +149,8 @@ export struct PageThumbnail {
     return this.strokeRepository;
   }
 
-  private getHostContext(): common.Context {
+  private getHostContext(): common.Context | undefined {
     const hostContext = this.getUIContext().getHostContext();
-    if (!hostContext) {
-      throw new Error('UI host context is unavailable.');
-    }
-    return hostContext as common.Context;
+    return hostContext as common.Context | undefined;
   }
 }

@@ -4,6 +4,7 @@ import { ToolType } from '../models/Stroke';
 import { NotePageRepository } from '../services/NotePageRepository';
 import { StrokeRepository } from '../services/StrokeRepository';
 import { Point, Stroke } from '../models/Stroke';
+import { formatError } from '../utils/ErrorUtils';
 
 const DEFAULT_STROKE_COLOR = '#111827';
 const DEFAULT_STROKE_WIDTH = 4;
@@ -717,12 +718,9 @@ export struct CanvasEditor {
     return this.pageRepository;
   }
 
-  private getHostContext(): common.Context {
+  private getHostContext(): common.Context | undefined {
     const hostContext = this.getUIContext().getHostContext();
-    if (!hostContext) {
-      throw new Error('UI host context is unavailable.');
-    }
-    return hostContext as common.Context;
+    return hostContext as common.Context | undefined;
   }
 
   private generateStrokeId(): string {
@@ -730,6 +728,6 @@ export struct CanvasEditor {
   }
 
   private stringifyError(error: Object): string {
-    return JSON.stringify(error);
+    return formatError(error);
   }
 }
