@@ -1,22 +1,29 @@
 import common from '@ohos.app.ability.common';
+import { PageTemplate } from '../models/NotePage';
 import { Stroke } from '../models/Stroke';
 import { StrokeRepository } from '../services/StrokeRepository';
+import { DEFAULT_PAGE_TEMPLATE, normalizePageTemplate } from '../utils/PageTemplateUtils';
 
 const THUMBNAIL_BACKGROUND = '#FFFDF7';
 const THUMBNAIL_GUIDE = '#E2E8F0';
+const THUMBNAIL_DOT = '#CBD5E1';
 const THUMBNAIL_PAGE_WIDTH = 1600;
 const THUMBNAIL_PAGE_HEIGHT = 900;
 const THUMBNAIL_GUIDE_START = 72;
 const THUMBNAIL_GUIDE_GAP = 64;
+const THUMBNAIL_SIDE_PADDING = 10;
+const THUMBNAIL_GRID_START_X = 64;
 
 @Component
 export struct PageThumbnail {
   @Watch('handleInputChange') @Prop pageId: string = '';
   @Watch('handleInputChange') @Prop pageUpdatedAt: number = 0;
+  @Watch('handleInputChange') @Prop template: PageTemplate = DEFAULT_PAGE_TEMPLATE;
   @Prop strokeCount: number = 0;
   @Watch('handleRefreshSignalChange') @StorageLink('page_thumbnail_refresh_signal') private pageThumbnailRefreshSignal: string = '';
 
   @State private strokes: Stroke[] = [];
+  @State private currentTemplate: PageTemplate = DEFAULT_PAGE_TEMPLATE;
 
   private readonly renderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
   private readonly context2D: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.renderingSettings);
@@ -24,6 +31,7 @@ export struct PageThumbnail {
   private strokeRepository?: StrokeRepository;
 
   async aboutToAppear(): Promise<void> {
+    this.currentTemplate = this.template;
     await this.loadThumbnail();
   }
 
@@ -40,7 +48,7 @@ export struct PageThumbnail {
         })
 
       if (this.strokeCount === 0) {
-        Text('Blank')
+        Text('Empty')
           .fontSize(11)
           .fontColor('#94A3B8')
       }
@@ -56,11 +64,17 @@ export struct PageThumbnail {
   }
 
   private handleInputChange(): void {
+    this.currentTemplate = this.template;
     void this.loadThumbnail();
   }
 
   private handleRefreshSignalChange(): void {
     if (this.pageThumbnailRefreshSignal.startsWith(`${this.pageId}|`)) {
+      const template = this.readTemplateFromSignal(this.pageThumbnailRefreshSignal);
+      if (template) {
+        this.currentTemplate = template;
+        this.redraw();
+      }
       void this.loadThumbnail();
     }
   }
@@ -98,20 +112,56 @@ export struct PageThumbnail {
   }
 
   private drawGuides(width: number, height: number): void {
+    if (this.currentTemplate === 'blank') {
+      return;
+    }
+
     const scaleX = width / THUMBNAIL_PAGE_WIDTH;
     const scaleY = height / THUMBNAIL_PAGE_HEIGHT;
+    if (this.currentTemplate === 'dot') {
+      this.drawDotGuides(scaleX, scaleY);
+      return;
+    }
+
     this.context2D.beginPath();
     this.context2D.lineWidth = 0.8;
     this.context2D.strokeStyle = THUMBNAIL_GUIDE;
 
     let y = THUMBNAIL_GUIDE_START;
     while (y <= THUMBNAIL_PAGE_HEIGHT) {
-      this.context2D.moveTo(10 * scaleX, y * scaleY);
-      this.context2D.lineTo(width - 10 * scaleX, y * scaleY);
+      this.context2D.moveTo(THUMBNAIL_SIDE_PADDING * scaleX, y * scaleY);
+      this.context2D.lineTo(width - THUMBNAIL_SIDE_PADDING * scaleX, y * scaleY);
       y += THUMBNAIL_GUIDE_GAP;
     }
 
+    if (this.currentTemplate === 'grid') {
+      let x = THUMBNAIL_GRID_START_X;
+      while (x <= THUMBNAIL_PAGE_WIDTH) {
+        this.context2D.moveTo(x * scaleX, 0);
+        this.context2D.lineTo(x * scaleX, height);
+        x += THUMBNAIL_GUIDE_GAP;
+      }
+    }
+
     this.context2D.stroke();
+  }
+
+  private drawDotGuides(scaleX: number, scaleY: number): void {
+    this.context2D.beginPath();
+    this.context2D.fillStyle = THUMBNAIL_DOT;
+
+    let y = THUMBNAIL_GUIDE_START;
+    while (y <= THUMBNAIL_PAGE_HEIGHT) {
+      let x = THUMBNAIL_GRID_START_X;
+      while (x <= THUMBNAIL_PAGE_WIDTH) {
+        this.context2D.moveTo(x * scaleX + 1, y * scaleY);
+        this.context2D.arc(x * scaleX, y * scaleY, 1.2, 0, Math.PI * 2);
+        x += THUMBNAIL_GUIDE_GAP;
+      }
+      y += THUMBNAIL_GUIDE_GAP;
+    }
+
+    this.context2D.fill();
   }
 
   private drawStroke(stroke: Stroke, width: number, height: number): void {
@@ -152,5 +202,16 @@ export struct PageThumbnail {
   private getHostContext(): common.Context | undefined {
     const hostContext = this.getUIContext().getHostContext();
     return hostContext as common.Context | undefined;
+  }
+
+  private readTemplateFromSignal(signal: string): PageTemplate | undefined {
+    const marker = 'template:';
+    const markerIndex = signal.indexOf(marker);
+    if (markerIndex < 0) {
+      return undefined;
+    }
+
+    const rawTemplate = signal.slice(markerIndex + marker.length);
+    return normalizePageTemplate(rawTemplate);
   }
 }

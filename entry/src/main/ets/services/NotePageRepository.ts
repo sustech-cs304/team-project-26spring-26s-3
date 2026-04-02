@@ -1,7 +1,8 @@
 import common from '@ohos.app.ability.common';
-import { NotePage } from '../models/NotePage';
+import { NotePage, PageTemplate } from '../models/NotePage';
 import { KeyValueStore, openKeyValueStore } from './KeyValueStore';
 import { formatError } from '../utils/ErrorUtils';
+import { DEFAULT_PAGE_TEMPLATE, normalizePageTemplate } from '../utils/PageTemplateUtils';
 
 const NOTEBOOK_PREFERENCES_NAME = 'canvas_notebook_store';
 
@@ -22,7 +23,8 @@ export class NotePageRepository {
       index: nextIndex,
       createdAt: timestamp,
       updatedAt: timestamp,
-      strokeIds: []
+      strokeIds: [],
+      template: DEFAULT_PAGE_TEMPLATE
     };
 
     pages.push(page);
@@ -39,6 +41,50 @@ export class NotePageRepository {
         updatedAt: Date.now()
       }));
     await this.savePages(notebookId, filteredPages);
+  }
+
+  async reorder(notebookId: string, pageId: string, targetIndex: number): Promise<NotePage[]> {
+    const pages = this.sortPages(await this.loadPages(notebookId));
+    const currentIndex = pages.findIndex((item: NotePage) => item.id === pageId);
+    if (currentIndex < 0) {
+      return pages;
+    }
+
+    const nextIndex = Math.max(0, Math.min(targetIndex, pages.length - 1));
+    if (currentIndex === nextIndex) {
+      return pages;
+    }
+
+    const nextPages = [...pages];
+    const [movedPage] = nextPages.splice(currentIndex, 1);
+    nextPages.splice(nextIndex, 0, movedPage);
+
+    const timestamp = Date.now();
+    const reorderedPages = nextPages.map((item: NotePage, index: number) => ({
+      ...item,
+      index,
+      updatedAt: item.index === index ? item.updatedAt : timestamp
+    }));
+
+    await this.savePages(notebookId, reorderedPages);
+    return reorderedPages;
+  }
+
+  async updateTemplate(notebookId: string, pageId: string, template: PageTemplate): Promise<NotePage | undefined> {
+    const pages = await this.loadPages(notebookId);
+    const target = pages.find((item: NotePage) => item.id === pageId);
+    if (!target) {
+      return undefined;
+    }
+
+    if (target.template === template) {
+      return target;
+    }
+
+    target.template = template;
+    target.updatedAt = Date.now();
+    await this.savePages(notebookId, pages);
+    return target;
   }
 
   async updateStrokeIds(notebookId: string, pageId: string, strokeIds: string[]): Promise<NotePage | undefined> {
@@ -96,14 +142,18 @@ export class NotePageRepository {
 
       return parsed
         .filter((item: NotePage) => typeof item?.id === 'string')
-        .map((item: NotePage, index: number) => ({
-          id: item.id,
-          notebookId,
-          index: Number(item.index) >= 0 ? Number(item.index) : index,
-          createdAt: Number(item.createdAt) || Date.now(),
-          updatedAt: Number(item.updatedAt) || Date.now(),
-          strokeIds: Array.isArray(item.strokeIds) ? item.strokeIds : []
-        }));
+        .map((item: NotePage, index: number) => {
+          const template = typeof item.template === 'string' ? item.template : undefined;
+          return {
+            id: item.id,
+            notebookId,
+            index: Number(item.index) >= 0 ? Number(item.index) : index,
+            createdAt: Number(item.createdAt) || Date.now(),
+            updatedAt: Number(item.updatedAt) || Date.now(),
+            strokeIds: Array.isArray(item.strokeIds) ? item.strokeIds : [],
+            template: normalizePageTemplate(template)
+          };
+        });
     } catch (_error) {
       return [];
     }

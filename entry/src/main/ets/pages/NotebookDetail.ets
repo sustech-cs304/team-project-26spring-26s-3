@@ -7,6 +7,7 @@ import { NotePageRepository } from '../services/NotePageRepository';
 import { NotebookRepository } from '../services/NotebookRepository';
 import { StrokeRepository } from '../services/StrokeRepository';
 import { formatError } from '../utils/ErrorUtils';
+import { getPageTemplateLabel, normalizePageTemplate } from '../utils/PageTemplateUtils';
 
 interface NotebookRouteParams {
   notebookId?: string;
@@ -197,11 +198,12 @@ struct NotebookDetail {
       PageThumbnail({
         pageId: item.id,
         pageUpdatedAt: item.updatedAt,
-        strokeCount: item.strokeIds.length
+        strokeCount: item.strokeIds.length,
+        template: item.template
       })
 
       Column({ space: 6 }) {
-        Text(`Page ${item.index + 1}`)
+        Text(`Page ${this.getPageDisplayIndex(item.id) + 1}`)
           .fontSize(18)
           .fontWeight(FontWeight.Medium)
           .fontColor('#0F172A')
@@ -214,6 +216,12 @@ struct NotebookDetail {
           .width('100%')
           .textAlign(TextAlign.Start)
 
+        Text(getPageTemplateLabel(item.template))
+          .fontSize(12)
+          .fontColor('#475569')
+          .width('100%')
+          .textAlign(TextAlign.Start)
+
         Text(`Updated ${this.formatDate(item.updatedAt)}`)
           .fontSize(12)
           .fontColor('#64748B')
@@ -223,6 +231,24 @@ struct NotebookDetail {
       .layoutWeight(1)
 
       Column({ space: 8 }) {
+        Button('Up')
+          .backgroundColor('#E2E8F0')
+          .fontColor('#334155')
+          .borderRadius(12)
+          .enabled(this.canMovePageUp(item.id))
+          .onClick(() => {
+            void this.movePage(item.id, -1);
+          })
+
+        Button('Down')
+          .backgroundColor('#E2E8F0')
+          .fontColor('#334155')
+          .borderRadius(12)
+          .enabled(this.canMovePageDown(item.id))
+          .onClick(() => {
+            void this.movePage(item.id, 1);
+          })
+
         Button('Delete')
           .backgroundColor('#FEE2E2')
           .fontColor('#B91C1C')
@@ -259,8 +285,9 @@ struct NotebookDetail {
         CanvasEditor({
           notebookId: this.notebookId,
           pageId: this.getSelectedPage()!.id,
-          pageIndex: this.getSelectedPage()!.index,
-          pageUpdatedAt: this.getSelectedPage()!.updatedAt
+          pageIndex: this.getSelectedPageDisplayIndex(),
+          pageUpdatedAt: this.getSelectedPage()!.updatedAt,
+          pageTemplate: this.getSelectedPage()!.template
         })
         .width('100%')
         .layoutWeight(1)
@@ -291,6 +318,10 @@ struct NotebookDetail {
 
   private getSelectedPage(): NotePage | undefined {
     return this.pages.find((item: NotePage) => item.id === this.selectedPageId);
+  }
+
+  private getSelectedPageDisplayIndex(): number {
+    return this.getPageDisplayIndex(this.selectedPageId);
   }
 
   private async loadData(): Promise<void> {
@@ -345,6 +376,49 @@ struct NotebookDetail {
     }
   }
 
+  private async movePage(pageId: string, offset: number): Promise<void> {
+    this.errorMessage = '';
+    try {
+      const currentIndex = this.getPagePosition(pageId);
+      if (currentIndex < 0) {
+        return;
+      }
+
+      const targetIndex = currentIndex + offset;
+      if (targetIndex < 0 || targetIndex >= this.pages.length) {
+        return;
+      }
+
+      const nextPages = await this.getPageRepository().reorder(this.notebookId, pageId, targetIndex);
+      this.notebook = await this.getNotebookRepository().syncPageIds(
+        this.notebookId,
+        nextPages.map((item: NotePage) => item.id)
+      ) ?? this.notebook;
+      this.pages = await this.getPageRepository().listByNotebook(this.notebookId);
+      this.selectedPageId = pageId;
+    } catch (error) {
+      this.errorMessage = `Failed to reorder pages: ${this.stringifyError(error)}`;
+    }
+  }
+
+  private canMovePageUp(pageId: string): boolean {
+    return this.getPagePosition(pageId) > 0;
+  }
+
+  private canMovePageDown(pageId: string): boolean {
+    const position = this.getPagePosition(pageId);
+    return position >= 0 && position < this.pages.length - 1;
+  }
+
+  private getPagePosition(pageId: string): number {
+    return this.pages.findIndex((item: NotePage) => item.id === pageId);
+  }
+
+  private getPageDisplayIndex(pageId: string): number {
+    const position = this.getPagePosition(pageId);
+    return position >= 0 ? position : 0;
+  }
+
   private getNotebookRepository(): NotebookRepository {
     if (!this.notebookRepository) {
       this.notebookRepository = new NotebookRepository(this.getHostContext());
@@ -397,6 +471,7 @@ struct NotebookDetail {
     if (this.pageThumbnailRefreshSignal.length === 0) {
       return;
     }
+    this.applyTemplateRefreshSignal(this.pageThumbnailRefreshSignal);
     void this.refreshPageMetadata();
   }
 
@@ -428,6 +503,7 @@ struct NotebookDetail {
         left[index].id !== right[index].id ||
         left[index].index !== right[index].index ||
         left[index].updatedAt !== right[index].updatedAt ||
+        left[index].template !== right[index].template ||
         left[index].strokeIds.length !== right[index].strokeIds.length
       ) {
         return false;
@@ -435,5 +511,27 @@ struct NotebookDetail {
     }
 
     return true;
+  }
+
+  private applyTemplateRefreshSignal(signal: string): void {
+    const marker = '|template:';
+    const markerIndex = signal.indexOf(marker);
+    if (markerIndex <= 0) {
+      return;
+    }
+
+    const pageId = signal.slice(0, markerIndex).split('|')[0];
+    const template = normalizePageTemplate(signal.slice(markerIndex + marker.length));
+    this.pages = this.pages.map((item: NotePage) => item.id === pageId
+      ? {
+          id: item.id,
+          notebookId: item.notebookId,
+          index: item.index,
+          createdAt: item.createdAt,
+          template,
+          strokeIds: item.strokeIds,
+          updatedAt: Date.now()
+        }
+      : item);
   }
 }

@@ -1,16 +1,27 @@
 import common from '@ohos.app.ability.common';
 import { CanvasViewport, defaultViewport } from '../canvas/CanvasTypes';
+import { PageTemplate } from '../models/NotePage';
 import { ToolType } from '../models/Stroke';
 import { NotePageRepository } from '../services/NotePageRepository';
 import { StrokeRepository } from '../services/StrokeRepository';
 import { Point, Stroke } from '../models/Stroke';
 import { formatError } from '../utils/ErrorUtils';
+import { DEFAULT_PAGE_TEMPLATE, getPageTemplateLabel, PAGE_TEMPLATE_OPTIONS } from '../utils/PageTemplateUtils';
 
 const DEFAULT_STROKE_COLOR = '#111827';
 const DEFAULT_STROKE_WIDTH = 4;
 const ERASER_COLOR = '#000000';
 const MIN_VIEWPORT_SCALE = 0.5;
 const MAX_VIEWPORT_SCALE = 3;
+const PAPER_BACKGROUND = '#FFFDF7';
+const PAPER_GUIDE = '#E2E8F0';
+const PAPER_DOT = '#CBD5E1';
+const PAPER_GUIDE_START_Y = 72;
+const PAPER_GUIDE_START_X = 64;
+const PAPER_GUIDE_GAP = 64;
+const PAPER_GUIDE_PADDING = 64;
+const DEFAULT_CANVAS_WIDTH = 1600;
+const DEFAULT_CANVAS_HEIGHT = 900;
 
 type InteractionMode = 'draw' | 'move';
 
@@ -32,6 +43,7 @@ export struct CanvasEditor {
   @Watch('handlePageChange') @Prop pageId: string = '';
   @Prop pageIndex: number = 0;
   @Watch('handlePageChange') @Prop pageUpdatedAt: number = 0;
+  @Watch('handleTemplateChange') @Prop pageTemplate: PageTemplate = DEFAULT_PAGE_TEMPLATE;
   @StorageLink('page_thumbnail_refresh_signal') private pageThumbnailRefreshSignal: string = '';
 
   @State private strokes: Stroke[] = [];
@@ -42,12 +54,14 @@ export struct CanvasEditor {
   @State private currentWidth: number = DEFAULT_STROKE_WIDTH;
   @State private interactionMode: InteractionMode = 'draw';
   @State private viewport: CanvasViewport = defaultViewport;
+  @State private currentTemplate: PageTemplate = DEFAULT_PAGE_TEMPLATE;
 
   private readonly renderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
   private readonly guideContext2D: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.renderingSettings);
   private readonly strokeContext2D: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.renderingSettings);
   private readonly colorPresets: string[] = ['#111827', '#1D4ED8', '#059669', '#DC2626', '#7C3AED'];
   private readonly widthPresets: number[] = [3, 6, 10, 18];
+  private readonly templateOptions: PageTemplate[] = PAGE_TEMPLATE_OPTIONS;
   private activeStroke: Stroke | null = null;
   private isGuideCanvasReady: boolean = false;
   private isStrokeCanvasReady: boolean = false;
@@ -83,7 +97,7 @@ export struct CanvasEditor {
         Canvas(this.guideContext2D)
           .width('100%')
           .height('100%')
-          .backgroundColor('#FFFDF7')
+          .backgroundColor(PAPER_BACKGROUND)
           .borderRadius(20)
           .onReady(() => {
             this.isGuideCanvasReady = true;
@@ -211,6 +225,23 @@ export struct CanvasEditor {
       }
       .width('100%')
 
+      Row({ space: 10 }) {
+        Text('Paper')
+          .fontSize(13)
+          .fontColor('#475569')
+
+        ForEach(this.templateOptions, (template: PageTemplate) => {
+          Button(getPageTemplateLabel(template))
+            .backgroundColor(this.currentTemplate === template ? '#1D4ED8' : '#E2E8F0')
+            .fontColor(this.currentTemplate === template ? '#FFFFFF' : '#334155')
+            .borderRadius(12)
+            .onClick(() => {
+              void this.changeTemplate(template);
+            })
+        }, (template: PageTemplate) => template)
+      }
+      .width('100%')
+
       Row({ space: 12 }) {
         Text('Tool')
           .fontSize(13)
@@ -280,11 +311,17 @@ export struct CanvasEditor {
     void this.loadCurrentPage();
   }
 
+  private handleTemplateChange(): void {
+    this.currentTemplate = this.pageTemplate;
+    this.redrawGuideLayer();
+  }
+
   private async loadCurrentPage(): Promise<void> {
     this.activeStroke = null;
     this.panReferencePoint = null;
     this.errorMessage = '';
     this.saveStatus = 'Loading...';
+    this.currentTemplate = this.pageTemplate;
 
     if (this.pageId.length === 0) {
       this.strokes = [];
@@ -302,6 +339,29 @@ export struct CanvasEditor {
       this.saveStatus = 'Save failed';
       this.errorMessage = `Failed to load strokes: ${this.stringifyError(error)}`;
       this.redraw();
+    }
+  }
+
+  private async changeTemplate(template: PageTemplate): Promise<void> {
+    if (this.pageId.length === 0 || this.currentTemplate === template) {
+      return;
+    }
+
+    const previousTemplate = this.currentTemplate;
+    this.errorMessage = '';
+    this.currentTemplate = template;
+    this.redrawGuideLayer();
+    this.saveStatus = 'Saving...';
+
+    try {
+      const page = await this.getPageRepository().updateTemplate(this.notebookId, this.pageId, template);
+      this.pageThumbnailRefreshSignal = `${this.pageId}|${page?.updatedAt ?? Date.now()}|template:${template}`;
+      this.saveStatus = 'Saved';
+    } catch (error) {
+      this.currentTemplate = previousTemplate;
+      this.redrawGuideLayer();
+      this.saveStatus = 'Save failed';
+      this.errorMessage = `Failed to update page template: ${this.stringifyError(error)}`;
     }
   }
 
@@ -484,10 +544,10 @@ export struct CanvasEditor {
       return;
     }
 
-    const width = this.guideContext2D.width > 0 ? this.guideContext2D.width : 1600;
-    const height = this.guideContext2D.height > 0 ? this.guideContext2D.height : 900;
+    const width = this.guideContext2D.width > 0 ? this.guideContext2D.width : DEFAULT_CANVAS_WIDTH;
+    const height = this.guideContext2D.height > 0 ? this.guideContext2D.height : DEFAULT_CANVAS_HEIGHT;
     this.guideContext2D.clearRect(0, 0, width, height);
-    this.guideContext2D.fillStyle = '#FFFDF7';
+    this.guideContext2D.fillStyle = PAPER_BACKGROUND;
     this.guideContext2D.fillRect(0, 0, width, height);
     this.drawGuides(width, height);
   }
@@ -497,8 +557,8 @@ export struct CanvasEditor {
       return;
     }
 
-    const width = this.strokeContext2D.width > 0 ? this.strokeContext2D.width : 1600;
-    const height = this.strokeContext2D.height > 0 ? this.strokeContext2D.height : 900;
+    const width = this.strokeContext2D.width > 0 ? this.strokeContext2D.width : DEFAULT_CANVAS_WIDTH;
+    const height = this.strokeContext2D.height > 0 ? this.strokeContext2D.height : DEFAULT_CANVAS_HEIGHT;
     this.strokeContext2D.clearRect(0, 0, width, height);
 
     this.strokes.forEach((item: Stroke) => {
@@ -511,25 +571,85 @@ export struct CanvasEditor {
   }
 
   private drawGuides(width: number, height: number): void {
+    const bounds = this.getVisibleLogicalBounds(width, height);
+    if (this.currentTemplate === 'blank') {
+      return;
+    }
+
+    if (this.currentTemplate === 'dot') {
+      this.drawDotGuides(bounds);
+      return;
+    }
+
+    this.drawHorizontalGuides(bounds);
+    if (this.currentTemplate === 'grid') {
+      this.drawVerticalGuides(bounds);
+    }
+  }
+
+  private drawHorizontalGuides(bounds: CanvasLogicalBounds): void {
     this.guideContext2D.beginPath();
     this.guideContext2D.lineWidth = Math.max(1, this.viewport.scale);
-    this.guideContext2D.strokeStyle = '#E2E8F0';
+    this.guideContext2D.strokeStyle = PAPER_GUIDE;
 
-    const bounds = this.getVisibleLogicalBounds(width, height);
-    const startY = this.getGuideStartY(bounds.top);
-    const startX = bounds.left - 64;
-    const endX = bounds.right + 64;
+    const startY = this.getGuideStart(bounds.top, PAPER_GUIDE_START_Y);
+    const startX = bounds.left - PAPER_GUIDE_PADDING;
+    const endX = bounds.right + PAPER_GUIDE_PADDING;
 
     let y = startY;
-    while (y <= bounds.bottom + 64) {
+    while (y <= bounds.bottom + PAPER_GUIDE_PADDING) {
       const startPoint = this.toViewportPoint(this.createPoint(startX, y));
       const endPoint = this.toViewportPoint(this.createPoint(endX, y));
       this.guideContext2D.moveTo(startPoint.x, startPoint.y);
       this.guideContext2D.lineTo(endPoint.x, endPoint.y);
-      y += 64;
+      y += PAPER_GUIDE_GAP;
     }
 
     this.guideContext2D.stroke();
+  }
+
+  private drawVerticalGuides(bounds: CanvasLogicalBounds): void {
+    this.guideContext2D.beginPath();
+    this.guideContext2D.lineWidth = Math.max(1, this.viewport.scale);
+    this.guideContext2D.strokeStyle = PAPER_GUIDE;
+
+    const startX = this.getGuideStart(bounds.left, PAPER_GUIDE_START_X);
+    const startY = bounds.top - PAPER_GUIDE_PADDING;
+    const endY = bounds.bottom + PAPER_GUIDE_PADDING;
+
+    let x = startX;
+    while (x <= bounds.right + PAPER_GUIDE_PADDING) {
+      const startPoint = this.toViewportPoint(this.createPoint(x, startY));
+      const endPoint = this.toViewportPoint(this.createPoint(x, endY));
+      this.guideContext2D.moveTo(startPoint.x, startPoint.y);
+      this.guideContext2D.lineTo(endPoint.x, endPoint.y);
+      x += PAPER_GUIDE_GAP;
+    }
+
+    this.guideContext2D.stroke();
+  }
+
+  private drawDotGuides(bounds: CanvasLogicalBounds): void {
+    this.guideContext2D.beginPath();
+    this.guideContext2D.fillStyle = PAPER_DOT;
+
+    const startY = this.getGuideStart(bounds.top, PAPER_GUIDE_START_Y);
+    const startX = this.getGuideStart(bounds.left, PAPER_GUIDE_START_X);
+    const radius = Math.max(1.2, 1.6 * this.viewport.scale);
+
+    let y = startY;
+    while (y <= bounds.bottom + PAPER_GUIDE_PADDING) {
+      let x = startX;
+      while (x <= bounds.right + PAPER_GUIDE_PADDING) {
+        const point = this.toViewportPoint(this.createPoint(x, y));
+        this.guideContext2D.moveTo(point.x + radius, point.y);
+        this.guideContext2D.arc(point.x, point.y, radius, 0, Math.PI * 2);
+        x += PAPER_GUIDE_GAP;
+      }
+      y += PAPER_GUIDE_GAP;
+    }
+
+    this.guideContext2D.fill();
   }
 
   private drawStroke(stroke: Stroke, alpha: number): void {
@@ -667,8 +787,8 @@ export struct CanvasEditor {
   }
 
   private getCanvasSize(): CanvasSize {
-    const width = this.strokeContext2D.width > 0 ? this.strokeContext2D.width : 1600;
-    const height = this.strokeContext2D.height > 0 ? this.strokeContext2D.height : 900;
+    const width = this.strokeContext2D.width > 0 ? this.strokeContext2D.width : DEFAULT_CANVAS_WIDTH;
+    const height = this.strokeContext2D.height > 0 ? this.strokeContext2D.height : DEFAULT_CANVAS_HEIGHT;
     return {
       width,
       height
@@ -685,13 +805,13 @@ export struct CanvasEditor {
     };
   }
 
-  private getGuideStartY(top: number): number {
-    if (top <= 72) {
-      return 72;
+  private getGuideStart(position: number, anchor: number): number {
+    if (position <= anchor) {
+      return anchor;
     }
 
-    const offset = top - 72;
-    return 72 + Math.floor(offset / 64) * 64;
+    const offset = position - anchor;
+    return anchor + Math.floor(offset / PAPER_GUIDE_GAP) * PAPER_GUIDE_GAP;
   }
 
   private withAlpha(color: string, alpha: number): string {
