@@ -1,0 +1,104 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Hosn entry module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Hosn main ability"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Hosn"
+    },
+    {
+      "name": "app_name",
+      "value": "Hosn"
+    },
+    {
+      "name": "boot_loading",
+      "value": "正在进入 Hosn..."
+    },
+    {
+      "name": "home_title",
+      "value": "Hosn 数字笔记本"
+    },
+    {
+      "name": "home_subtitle",
+      "value": "把模板首页替换成正式应用入口，并为后续笔记本管理与编辑流程预留稳定导航。"
+    },
+    {
+      "name": "home_overview_title",
+      "value": "当前首页状态"
+    },
+    {
+      "name": "home_overview_desc",
+      "value": "首页、全局路由和初始化层已经接通。后续可以继续往这里补最近笔记本、导入 PDF 和搜索等模块。"
+    },
+    {
+      "name": "quick_action_title",
+      "value": "快捷操作"
+    },
+    {
+      "name": "quick_action_subtitle",
+      "value": "先保证应用启动后的主流程可达，再逐步补齐具体业务。"
+    },
+    {
+      "name": "quick_action_notebooks_title",
+      "value": "打开笔记本列表"
+    },
+    {
+      "name": "quick_action_notebooks_desc",
+      "value": "进入笔记本列表页，为后续新建、重命名、删除和排序功能承接正式入口。"
+    },
+    {
+      "name": "quick_action_editor_title",
+      "value": "进入编辑页"
+    },
+    {
+      "name": "quick_action_editor_desc",
+      "value": "直接跳转到后续编辑器页面骨架，验证首页到编辑页的路由链路。"
+    },
+    {
+      "name": "notebook_page_title",
+      "value": "笔记本列表"
+    },
+    {
+      "name": "notebook_page_desc",
+      "value": "这里先保留页面骨架，用于验证应用首页、列表页和编辑页的导航闭环。"
+    },
+    {
+      "name": "notebook_demo_card_title",
+      "value": "示例笔记本"
+    },
+    {
+      "name": "notebook_demo_card_desc",
+      "value": "功能一落地后，这里会替换成真实的笔记本卡片列表与交互。"
+    },
+    {
+      "name": "notebook_open_demo",
+      "value": "打开示例笔记本"
+    },
+    {
+      "name": "notebook_back_home",
+      "value": "返回首页"
+    },
+    {
+      "name": "editor_page_title",
+      "value": "编辑页"
+    },
+    {
+      "name": "editor_page_desc",
+      "value": "这里是后续编辑器能力的承接页面，当前先提供最小导航骨架。"
+    },
+    {
+      "name": "editor_page_hint",
+      "value": "后续可以在这个页面继续接入画布、工具栏、缩略图侧栏和自动保存逻辑。"
+    },
+    {
+      "name": "editor_back_home",
+      "value": "返回首页"
+    }
+  ]
+}

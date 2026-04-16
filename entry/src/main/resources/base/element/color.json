@@ -1,0 +1,28 @@
+{
+  "color": [
+    {
+      "name": "start_window_background",
+      "value": "#F5F7FB"
+    },
+    {
+      "name": "app_background",
+      "value": "#F5F7FB"
+    },
+    {
+      "name": "surface_background",
+      "value": "#FFFFFF"
+    },
+    {
+      "name": "primary_text",
+      "value": "#1F2937"
+    },
+    {
+      "name": "secondary_text",
+      "value": "#667085"
+    },
+    {
+      "name": "card_border",
+      "value": "#D8DEE9"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "float": [
+    {
+      "name": "page_padding_horizontal",
+      "value": "24vp"
+    },
+    {
+      "name": "page_padding_vertical",
+      "value": "20vp"
+    },
+    {
+      "name": "hero_title_size",
+      "value": "30fp"
+    },
+    {
+      "name": "section_title_size",
+      "value": "20fp"
+    },
+    {
+      "name": "body_text_size",
+      "value": "16fp"
+    },
+    {
+      "name": "caption_text_size",
+      "value": "14fp"
+    },
+    {
+      "name": "card_radius",
+      "value": "24vp"
+    },
+    {
+      "name": "button_height",
+      "value": "48vp"
+    }
+  ]
+}
