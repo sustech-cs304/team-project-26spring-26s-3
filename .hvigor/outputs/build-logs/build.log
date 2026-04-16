@@ -1735,3 +1735,238 @@ Require stack:
 [2026-04-17T00:54:40.902] [DEBUG] debug-file - watch worker: worker id should be larger than 0. Nothing will be sent to any worker thread.
 [2026-04-17T00:54:40.902] [DEBUG] debug-file - watch worker: worker id should be larger than 0. Nothing will be sent to any worker thread.
 [2026-04-17T00:54:40.903] [DEBUG] debug-file - worker[10] exits with exit code 1.
+[2026-04-17T00:56:40.580] [DEBUG] debug-file - session manager: set active socket. socketId=-T8Xxg_Er5F1-KaoAAAH
+[2026-04-17T00:56:40.582] [DEBUG] debug-file - watch worker: worker id should be larger than 0. Nothing will be sent to any worker thread.
+[2026-04-17T00:56:40.583] [DEBUG] debug-file - Workers' log level updated to INFO
+[2026-04-17T00:56:40.585] [DEBUG] debug-file - Hvigor init with startParameters:{
+  hvigorfileTypeCheck: false,
+  parallelExecution: true,
+  incrementalExecution: true,
+  printStackTrace: false,
+  daemon: true,
+  analyze: 0,
+  logLevel: Level { level: 20000, levelStr: 'INFO', colour: 'green' },
+  optimizationStrategy: 'memory',
+  hotCompile: undefined,
+  hotReloadBuild: undefined,
+  customizedParam: undefined
+}
+[2026-04-17T00:56:40.587] [DEBUG] debug-file - Cache service initialization finished in 3 ms 
+[2026-04-17T00:56:40.587] [DEBUG] debug-file - hvigorfile, resolving /Users/lvzichong/course/Software_Engineering/project/team-project-26spring-26s-3/hvigorfile.ts
+[2026-04-17T00:56:40.631] [DEBUG] debug-file - hvigorfile, require result:  { default: { plugins: [] } }
+[2026-04-17T00:56:40.631] [DEBUG] debug-file - hvigorfile, binding system plugins null
+[2026-04-17T00:56:40.632] [DEBUG] debug-file - Starting plugin build process
+[2026-04-17T00:56:40.632] [DEBUG] debug-file - App plugin prepare start...
+[2026-04-17T00:56:40.632] [DEBUG] debug-file - App plugin prepare end...
+[2026-04-17T00:56:40.632] [DEBUG] debug-file - App plugin creating...
+[2026-04-17T00:56:40.639] [DEBUG] debug-file - App plugin register hook start...
+[2026-04-17T00:56:40.639] [DEBUG] debug-file - App plugin register hook end...
+[2026-04-17T00:56:40.640] [DEBUG] debug-file - Plugin build process completed
+[2026-04-17T00:56:40.640] [DEBUG] debug-file - Start initialize project's product build option map with build mode debug.
+[2026-04-17T00:56:40.640] [DEBUG] debug-file - Picking option from product 'default' with build mode 'debug'.
+[2026-04-17T00:56:40.640] [DEBUG] debug-file - Product 'default' build option initialized
+[2026-04-17T00:56:40.640] [DEBUG] debug-file - End initialize project's product build option map with build mode 'debug'.
+[2026-04-17T00:56:40.641] [DEBUG] debug-file - Obtain build option for product 'default'in this build.
+[2026-04-17T00:56:40.641] [DEBUG] debug-file - No signingConfig found, initRemoteHspCache failed.
+[2026-04-17T00:56:40.642] [DEBUG] debug-file - Start recording SDK configuration permission data.
+[2026-04-17T00:56:40.660] [DEBUG] debug-file - Sdk init in 19 ms 
+[2026-04-17T00:56:40.662] [DEBUG] debug-file - Project task initialization takes 2 ms 
+[2026-04-17T00:56:40.662] [DEBUG] debug-file - hvigorfile, binding custom plugins []
+[2026-04-17T00:56:40.662] [DEBUG] debug-file - hvigorfile, no custom plugins were found in /Users/lvzichong/course/Software_Engineering/project/team-project-26spring-26s-3/hvigorfile.ts
+[2026-04-17T00:56:40.663] [DEBUG] debug-file - hvigorfile, resolve finished /Users/lvzichong/course/Software_Engineering/project/team-project-26spring-26s-3/hvigorfile.ts
+[2026-04-17T00:56:40.663] [DEBUG] debug-file - hvigorfile, resolving /Users/lvzichong/course/Software_Engineering/project/team-project-26spring-26s-3/entry/hvigorfile.ts
+[2026-04-17T00:56:40.665] [DEBUG] debug-file - hvigorfile, require result:  { default: { plugins: [] } }
+[2026-04-17T00:56:40.665] [DEBUG] debug-file - hvigorfile, binding system plugins null
+[2026-04-17T00:56:40.665] [DEBUG] debug-file - Starting plugin build process
+[2026-04-17T00:56:40.665] [DEBUG] debug-file - Hap plugin creating...
+[2026-04-17T00:56:40.666] [DEBUG] debug-file - failed to load cangjie to dynamically generate schemas: Error: Cannot find module '@ohos/cangjie-build-support/index'
+Require stack:
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor-ohos-plugin/src/plugin/hooks/cangjie-register.js
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor-ohos-plugin/src/plugin/strategy/stage-init-strategy.js
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor-ohos-plugin/src/plugin/builder/abstract-plugin-builder.js
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor-ohos-plugin/src/plugin/builder/app-plugin-builder.js
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor-ohos-plugin/src/plugin/factory/plugin-factory.js
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor-ohos-plugin/index.js
+- /Users/lvzichong/course/Software_Engineering/project/team-project-26spring-26s-3/hvigorfile.ts
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor/src/base/internal/lifecycle/configuration.js
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor/src/base/boot/index.js
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor/src/base/daemon/cluster/worker-process-lifecycle.js
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor/src/base/daemon/process/daemon-process-boot-script.js
+[2026-04-17T00:56:40.670] [DEBUG] debug-file - Start initialize module-target build option map, moduleName=entry, buildMode=debug
+[2026-04-17T00:56:40.670] [DEBUG] debug-file - Target 'default' config initialized
+[2026-04-17T00:56:40.671] [DEBUG] debug-file - Module 'entry' target 'default' build option initialized
+[2026-04-17T00:56:40.671] [DEBUG] debug-file - End initialize module-target build option map, moduleName=entry
+[2026-04-17T00:56:40.671] [DEBUG] debug-file - Start initialize module-target build option map, moduleName=entry, buildMode=release
+[2026-04-17T00:56:40.671] [DEBUG] debug-file - Target 'default' config initialized
+[2026-04-17T00:56:40.671] [DEBUG] debug-file - Module 'entry' target 'default' build option initialized
+[2026-04-17T00:56:40.671] [DEBUG] debug-file - End initialize module-target build option map, moduleName=entry
+[2026-04-17T00:56:40.671] [DEBUG] debug-file - Start initialize module-target build option map, moduleName=entry, buildMode=debug
+[2026-04-17T00:56:40.671] [DEBUG] debug-file - Target 'default' config initialized
+[2026-04-17T00:56:40.672] [DEBUG] debug-file - Module 'entry' target 'default' build option initialized
+[2026-04-17T00:56:40.672] [DEBUG] debug-file - End initialize module-target build option map, moduleName=entry
+[2026-04-17T00:56:40.672] [DEBUG] debug-file - Obtain build option for module 'entry' target 'default'in this build.
+[2026-04-17T00:56:40.674] [DEBUG] debug-file - Module entry task initialization takes 2 ms 
+[2026-04-17T00:56:40.674] [DEBUG] debug-file - Hap plugin register hook start...
+[2026-04-17T00:56:40.674] [DEBUG] debug-file - Hap plugin register hook end...
+[2026-04-17T00:56:40.674] [DEBUG] debug-file - Plugin build process completed
+[2026-04-17T00:56:40.674] [DEBUG] debug-file - hvigorfile, binding custom plugins []
+[2026-04-17T00:56:40.674] [DEBUG] debug-file - hvigorfile, no custom plugins were found in /Users/lvzichong/course/Software_Engineering/project/team-project-26spring-26s-3/entry/hvigorfile.ts
+[2026-04-17T00:56:40.674] [DEBUG] debug-file - hvigorfile, resolve finished /Users/lvzichong/course/Software_Engineering/project/team-project-26spring-26s-3/entry/hvigorfile.ts
+[2026-04-17T00:56:40.722] [DEBUG] debug-file - hvigorfile, resolve hvigorfile dependencies in 48 ms 
+[2026-04-17T00:56:40.722] [DEBUG] debug-file - project has submodules:entry
+[2026-04-17T00:56:40.723] [DEBUG] debug-file - Start to initialize dependency information.
+[2026-04-17T00:56:40.723] [DEBUG] debug-file - Module team-project-26spring-26s-3 Collected Dependency: 
+[2026-04-17T00:56:40.723] [DEBUG] debug-file - Module team-project-26spring-26s-3's total dependency: 0
+[2026-04-17T00:56:40.724] [DEBUG] debug-file - Start to initialize dependency information.
+[2026-04-17T00:56:40.724] [DEBUG] debug-file - Module entry Collected Dependency: 
+[2026-04-17T00:56:40.724] [DEBUG] debug-file - Module entry's total dependency: 0
+[2026-04-17T00:56:40.726] [DEBUG] debug-file - Configuration phase cost:140 ms 
+[2026-04-17T00:56:40.727] [DEBUG] debug-file - Configuration task cost before running: 144 ms 
+[2026-04-17T00:56:40.727] [DEBUG] debug-file - Executing task :entry:clean
+[2026-04-17T00:56:40.727] [DEBUG] debug-file - clean: Start terminating worker pool.
+[2026-04-17T00:56:40.727] [DEBUG] debug-file - Current worker pool is stopped or closed.
+[2026-04-17T00:56:40.727] [DEBUG] debug-file - Clear worker 4.
+[2026-04-17T00:56:40.727] [DEBUG] debug-file - Worker 4 has been cleared.
+[2026-04-17T00:56:40.727] [DEBUG] debug-file - Current idle worker size: 0.
+[2026-04-17T00:56:40.727] [DEBUG] debug-file - Current busy worker size: 0.
+[2026-04-17T00:56:40.744] [DEBUG] debug-file - worker[4] exits with exit code 1.
+[2026-04-17T00:56:40.744] [DEBUG] debug-file - Current worker pool is terminated.
+[2026-04-17T00:56:40.744] [DEBUG] debug-file - clean: Terminating worker pool finished.
+[2026-04-17T00:56:40.759] [DEBUG] debug-file - entry : clean cost memory -0.21881103515625
+[2026-04-17T00:56:40.759] [DEBUG] debug-file - runTaskFromQueue task cost before running: 176 ms 
+[2026-04-17T00:56:40.759] [INFO] debug-file - Finished :entry:clean... after 32 ms 
+[2026-04-17T00:56:40.759] [DEBUG] debug-file - Executing task ::clean
+[2026-04-17T00:56:40.759] [DEBUG] debug-file - clean: Worker pool is inactive.
+[2026-04-17T00:56:40.759] [DEBUG] debug-file - team-project-26spring-26s-3 : clean cost memory 0.0252685546875
+[2026-04-17T00:56:40.759] [DEBUG] debug-file - runTaskFromQueue task cost before running: 176 ms 
+[2026-04-17T00:56:40.759] [INFO] debug-file - Finished ::clean... after 1 ms 
+[2026-04-17T00:56:40.760] [INFO] debug-file - BUILD SUCCESSFUL in 177 ms 
+[2026-04-17T00:56:40.763] [DEBUG] debug-file - Since there is no instance or instance is terminated, create a new worker pool.
+[2026-04-17T00:56:40.763] [DEBUG] debug-file - Worker pool is initialized with config:  {
+  minPoolNum: 2,
+  maxPoolNum: undefined,
+  maxCoreSize: undefined,
+  cacheCapacity: undefined,
+  cacheTtl: undefined
+}
+[2026-04-17T00:56:40.764] [DEBUG] debug-file - Create  resident worker with id: 0.
+[2026-04-17T00:56:40.764] [DEBUG] debug-file - Create  resident worker with id: 1.
+[2026-04-17T00:56:40.765] [DEBUG] debug-file - Cleanup worker 0.
+[2026-04-17T00:56:40.765] [DEBUG] debug-file - Worker 0 has been cleaned up.
+[2026-04-17T00:56:40.765] [DEBUG] debug-file - Current idle worker size: 1.
+[2026-04-17T00:56:40.765] [DEBUG] debug-file - Current resident worker size: 2.
+[2026-04-17T00:56:40.765] [DEBUG] debug-file - Cleanup worker 1.
+[2026-04-17T00:56:40.765] [DEBUG] debug-file - Worker 1 has been cleaned up.
+[2026-04-17T00:56:40.765] [DEBUG] debug-file - Current idle worker size: 0.
+[2026-04-17T00:56:40.765] [DEBUG] debug-file - Current resident worker size: 2.
+[2026-04-17T00:56:40.765] [DEBUG] debug-file - hvigor build process will be closed.
+[2026-04-17T00:56:40.769] [DEBUG] debug-file - worker[0] exits with exit code 0.
+[2026-04-17T00:56:40.769] [DEBUG] debug-file - worker[1] exits with exit code 0.
+[2026-04-17T00:56:40.779] [DEBUG] debug-file - session manager: send message to worker process.
+[2026-04-17T00:56:40.779] [DEBUG] debug-file - session manager: send message to worker process.
+[2026-04-17T00:56:40.780] [DEBUG] debug-file - watch worker: worker id should be larger than 0. Nothing will be sent to any worker thread.
+[2026-04-17T00:56:40.780] [DEBUG] debug-file - watch worker: worker id should be larger than 0. Nothing will be sent to any worker thread.
+[2026-04-17T00:56:51.227] [DEBUG] debug-file - session manager: set active socket. socketId=q7sDnbaxrk2dOJuQAAAJ
+[2026-04-17T00:56:51.228] [DEBUG] debug-file - watch worker: worker id should be larger than 0. Nothing will be sent to any worker thread.
+[2026-04-17T00:56:51.229] [DEBUG] debug-file - Workers' log level updated to INFO
+[2026-04-17T00:56:51.230] [DEBUG] debug-file - Hvigor init with startParameters:{
+  hvigorfileTypeCheck: false,
+  parallelExecution: true,
+  incrementalExecution: true,
+  printStackTrace: false,
+  daemon: true,
+  analyze: 0,
+  logLevel: Level { level: 20000, levelStr: 'INFO', colour: 'green' },
+  optimizationStrategy: 'memory',
+  hotCompile: undefined,
+  hotReloadBuild: undefined,
+  customizedParam: undefined
+}
+[2026-04-17T00:56:51.231] [DEBUG] debug-file - Cache service initialization finished in 2 ms 
+[2026-04-17T00:56:51.231] [DEBUG] debug-file - hvigorfile, resolving /Users/lvzichong/course/Software_Engineering/project/team-project-26spring-26s-3/hvigorfile.ts
+[2026-04-17T00:56:51.234] [DEBUG] debug-file - hvigorfile, require result:  { default: { plugins: [] } }
+[2026-04-17T00:56:51.234] [DEBUG] debug-file - hvigorfile, binding system plugins null
+[2026-04-17T00:56:51.234] [DEBUG] debug-file - Starting plugin build process
+[2026-04-17T00:56:51.234] [DEBUG] debug-file - App plugin prepare start...
+[2026-04-17T00:56:51.234] [DEBUG] debug-file - App plugin prepare end...
+[2026-04-17T00:56:51.234] [DEBUG] debug-file - App plugin creating...
+[2026-04-17T00:56:51.329] [DEBUG] debug-file - App plugin register hook start...
+[2026-04-17T00:56:51.329] [DEBUG] debug-file - App plugin register hook end...
+[2026-04-17T00:56:51.329] [DEBUG] debug-file - Plugin build process completed
+[2026-04-17T00:56:51.329] [DEBUG] debug-file - Start initialize project's product build option map with build mode debug.
+[2026-04-17T00:56:51.329] [DEBUG] debug-file - Picking option from product 'default' with build mode 'debug'.
+[2026-04-17T00:56:51.329] [DEBUG] debug-file - Product 'default' build option initialized
+[2026-04-17T00:56:51.329] [DEBUG] debug-file - End initialize project's product build option map with build mode 'debug'.
+[2026-04-17T00:56:51.329] [DEBUG] debug-file - Obtain build option for product 'default'in this build.
+[2026-04-17T00:56:51.329] [DEBUG] debug-file - No signingConfig found, initRemoteHspCache failed.
+[2026-04-17T00:56:51.330] [DEBUG] debug-file - Start recording SDK configuration permission data.
+[2026-04-17T00:56:51.343] [DEBUG] debug-file - Sdk init in 14 ms 
+[2026-04-17T00:56:51.344] [DEBUG] debug-file - Project task initialization takes 2 ms 
+[2026-04-17T00:56:51.344] [DEBUG] debug-file - hvigorfile, binding custom plugins []
+[2026-04-17T00:56:51.344] [DEBUG] debug-file - hvigorfile, no custom plugins were found in /Users/lvzichong/course/Software_Engineering/project/team-project-26spring-26s-3/hvigorfile.ts
+[2026-04-17T00:56:51.344] [DEBUG] debug-file - hvigorfile, resolve finished /Users/lvzichong/course/Software_Engineering/project/team-project-26spring-26s-3/hvigorfile.ts
+[2026-04-17T00:56:51.345] [DEBUG] debug-file - hvigorfile, resolving /Users/lvzichong/course/Software_Engineering/project/team-project-26spring-26s-3/entry/hvigorfile.ts
+[2026-04-17T00:56:51.347] [DEBUG] debug-file - hvigorfile, require result:  { default: { plugins: [] } }
+[2026-04-17T00:56:51.347] [DEBUG] debug-file - hvigorfile, binding system plugins null
+[2026-04-17T00:56:51.347] [DEBUG] debug-file - Starting plugin build process
+[2026-04-17T00:56:51.347] [DEBUG] debug-file - Hap plugin creating...
+[2026-04-17T00:56:51.347] [DEBUG] debug-file - failed to load cangjie to dynamically generate schemas: Error: Cannot find module '@ohos/cangjie-build-support/index'
+Require stack:
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor-ohos-plugin/src/plugin/hooks/cangjie-register.js
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor-ohos-plugin/src/plugin/strategy/stage-init-strategy.js
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor-ohos-plugin/src/plugin/builder/abstract-plugin-builder.js
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor-ohos-plugin/src/plugin/builder/app-plugin-builder.js
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor-ohos-plugin/src/plugin/factory/plugin-factory.js
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor-ohos-plugin/index.js
+- /Users/lvzichong/course/Software_Engineering/project/team-project-26spring-26s-3/hvigorfile.ts
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor/src/base/internal/lifecycle/configuration.js
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor/src/base/boot/index.js
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor/src/base/daemon/cluster/worker-process-lifecycle.js
+- /Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor/src/base/daemon/process/daemon-process-boot-script.js
+[2026-04-17T00:56:51.351] [DEBUG] debug-file - Start initialize module-target build option map, moduleName=entry, buildMode=debug
+[2026-04-17T00:56:51.351] [DEBUG] debug-file - Target 'default' config initialized
+[2026-04-17T00:56:51.351] [DEBUG] debug-file - Module 'entry' target 'default' build option initialized
+[2026-04-17T00:56:51.351] [DEBUG] debug-file - End initialize module-target build option map, moduleName=entry
+[2026-04-17T00:56:51.351] [DEBUG] debug-file - Start initialize module-target build option map, moduleName=entry, buildMode=release
+[2026-04-17T00:56:51.351] [DEBUG] debug-file - Target 'default' config initialized
+[2026-04-17T00:56:51.351] [DEBUG] debug-file - Module 'entry' target 'default' build option initialized
+[2026-04-17T00:56:51.351] [DEBUG] debug-file - End initialize module-target build option map, moduleName=entry
+[2026-04-17T00:56:51.351] [DEBUG] debug-file - Start initialize module-target build option map, moduleName=entry, buildMode=debug
+[2026-04-17T00:56:51.351] [DEBUG] debug-file - Target 'default' config initialized
+[2026-04-17T00:56:51.351] [DEBUG] debug-file - Module 'entry' target 'default' build option initialized
+[2026-04-17T00:56:51.351] [DEBUG] debug-file - End initialize module-target build option map, moduleName=entry
+[2026-04-17T00:56:51.351] [DEBUG] debug-file - Obtain build option for module 'entry' target 'default'in this build.
+[2026-04-17T00:56:51.352] [DEBUG] debug-file - Module entry task initialization takes 1 ms 
+[2026-04-17T00:56:51.352] [DEBUG] debug-file - Hap plugin register hook start...
+[2026-04-17T00:56:51.352] [DEBUG] debug-file - Hap plugin register hook end...
+[2026-04-17T00:56:51.352] [DEBUG] debug-file - Plugin build process completed
+[2026-04-17T00:56:51.352] [DEBUG] debug-file - hvigorfile, binding custom plugins []
+[2026-04-17T00:56:51.352] [DEBUG] debug-file - hvigorfile, no custom plugins were found in /Users/lvzichong/course/Software_Engineering/project/team-project-26spring-26s-3/entry/hvigorfile.ts
+[2026-04-17T00:56:51.352] [DEBUG] debug-file - hvigorfile, resolve finished /Users/lvzichong/course/Software_Engineering/project/team-project-26spring-26s-3/entry/hvigorfile.ts
+[2026-04-17T00:56:51.397] [DEBUG] debug-file - hvigorfile, resolve hvigorfile dependencies in 45 ms 
+[2026-04-17T00:56:51.397] [DEBUG] debug-file - project has submodules:entry
+[2026-04-17T00:56:51.397] [DEBUG] debug-file - Start to initialize dependency information.
+[2026-04-17T00:56:51.397] [DEBUG] debug-file - Module team-project-26spring-26s-3 Collected Dependency: 
+[2026-04-17T00:56:51.397] [DEBUG] debug-file - Module team-project-26spring-26s-3's total dependency: 0
+[2026-04-17T00:56:51.398] [DEBUG] debug-file - Start to initialize dependency information.
+[2026-04-17T00:56:51.398] [DEBUG] debug-file - Module entry Collected Dependency: 
+[2026-04-17T00:56:51.398] [DEBUG] debug-file - Module entry's total dependency: 0
+[2026-04-17T00:56:51.398] [DEBUG] debug-file - Configuration phase cost:168 ms 
+[2026-04-17T00:56:51.399] [DEBUG] debug-file - Configuration task cost before running: 170 ms 
+[2026-04-17T00:56:51.399] [DEBUG] debug-file - Executing task :entry:clean
+[2026-04-17T00:56:51.399] [DEBUG] debug-file - clean: Worker pool is inactive.
+[2026-04-17T00:56:51.399] [DEBUG] debug-file - entry : clean cost memory 0.07708740234375
+[2026-04-17T00:56:51.399] [DEBUG] debug-file - runTaskFromQueue task cost before running: 171 ms 
+[2026-04-17T00:56:51.399] [INFO] debug-file - Finished :entry:clean... after 1 ms 
+[2026-04-17T00:56:51.399] [DEBUG] debug-file - Executing task ::clean
+[2026-04-17T00:56:51.399] [DEBUG] debug-file - clean: Worker pool is inactive.
+[2026-04-17T00:56:51.399] [DEBUG] debug-file - team-project-26spring-26s-3 : clean cost memory 0.0253448486328125
+[2026-04-17T00:56:51.399] [DEBUG] debug-file - runTaskFromQueue task cost before running: 171 ms 
+[2026-04-17T00:56:51.399] [INFO] debug-file - Finished ::clean... after 1 ms 
+[2026-04-17T00:56:51.400] [INFO] debug-file - BUILD SUCCESSFUL in 172 ms 
+[2026-04-17T00:56:51.404] [DEBUG] debug-file - There's no busy workers and idle workers need cleanup.
+[2026-04-17T00:56:51.404] [DEBUG] debug-file - hvigor build process will be closed.
+[2026-04-17T00:56:51.426] [DEBUG] debug-file - session manager: send message to worker process.
+[2026-04-17T00:56:51.426] [DEBUG] debug-file - session manager: send message to worker process.
+[2026-04-17T00:56:51.426] [DEBUG] debug-file - watch worker: worker id should be larger than 0. Nothing will be sent to any worker thread.
+[2026-04-17T00:56:51.427] [DEBUG] debug-file - watch worker: worker id should be larger than 0. Nothing will be sent to any worker thread.
