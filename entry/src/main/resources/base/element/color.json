@@ -17,12 +17,20 @@
       "value": "#1F2937"
     },
     {
+      "name": "inverse_text",
+      "value": "#FFFFFF"
+    },
+    {
       "name": "secondary_text",
       "value": "#667085"
     },
     {
       "name": "card_border",
       "value": "#D8DEE9"
+    },
+    {
+      "name": "overlay_mask",
+      "value": "#66000000"
     }
   ]
 }
