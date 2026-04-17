@@ -4,13 +4,17 @@
       {
         "MODULE_NAME": "923fe53966c6cd9343e11af776cd4b05be315ea4b200b02e4d5dfb0f929b73bf",
         "API_TYPE": "stageMode",
-        "INCLUDE_IN_BUILD": false,
-        "IS_COMMAND_LINE_ENTRY_MODULE": false,
-        "IS_INCREMENTAL_MODULE": false
+        "INCLUDE_IN_BUILD": true,
+        "IS_COMMAND_LINE_ENTRY_MODULE": true,
+        "MODULE_TYPE": "entry",
+        "INCREMENTAL_TASKS": {
+          "COMPILE_ARKTS": true
+        },
+        "IS_INCREMENTAL_MODULE": true
       }
     ],
     "NATIVE_COMPILER": "Default",
-    "IS_FULL_BUILD": true,
+    "IS_FULL_BUILD": false,
     "BUILD_MODE": "debug"
   },
   "HVIGOR": {
@@ -20,19 +24,34 @@
     "IS_HVIGORFILE_TYPE_CHECK": false,
     "TASK_TIME": {
       "923fe53966c6cd9343e11af776cd4b05be315ea4b200b02e4d5dfb0f929b73bf": {
-        "clean": 29963584
-      },
-      "APP": {
-        "clean": 237625
+        "CreateModuleInfo": 201250,
+        "ConfigureCmake": 94917,
+        "PreCheckSyscap": 100458,
+        "GeneratePkgContextInfo": 785291,
+        "ProcessIntegratedHsp": 222500,
+        "BuildNativeWithCmake": 103833,
+        "SyscapTransform": 486208,
+        "ProcessStartupConfig": 272000,
+        "BuildNativeWithNinja": 204250,
+        "BuildJS": 470167,
+        "CompileArkTS": 326423666,
+        "ProcessCompiledResources": 228958,
+        "PackageHap": 28472625,
+        "PackingCheck": 2045708,
+        "SignHap": 424250,
+        "CollectDebugSymbol": 248375,
+        "assembleHap": 95791
       }
     },
-    "APIS": [],
+    "APIS": [
+      "getProperty"
+    ],
     "CONFIG_EXPERIMENT": {
       "ENABLE_MODULE_SKIP": false,
       "ENABLE_CPP_FUNCTION_LEVEL_INCREMENTAL": false
     },
     "CONFIG_PROPERTIES": {},
-    "TOTAL_TIME": 118978500,
-    "BUILD_ID": "202604180059021910"
+    "TOTAL_TIME": 464066750,
+    "BUILD_ID": "202604180113289660"
   }
 }
