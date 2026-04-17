@@ -66,23 +66,39 @@
     },
     {
       "name": "notebook_page_desc",
-      "value": "这里先保留页面骨架，用于验证应用首页、列表页和编辑页的导航闭环。"
-    },
-    {
-      "name": "notebook_demo_card_title",
-      "value": "示例笔记本"
-    },
-    {
-      "name": "notebook_demo_card_desc",
-      "value": "功能一落地后，这里会替换成真实的笔记本卡片列表与交互。"
-    },
-    {
-      "name": "notebook_open_demo",
-      "value": "打开示例笔记本"
+      "value": "这一页已经接到本地仓储，可以直接读取并显示当前保存的笔记本列表。"
     },
     {
       "name": "notebook_back_home",
       "value": "返回首页"
+    },
+    {
+      "name": "notebook_list_section_title",
+      "value": "我的笔记本"
+    },
+    {
+      "name": "notebook_list_count_suffix",
+      "value": "个笔记本"
+    },
+    {
+      "name": "notebook_loading",
+      "value": "正在加载笔记本..."
+    },
+    {
+      "name": "notebook_empty_title",
+      "value": "还没有笔记本"
+    },
+    {
+      "name": "notebook_empty_desc",
+      "value": "这一轮先完成真实列表渲染。下一步接入新建、重命名、删除和排序交互后，这里会出现你的笔记本。"
+    },
+    {
+      "name": "notebook_refresh",
+      "value": "重新加载"
+    },
+    {
+      "name": "notebook_updated_prefix",
+      "value": "最近更新："
     },
     {
       "name": "editor_page_title",
