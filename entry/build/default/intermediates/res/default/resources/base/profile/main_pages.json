@@ -1,8 +1,0 @@
-{
-  "src": [
-    "pages/Index",
-    "features/home/pages/HomePage",
-    "features/notebook/pages/NotebookListPage",
-    "features/editor/pages/EditorPage"
-  ]
-}
