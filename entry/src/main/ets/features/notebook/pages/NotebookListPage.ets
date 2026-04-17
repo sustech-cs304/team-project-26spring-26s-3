@@ -12,11 +12,18 @@ import { NotebookListViewModel } from '../viewmodels/NotebookListViewModel';
 struct NotebookListPage {
   @State private notebookList: Notebook[] = [];
   @State private isLoading: boolean = true;
-  @State private isCreateDialogVisible: boolean = false;
-  @State private isCreatingNotebook: boolean = false;
+  @State private isInputDialogVisible: boolean = false;
+  @State private isRenameMode: boolean = false;
+  @State private isSubmittingDialog: boolean = false;
   @State private draftNotebookTitle: string = '';
-  @State private currentSortType: NotebookSortType = NotebookSortType.UPDATED_DESC;
+  @State private activeNotebookId: string = '';
+  @State @Watch('onCurrentSortTypeChanged') private currentSortType: NotebookSortType = NotebookSortType.UPDATED_DESC;
+  @State private isDeleteDialogVisible: boolean = false;
+  @State private isDeletingNotebook: boolean = false;
+  @State private deleteTargetNotebookId: string = '';
+  @State private deleteTargetNotebookTitle: string = '';
   private notebookListViewModel?: NotebookListViewModel;
+  private shouldHandleSortTypeChange: boolean = false;
 
   aboutToAppear(): void {
     this.loadNotebookList();
@@ -38,58 +45,139 @@ struct NotebookListPage {
     this.isLoading = true;
     try {
       const viewModel: NotebookListViewModel = this.ensureViewModel();
+      this.shouldHandleSortTypeChange = false;
       this.currentSortType = await viewModel.loadSortType();
       this.notebookList = await viewModel.loadNotebookList();
     } catch (_error) {
       this.notebookList = [];
       this.currentSortType = NotebookSortType.UPDATED_DESC;
     } finally {
+      this.shouldHandleSortTypeChange = true;
       this.isLoading = false;
     }
   }
 
   private openCreateDialog(): void {
+    this.closeDeleteDialog();
+    this.activeNotebookId = '';
     this.draftNotebookTitle = '';
-    this.isCreateDialogVisible = true;
+    this.isRenameMode = false;
+    this.isInputDialogVisible = true;
   }
 
-  private closeCreateDialog(): void {
-    if (this.isCreatingNotebook) {
-      return;
-    }
-    this.isCreateDialogVisible = false;
+  private openRenameDialog(notebook: Notebook): void {
+    this.closeDeleteDialog();
+    this.activeNotebookId = notebook.id;
+    this.draftNotebookTitle = notebook.title;
+    this.isRenameMode = true;
+    this.isInputDialogVisible = true;
+  }
+
+  private resetInputDialogState(): void {
+    this.isInputDialogVisible = false;
+    this.isRenameMode = false;
+    this.activeNotebookId = '';
     this.draftNotebookTitle = '';
   }
 
-  private async createNotebook(): Promise<void> {
-    if (this.isCreatingNotebook) {
+  private closeInputDialog(): void {
+    if (this.isSubmittingDialog) {
+      return;
+    }
+    this.resetInputDialogState();
+  }
+
+  private async submitNotebookDialog(): Promise<void> {
+    if (this.isSubmittingDialog) {
       return;
     }
 
-    this.isCreatingNotebook = true;
+    this.isSubmittingDialog = true;
     try {
-      await this.ensureViewModel().createNotebook(this.draftNotebookTitle);
+      if (this.isRenameMode) {
+        await this.ensureViewModel().renameNotebook(this.activeNotebookId, this.draftNotebookTitle);
+      } else {
+        await this.ensureViewModel().createNotebook(this.draftNotebookTitle);
+      }
       this.notebookList = this.ensureViewModel().getCachedNotebookList();
-      this.isCreateDialogVisible = false;
-      this.draftNotebookTitle = '';
+      this.closeDeleteDialog();
+      this.resetInputDialogState();
     } catch (_error) {
     } finally {
-      this.isCreatingNotebook = false;
+      this.isSubmittingDialog = false;
     }
   }
 
-  private async changeSortType(sortType: NotebookSortType): Promise<void> {
-    if (this.isLoading || this.currentSortType === sortType) {
+  private onCurrentSortTypeChanged(): void {
+    if (!this.shouldHandleSortTypeChange) {
+      return;
+    }
+
+    void this.applyCurrentSortType();
+  }
+
+  private async applyCurrentSortType(): Promise<void> {
+    if (this.isLoading) {
       return;
     }
 
     this.isLoading = true;
-    this.currentSortType = sortType;
     try {
-      this.notebookList = await this.ensureViewModel().changeSortType(sortType);
+      this.notebookList = await this.ensureViewModel().changeSortType(this.currentSortType);
     } catch (_error) {
+      this.shouldHandleSortTypeChange = false;
+      try {
+        this.currentSortType = await this.ensureViewModel().loadSortType();
+      } catch (_reloadError) {
+        this.currentSortType = NotebookSortType.UPDATED_DESC;
+      } finally {
+        this.shouldHandleSortTypeChange = true;
+      }
     } finally {
       this.isLoading = false;
+    }
+  }
+
+  private openDeleteDialog(notebook: Notebook): void {
+    if (this.isDeletingNotebook || this.isSubmittingDialog) {
+      return;
+    }
+
+    this.deleteTargetNotebookId = notebook.id;
+    this.deleteTargetNotebookTitle = notebook.title;
+    this.isDeleteDialogVisible = true;
+  }
+
+  private closeDeleteDialog(): void {
+    if (this.isDeletingNotebook) {
+      return;
+    }
+
+    this.resetDeleteDialogState();
+  }
+
+  private resetDeleteDialogState(): void {
+    this.isDeleteDialogVisible = false;
+    this.deleteTargetNotebookId = '';
+    this.deleteTargetNotebookTitle = '';
+  }
+
+  private async confirmDeleteSelectedNotebook(): Promise<void> {
+    if (this.isDeletingNotebook || this.deleteTargetNotebookId.length === 0) {
+      return;
+    }
+
+    let hasDeleted: boolean = false;
+    this.isDeletingNotebook = true;
+    try {
+      hasDeleted = await this.ensureViewModel().deleteNotebook(this.deleteTargetNotebookId);
+      this.notebookList = this.ensureViewModel().getCachedNotebookList();
+    } catch (_error) {
+    } finally {
+      this.isDeletingNotebook = false;
+      if (hasDeleted) {
+        this.resetDeleteDialogState();
+      }
     }
   }
 
@@ -169,10 +257,7 @@ struct NotebookListPage {
           .alignItems(VerticalAlign.Center)
 
           SortMenu({
-            selectedSortType: this.currentSortType,
-            onSortSelected: (sortType: NotebookSortType): void => {
-              this.changeSortType(sortType);
-            }
+            selectedSortType: $currentSortType
           })
 
           if (this.isLoading) {
@@ -224,13 +309,52 @@ struct NotebookListPage {
           } else {
             Column({ space: 12 }) {
               ForEach(this.notebookList, (notebook: Notebook) => {
-                NotebookCard({
-                  title: notebook.title,
-                  updatedAtText: `${$r('app.string.notebook_updated_prefix')}${this.formatTimestamp(notebook.updatedAt)}`
-                })
-                  .onClick(() => {
-                    this.openNotebook(notebook.id);
+                Column({ space: 12 }) {
+                  NotebookCard({
+                    title: notebook.title,
+                    updatedAtText: `${$r('app.string.notebook_updated_prefix')}${this.formatTimestamp(notebook.updatedAt)}`
                   })
+
+                  Row({ space: 8 }) {
+                    Button($r('app.string.notebook_card_open'))
+                      .layoutWeight(1)
+                      .height($r('app.float.button_height'))
+                      .backgroundColor($r('app.color.app_background'))
+                      .fontColor($r('app.color.primary_text'))
+                      .opacity(this.isDeletingNotebook || this.isSubmittingDialog ? 0.7 : 1)
+                      .onClick(() => {
+                        if (!this.isDeletingNotebook && !this.isSubmittingDialog) {
+                          this.openNotebook(notebook.id);
+                        }
+                      })
+
+                    Button($r('app.string.notebook_card_rename'))
+                      .layoutWeight(1)
+                      .height($r('app.float.button_height'))
+                      .backgroundColor($r('app.color.app_background'))
+                      .fontColor($r('app.color.primary_text'))
+                      .opacity(this.isDeletingNotebook || this.isSubmittingDialog ? 0.7 : 1)
+                      .onClick(() => {
+                        if (!this.isDeletingNotebook && !this.isSubmittingDialog) {
+                          this.openRenameDialog(notebook);
+                        }
+                      })
+
+                    Button($r('app.string.notebook_card_delete'))
+                      .layoutWeight(1)
+                      .height($r('app.float.button_height'))
+                      .backgroundColor($r('app.color.danger_surface'))
+                      .fontColor($r('app.color.danger_text'))
+                      .opacity(this.isDeletingNotebook || this.isSubmittingDialog ? 0.7 : 1)
+                      .onClick(() => {
+                        if (!this.isDeletingNotebook && !this.isSubmittingDialog) {
+                          this.openDeleteDialog(notebook);
+                        }
+                      })
+                  }
+                  .width('100%')
+                }
+                .width('100%')
               }, (notebook: Notebook): string => notebook.id)
             }
             .width('100%')
@@ -249,16 +373,78 @@ struct NotebookListPage {
       .height('100%')
       .backgroundColor($r('app.color.app_background'))
 
-      if (this.isCreateDialogVisible) {
+      if (this.isDeleteDialogVisible) {
+        Column() {
+          Column({ space: 16 }) {
+            Text($r('app.string.notebook_delete_confirm_title'))
+              .fontSize($r('app.float.section_title_size'))
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.primary_text'))
+
+            Text(`${$r('app.string.notebook_delete_target_prefix')}${this.deleteTargetNotebookTitle}`)
+              .fontSize($r('app.float.body_text_size'))
+              .fontColor($r('app.color.primary_text'))
+
+            Text($r('app.string.notebook_delete_confirm_desc'))
+              .fontSize($r('app.float.caption_text_size'))
+              .fontColor($r('app.color.secondary_text'))
+
+            Row({ space: 12 }) {
+              Button($r('app.string.dialog_cancel'))
+                .layoutWeight(1)
+                .height($r('app.float.button_height'))
+                .backgroundColor($r('app.color.app_background'))
+                .fontColor($r('app.color.primary_text'))
+                .onClick(() => {
+                  this.closeDeleteDialog();
+                })
+
+              Button(this.isDeletingNotebook ? $r('app.string.notebook_deleting') : $r('app.string.notebook_delete_confirm'))
+                .layoutWeight(1)
+                .height($r('app.float.button_height'))
+                .backgroundColor($r('app.color.danger_text'))
+                .fontColor($r('app.color.inverse_text'))
+                .onClick(() => {
+                  this.confirmDeleteSelectedNotebook();
+                })
+            }
+            .width('100%')
+          }
+          .width('100%')
+          .constraintSize({ maxWidth: 560 })
+          .alignItems(HorizontalAlign.Start)
+          .padding(24)
+          .backgroundColor($r('app.color.surface_background'))
+          .borderRadius($r('app.float.card_radius'))
+          .border({
+            width: 1,
+            color: $r('app.color.card_border')
+          })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .padding({
+          left: $r('app.float.page_padding_horizontal'),
+          right: $r('app.float.page_padding_horizontal'),
+          top: $r('app.float.page_padding_vertical'),
+          bottom: $r('app.float.page_padding_vertical')
+        })
+        .backgroundColor($r('app.color.overlay_mask'))
+      }
+
+      if (this.isInputDialogVisible) {
         Column() {
           CreateNotebookDialog({
             title: $draftNotebookTitle,
-            isSubmitting: this.isCreatingNotebook,
+            isRenameMode: this.isRenameMode,
+            isSubmitting: this.isSubmittingDialog,
             onCancel: (): void => {
-              this.closeCreateDialog();
+              this.closeInputDialog();
             },
             onConfirm: (): void => {
-              this.createNotebook();
+              this.submitNotebookDialog();
             }
           })
         }

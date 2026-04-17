@@ -66,7 +66,7 @@
     },
     {
       "name": "notebook_page_desc",
-      "value": "这一页已经接到本地仓储，并补上了新建与排序入口，后续继续扩展重命名和删除交互。"
+      "value": "这一页已经接到本地仓储，并补齐了新建、重命名、删除和排序交互。"
     },
     {
       "name": "notebook_back_home",
@@ -98,7 +98,7 @@
     },
     {
       "name": "notebook_empty_desc",
-      "value": "现在已经可以直接创建你的第一个笔记本。下一步再把重命名和删除交互补齐。"
+      "value": "现在已经可以直接创建你的第一个笔记本，创建后还能在列表里继续重命名、删除和排序。"
     },
     {
       "name": "notebook_refresh",
@@ -121,6 +121,22 @@
       "value": "创建完成后会立即出现在当前列表中。"
     },
     {
+      "name": "notebook_rename_dialog_title",
+      "value": "重命名笔记本"
+    },
+    {
+      "name": "notebook_rename_dialog_desc",
+      "value": "修改标题后会立即保存到本地列表。"
+    },
+    {
+      "name": "notebook_rename_placeholder",
+      "value": "输入新的笔记本标题"
+    },
+    {
+      "name": "notebook_rename_tip",
+      "value": "留空时会自动回退到默认标题。"
+    },
+    {
       "name": "notebook_create_confirm",
       "value": "确认创建"
     },
@@ -129,8 +145,48 @@
       "value": "创建中..."
     },
     {
+      "name": "notebook_rename_confirm",
+      "value": "确认重命名"
+    },
+    {
+      "name": "notebook_renaming",
+      "value": "保存中..."
+    },
+    {
       "name": "dialog_cancel",
       "value": "取消"
+    },
+    {
+      "name": "notebook_card_open",
+      "value": "打开"
+    },
+    {
+      "name": "notebook_card_rename",
+      "value": "重命名"
+    },
+    {
+      "name": "notebook_card_delete",
+      "value": "删除"
+    },
+    {
+      "name": "notebook_delete_confirm_title",
+      "value": "确认删除这个笔记本？"
+    },
+    {
+      "name": "notebook_delete_confirm_desc",
+      "value": "删除后无法恢复，但不会影响当前其它笔记本。"
+    },
+    {
+      "name": "notebook_delete_target_prefix",
+      "value": "笔记本："
+    },
+    {
+      "name": "notebook_delete_confirm",
+      "value": "确认删除"
+    },
+    {
+      "name": "notebook_deleting",
+      "value": "删除中..."
     },
     {
       "name": "notebook_sort_title",

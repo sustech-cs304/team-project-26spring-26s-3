@@ -29,6 +29,14 @@
       "value": "#D8DEE9"
     },
     {
+      "name": "danger_text",
+      "value": "#B42318"
+    },
+    {
+      "name": "danger_surface",
+      "value": "#FEE4E2"
+    },
+    {
       "name": "overlay_mask",
       "value": "#66000000"
     }
