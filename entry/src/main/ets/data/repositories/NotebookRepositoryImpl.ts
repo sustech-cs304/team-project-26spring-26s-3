@@ -7,6 +7,7 @@ import { NotebookPage, NotebookPageEntity } from '../../domain/entities/Notebook
 import {
   CreateNotebookPageRequest,
   CreateNotebookRequest,
+  DeleteNotebookPageRequest,
   NotebookRepository,
   NotebookSortType,
   RenameNotebookRequest
@@ -16,6 +17,7 @@ import { PreferencesDataSource } from '../sources/local/PreferencesDataSource';
 
 export class NotebookRepositoryImpl implements NotebookRepository {
   private static readonly NOTEBOOK_LIST_FILE_PATH: string = 'notebooks/notebook-list.json';
+  private static readonly NOTEBOOK_PAGE_FILE_MISSING: string = '__notebook_page_file_missing__';
 
   private readonly preferencesDataSource: PreferencesDataSource;
   private readonly fileDataSource: FileDataSource;
@@ -113,7 +115,7 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       return [];
     }
 
-    return this.loadNotebookPageList(notebookId);
+    return this.loadOrBootstrapNotebookPageList(notebook);
   }
 
   async createNotebookPage(request: CreateNotebookPageRequest): Promise<NotebookPage | null> {
@@ -143,6 +145,55 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     };
     await this.persistNotebookList(notebookList);
     return notebookPage;
+  }
+
+  async deleteNotebookPage(request: DeleteNotebookPageRequest): Promise<boolean> {
+    const notebookList: Notebook[] = await this.loadNotebookList();
+    const notebookIndex: number = this.findNotebookIndexById(notebookList, request.notebookId);
+    if (notebookIndex < 0) {
+      return false;
+    }
+
+    const notebookPageList: NotebookPage[] = await this.loadNotebookPageList(request.notebookId);
+    const filteredNotebookPageList: NotebookPage[] = [];
+    let hasDeleted: boolean = false;
+
+    for (const notebookPage of notebookPageList) {
+      if (notebookPage.id === request.pageId) {
+        hasDeleted = true;
+        continue;
+      }
+      filteredNotebookPageList.push(notebookPage);
+    }
+
+    if (!hasDeleted) {
+      return false;
+    }
+
+    const reorderedNotebookPageList: NotebookPage[] = filteredNotebookPageList.map(
+      (notebookPage: NotebookPage, index: number): NotebookPage => {
+        return {
+          id: notebookPage.id,
+          notebookId: notebookPage.notebookId,
+          order: index,
+          createdAt: notebookPage.createdAt,
+          updatedAt: notebookPage.updatedAt,
+          templateType: notebookPage.templateType
+        };
+      }
+    );
+    await this.persistNotebookPageList(request.notebookId, reorderedNotebookPageList);
+
+    const currentTime: number = TimeUtil.now();
+    const notebook: Notebook = notebookList[notebookIndex];
+    notebookList[notebookIndex] = {
+      id: notebook.id,
+      title: notebook.title,
+      createdAt: notebook.createdAt,
+      updatedAt: currentTime
+    };
+    await this.persistNotebookList(notebookList);
+    return true;
   }
 
   async getSortType(): Promise<NotebookSortType> {
@@ -190,13 +241,31 @@ export class NotebookRepositoryImpl implements NotebookRepository {
   }
 
   private async loadNotebookPageList(notebookId: string): Promise<NotebookPage[]> {
-    const fileContent: string = await this.fileDataSource.readText(this.buildNotebookPageListFilePath(notebookId), '');
+    const fileContent: string = await this.fileDataSource.readText(this.buildNotebookPageListFilePath(notebookId), '[]');
     return this.parseNotebookPageList(notebookId, fileContent);
   }
 
   private async persistNotebookPageList(notebookId: string, notebookPageList: NotebookPage[]): Promise<void> {
     const content: string = JSON.stringify(notebookPageList);
     await this.fileDataSource.writeText(this.buildNotebookPageListFilePath(notebookId), content);
+  }
+
+  private async loadOrBootstrapNotebookPageList(notebook: Notebook): Promise<NotebookPage[]> {
+    const filePath: string = this.buildNotebookPageListFilePath(notebook.id);
+    const fileContent: string = await this.fileDataSource.readText(
+      filePath,
+      NotebookRepositoryImpl.NOTEBOOK_PAGE_FILE_MISSING
+    );
+
+    if (fileContent !== NotebookRepositoryImpl.NOTEBOOK_PAGE_FILE_MISSING) {
+      return this.parseNotebookPageList(notebook.id, fileContent);
+    }
+
+    const defaultNotebookPageList: NotebookPage[] = [
+      this.buildNotebookPage(notebook.id, 0, notebook.createdAt)
+    ];
+    await this.persistNotebookPageList(notebook.id, defaultNotebookPageList);
+    return defaultNotebookPageList;
   }
 
   private parseNotebookList(content: string): Notebook[] {

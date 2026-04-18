@@ -2,6 +2,7 @@ import common from '@ohos.app.ability.common';
 import { Notebook } from '../../../domain/entities/Notebook';
 import { NotebookPage } from '../../../domain/entities/NotebookPage';
 import { CreateNotebookPage } from '../../../domain/usecases/CreateNotebookPage';
+import { DeleteNotebookPage } from '../../../domain/usecases/DeleteNotebookPage';
 import { GetNotebookPages } from '../../../domain/usecases/GetNotebookPages';
 import { NotebookRepository } from '../../../domain/repositories/NotebookRepository';
 import { NotebookRepositoryImpl } from '../../../data/repositories/NotebookRepositoryImpl';
@@ -9,6 +10,7 @@ import { NotebookRepositoryImpl } from '../../../data/repositories/NotebookRepos
 export class EditorViewModel {
   private readonly notebookRepository: NotebookRepository;
   private readonly createNotebookPageUseCase: CreateNotebookPage;
+  private readonly deleteNotebookPageUseCase: DeleteNotebookPage;
   private readonly getNotebookPagesUseCase: GetNotebookPages;
   private notebook: Notebook | null = null;
   private notebookPageList: NotebookPage[] = [];
@@ -16,6 +18,7 @@ export class EditorViewModel {
   constructor(context: common.Context, notebookRepository?: NotebookRepository) {
     this.notebookRepository = notebookRepository ?? new NotebookRepositoryImpl(context);
     this.createNotebookPageUseCase = new CreateNotebookPage(this.notebookRepository);
+    this.deleteNotebookPageUseCase = new DeleteNotebookPage(this.notebookRepository);
     this.getNotebookPagesUseCase = new GetNotebookPages(this.notebookRepository);
   }
 
@@ -37,6 +40,17 @@ export class EditorViewModel {
     this.notebook = await this.notebookRepository.getNotebookById(notebookId);
     this.notebookPageList = await this.getNotebookPagesUseCase.execute(notebookId);
     return notebookPage;
+  }
+
+  async deleteNotebookPage(notebookId: string, pageId: string): Promise<boolean> {
+    const hasDeleted: boolean = await this.deleteNotebookPageUseCase.execute({
+      notebookId: notebookId,
+      pageId: pageId
+    });
+
+    this.notebook = await this.notebookRepository.getNotebookById(notebookId);
+    this.notebookPageList = await this.getNotebookPagesUseCase.execute(notebookId);
+    return hasDeleted;
   }
 
   getCachedNotebook(): Notebook | null {

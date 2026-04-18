@@ -20,6 +20,11 @@ export interface CreateNotebookPageRequest {
   notebookId: string;
 }
 
+export interface DeleteNotebookPageRequest {
+  notebookId: string;
+  pageId: string;
+}
+
 export interface NotebookRepository {
   getNotebookList(): Promise<Notebook[]>;
   getNotebookById(notebookId: string): Promise<Notebook | null>;
@@ -28,6 +33,7 @@ export interface NotebookRepository {
   deleteNotebook(notebookId: string): Promise<boolean>;
   getNotebookPages(notebookId: string): Promise<NotebookPage[]>;
   createNotebookPage(request: CreateNotebookPageRequest): Promise<NotebookPage | null>;
+  deleteNotebookPage(request: DeleteNotebookPageRequest): Promise<boolean>;
   getSortType(): Promise<NotebookSortType>;
   saveSortType(sortType: NotebookSortType): Promise<void>;
 }

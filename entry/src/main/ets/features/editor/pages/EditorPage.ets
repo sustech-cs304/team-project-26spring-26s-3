@@ -14,6 +14,11 @@ struct EditorPage {
   @State private activePageId: string = '';
   @State private isLoading: boolean = true;
   @State private isCreatingPage: boolean = false;
+  @State private isDeletePageDialogVisible: boolean = false;
+  @State private isDeletingPage: boolean = false;
+  @State private deleteTargetPageId: string = '';
+  @State private deleteTargetPageLabel: string = '';
+  @State private deleteTargetPageOrder: number = -1;
   @State private hasMissingNotebookId: boolean = false;
   @State private isNotebookMissing: boolean = false;
   private editorViewModel?: EditorViewModel;
@@ -60,17 +65,6 @@ struct EditorPage {
       this.notebookTitle = notebook.title;
       const viewModel: EditorViewModel = this.ensureViewModel();
       this.notebookPageList = await viewModel.loadNotebookPages(notebookId);
-      if (this.notebookPageList.length === 0) {
-        const createdPage: NotebookPage | null = await viewModel.createNotebookPage(notebookId);
-        const cachedNotebook: Notebook | null = viewModel.getCachedNotebook();
-        if (cachedNotebook !== null) {
-          this.notebookTitle = cachedNotebook.title;
-        }
-        this.notebookPageList = viewModel.getCachedNotebookPages();
-        if (createdPage !== null) {
-          this.activePageId = createdPage.id;
-        }
-      }
       this.syncActivePageId();
     } catch (_error) {
       this.resetNotebookState();
@@ -93,6 +87,7 @@ struct EditorPage {
     this.notebookTitle = '';
     this.notebookPageList = [];
     this.activePageId = '';
+    this.resetDeletePageDialogState();
   }
 
   private syncActivePageId(): void {
@@ -138,6 +133,69 @@ struct EditorPage {
     }
   }
 
+  private openDeletePageDialog(page: NotebookPage): void {
+    if (this.isDeletingPage || this.isCreatingPage) {
+      return;
+    }
+
+    this.deleteTargetPageId = page.id;
+    this.deleteTargetPageLabel = this.getPageLabel(page.order);
+    this.deleteTargetPageOrder = page.order;
+    this.isDeletePageDialogVisible = true;
+  }
+
+  private closeDeletePageDialog(): void {
+    if (this.isDeletingPage) {
+      return;
+    }
+
+    this.resetDeletePageDialogState();
+  }
+
+  private resetDeletePageDialogState(): void {
+    this.isDeletePageDialogVisible = false;
+    this.deleteTargetPageId = '';
+    this.deleteTargetPageLabel = '';
+    this.deleteTargetPageOrder = -1;
+  }
+
+  private async confirmDeleteSelectedPage(): Promise<void> {
+    if (this.isDeletingPage || this.notebookId.length === 0 || this.deleteTargetPageId.length === 0) {
+      return;
+    }
+
+    const deletedPageId: string = this.deleteTargetPageId;
+    const deletedPageOrder: number = this.deleteTargetPageOrder;
+    const wasActivePage: boolean = deletedPageId === this.activePageId;
+    let hasDeleted: boolean = false;
+
+    this.isDeletingPage = true;
+    try {
+      hasDeleted = await this.ensureViewModel().deleteNotebookPage(this.notebookId, deletedPageId);
+      const cachedNotebook: Notebook | null = this.ensureViewModel().getCachedNotebook();
+      const cachedNotebookPageList: NotebookPage[] = this.ensureViewModel().getCachedNotebookPages();
+
+      if (cachedNotebook !== null) {
+        this.notebookTitle = cachedNotebook.title;
+      } else if (hasDeleted) {
+        this.isNotebookMissing = true;
+      }
+      this.notebookPageList = cachedNotebookPageList;
+
+      if (wasActivePage) {
+        this.focusPageAfterDeletion(deletedPageOrder);
+      } else {
+        this.syncActivePageId();
+      }
+    } catch (_error) {
+    } finally {
+      this.isDeletingPage = false;
+      if (hasDeleted) {
+        this.resetDeletePageDialogState();
+      }
+    }
+  }
+
   private getActivePage(): NotebookPage | null {
     for (const notebookPage of this.notebookPageList) {
       if (notebookPage.id === this.activePageId) {
@@ -145,6 +203,23 @@ struct EditorPage {
       }
     }
     return null;
+  }
+
+  private focusPageAfterDeletion(deletedPageOrder: number): void {
+    if (this.notebookPageList.length === 0) {
+      this.activePageId = '';
+      return;
+    }
+
+    let targetPageIndex: number = deletedPageOrder;
+    if (targetPageIndex < 0) {
+      targetPageIndex = 0;
+    }
+    if (targetPageIndex >= this.notebookPageList.length) {
+      targetPageIndex = this.notebookPageList.length - 1;
+    }
+
+    this.activePageId = this.notebookPageList[targetPageIndex].id;
   }
 
   private getActivePageLabel(): string {
@@ -235,9 +310,18 @@ struct EditorPage {
     return this.getPageCreatedAtText(activePage.createdAt);
   }
 
+  private getDeleteTargetPageText(): string {
+    return `页面：${this.deleteTargetPageLabel}`;
+  }
+
+  private getPageRenderKey(page: NotebookPage): string {
+    return `${page.id}_${page.order.toString()}`;
+  }
+
   build() {
-    Scroll() {
-      Column({ space: 20 }) {
+    Stack() {
+      Scroll() {
+        Column({ space: 20 }) {
         Column({ space: 8 }) {
           if (this.notebookTitle.length > 0) {
             Text(this.notebookTitle)
@@ -440,14 +524,14 @@ struct EditorPage {
               .alignItems(HorizontalAlign.Start)
 
               Column({ space: 12 }) {
-                Text($r('app.string.editor_page_list_title'))
+              Text($r('app.string.editor_page_list_title'))
                   .fontSize($r('app.float.section_title_size'))
                   .fontWeight(FontWeight.Medium)
                   .fontColor($r('app.color.primary_text'))
 
                 ForEach(this.notebookPageList, (page: NotebookPage) => {
                   Column({ space: 8 }) {
-                    Row() {
+                    Row({ space: 8 }) {
                       Text(this.getPageLabel(page.order))
                         .fontSize($r('app.float.body_text_size'))
                         .fontWeight(FontWeight.Medium)
@@ -459,6 +543,18 @@ struct EditorPage {
                           .fontSize($r('app.float.caption_text_size'))
                           .fontColor($r('app.color.primary_text'))
                       }
+
+                      Button($r('app.string.editor_page_delete_button'))
+                        .height(36)
+                        .backgroundColor($r('app.color.danger_surface'))
+                        .fontColor($r('app.color.danger_text'))
+                        .enabled(!this.isDeletingPage && !this.isCreatingPage)
+                        .opacity(this.isDeletingPage || this.isCreatingPage ? 0.7 : 1)
+                        .onClick(() => {
+                          if (!this.isDeletingPage && !this.isCreatingPage) {
+                            this.openDeletePageDialog(page);
+                          }
+                        })
                     }
                     .width('100%')
                     .alignItems(VerticalAlign.Center)
@@ -480,7 +576,7 @@ struct EditorPage {
                     width: 1,
                     color: page.id === this.activePageId ? $r('app.color.primary_text') : $r('app.color.card_border')
                   })
-                }, (page: NotebookPage): string => page.id)
+                }, (page: NotebookPage): string => this.getPageRenderKey(page))
               }
               .width('100%')
               .alignItems(HorizontalAlign.Start)
@@ -497,6 +593,69 @@ struct EditorPage {
         top: $r('app.float.page_padding_vertical'),
         bottom: $r('app.float.page_padding_vertical')
       })
+      }
+      .width('100%')
+      .height('100%')
+
+      if (this.isDeletePageDialogVisible) {
+        Column() {
+          Column({ space: 16 }) {
+            Text($r('app.string.editor_page_delete_confirm_title'))
+              .fontSize($r('app.float.section_title_size'))
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.primary_text'))
+
+            Text(this.getDeleteTargetPageText())
+              .fontSize($r('app.float.body_text_size'))
+              .fontColor($r('app.color.primary_text'))
+
+            Text($r('app.string.editor_page_delete_confirm_desc'))
+              .fontSize($r('app.float.caption_text_size'))
+              .fontColor($r('app.color.secondary_text'))
+
+            Row({ space: 12 }) {
+              Button($r('app.string.dialog_cancel'))
+                .layoutWeight(1)
+                .height($r('app.float.button_height'))
+                .backgroundColor($r('app.color.app_background'))
+                .fontColor($r('app.color.primary_text'))
+                .onClick(() => {
+                  this.closeDeletePageDialog();
+                })
+
+              Button(this.isDeletingPage ? $r('app.string.editor_page_deleting') : $r('app.string.editor_page_delete_button'))
+                .layoutWeight(1)
+                .height($r('app.float.button_height'))
+                .backgroundColor($r('app.color.danger_text'))
+                .fontColor($r('app.color.inverse_text'))
+                .onClick(() => {
+                  this.confirmDeleteSelectedPage();
+                })
+            }
+            .width('100%')
+          }
+          .width('100%')
+          .constraintSize({ maxWidth: 560 })
+          .alignItems(HorizontalAlign.Start)
+          .padding(24)
+          .backgroundColor($r('app.color.surface_background'))
+          .borderRadius($r('app.float.card_radius'))
+          .border({
+            width: 1,
+            color: $r('app.color.card_border')
+          })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .padding({
+          left: $r('app.float.page_padding_horizontal'),
+          right: $r('app.float.page_padding_horizontal'),
+          top: $r('app.float.page_padding_vertical'),
+          bottom: $r('app.float.page_padding_vertical')
+        })
+        .backgroundColor($r('app.color.overlay_mask'))
+      }
     }
     .width('100%')
     .height('100%')

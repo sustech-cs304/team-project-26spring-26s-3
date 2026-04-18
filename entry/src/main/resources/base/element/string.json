@@ -218,7 +218,7 @@
     },
     {
       "name": "editor_page_desc",
-      "value": "当前先按功能三的顺序实现第一个子功能：在笔记本中新增页面，并把页面信息保存到本地。"
+      "value": "当前按功能三的顺序继续完善页面管理，已经支持默认建页，接下来补齐页面删除。"
     },
     {
       "name": "editor_loading",
@@ -258,7 +258,7 @@
     },
     {
       "name": "editor_page_summary_desc",
-      "value": "新建笔记本时会默认生成第一页，后续每次新增页面也会立即写入本地文件。"
+      "value": "新建笔记本时会默认生成第一页，后续新增和删除页面都会立即写入本地文件。"
     },
     {
       "name": "editor_page_count_suffix",
@@ -315,6 +315,22 @@
     {
       "name": "editor_page_updated_prefix",
       "value": "最近更新："
+    },
+    {
+      "name": "editor_page_delete_button",
+      "value": "删除此页"
+    },
+    {
+      "name": "editor_page_delete_confirm_title",
+      "value": "确认删除这个页面？"
+    },
+    {
+      "name": "editor_page_delete_confirm_desc",
+      "value": "删除后该页面无法恢复，剩余页面会自动重新编号。"
+    },
+    {
+      "name": "editor_page_deleting",
+      "value": "删除中..."
     }
   ]
 }
