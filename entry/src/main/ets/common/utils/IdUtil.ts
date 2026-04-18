@@ -14,4 +14,8 @@ export class IdUtil {
   static createNotebookId(): string {
     return IdUtil.createId('notebook');
   }
+
+  static createNotebookPageId(): string {
+    return IdUtil.createId('page');
+  }
 }

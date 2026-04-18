@@ -206,6 +206,18 @@ struct NotebookListPage {
     return `0${value.toString()}`;
   }
 
+  private getNotebookCountText(): string {
+    return `${this.notebookList.length.toString()} 个笔记本`;
+  }
+
+  private getNotebookUpdatedAtText(timestamp: number): string {
+    return `最近更新：${this.formatTimestamp(timestamp)}`;
+  }
+
+  private getDeleteTargetText(): string {
+    return `笔记本：${this.deleteTargetNotebookTitle}`;
+  }
+
   build() {
     Stack() {
       Scroll() {
@@ -230,7 +242,7 @@ struct NotebookListPage {
                 .fontWeight(FontWeight.Medium)
                 .fontColor($r('app.color.primary_text'))
 
-              Text(`${this.notebookList.length} ${$r('app.string.notebook_list_count_suffix')}`)
+              Text(this.getNotebookCountText())
                 .fontSize($r('app.float.caption_text_size'))
                 .fontColor($r('app.color.secondary_text'))
             }
@@ -312,7 +324,7 @@ struct NotebookListPage {
                 Column({ space: 12 }) {
                   NotebookCard({
                     title: notebook.title,
-                    updatedAtText: `${$r('app.string.notebook_updated_prefix')}${this.formatTimestamp(notebook.updatedAt)}`
+                    updatedAtText: this.getNotebookUpdatedAtText(notebook.updatedAt)
                   })
 
                   Row({ space: 8 }) {
@@ -381,7 +393,7 @@ struct NotebookListPage {
               .fontWeight(FontWeight.Bold)
               .fontColor($r('app.color.primary_text'))
 
-            Text(`${$r('app.string.notebook_delete_target_prefix')}${this.deleteTargetNotebookTitle}`)
+            Text(this.getDeleteTargetText())
               .fontSize($r('app.float.body_text_size'))
               .fontColor($r('app.color.primary_text'))
 

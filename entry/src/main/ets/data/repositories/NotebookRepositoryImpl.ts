@@ -3,7 +3,9 @@ import { StorageKeys } from '../../common/constants/StorageKeys';
 import { IdUtil } from '../../common/utils/IdUtil';
 import { TimeUtil } from '../../common/utils/TimeUtil';
 import { Notebook, NotebookEntity } from '../../domain/entities/Notebook';
+import { NotebookPage, NotebookPageEntity } from '../../domain/entities/NotebookPage';
 import {
+  CreateNotebookPageRequest,
   CreateNotebookRequest,
   NotebookRepository,
   NotebookSortType,
@@ -55,6 +57,9 @@ export class NotebookRepositoryImpl implements NotebookRepository {
 
     notebookList.push(notebook);
     await this.persistNotebookList(notebookList);
+    await this.persistNotebookPageList(notebook.id, [
+      this.buildNotebookPage(notebook.id, 0, currentTime)
+    ]);
     return notebook;
   }
 
@@ -97,8 +102,47 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       return false;
     }
 
+    await this.fileDataSource.delete(this.buildNotebookPageListFilePath(notebookId));
     await this.persistNotebookList(filteredNotebookList);
     return true;
+  }
+
+  async getNotebookPages(notebookId: string): Promise<NotebookPage[]> {
+    const notebook: Notebook | null = await this.getNotebookById(notebookId);
+    if (notebook === null) {
+      return [];
+    }
+
+    return this.loadNotebookPageList(notebookId);
+  }
+
+  async createNotebookPage(request: CreateNotebookPageRequest): Promise<NotebookPage | null> {
+    const notebookList: Notebook[] = await this.loadNotebookList();
+    const notebookIndex: number = this.findNotebookIndexById(notebookList, request.notebookId);
+    if (notebookIndex < 0) {
+      return null;
+    }
+
+    const notebookPageList: NotebookPage[] = await this.loadNotebookPageList(request.notebookId);
+    const currentTime: number = TimeUtil.now();
+    const notebookPage: NotebookPage = this.buildNotebookPage(
+      request.notebookId,
+      notebookPageList.length,
+      currentTime
+    );
+
+    notebookPageList.push(notebookPage);
+    await this.persistNotebookPageList(request.notebookId, notebookPageList);
+
+    const notebook: Notebook = notebookList[notebookIndex];
+    notebookList[notebookIndex] = {
+      id: notebook.id,
+      title: notebook.title,
+      createdAt: notebook.createdAt,
+      updatedAt: currentTime
+    };
+    await this.persistNotebookList(notebookList);
+    return notebookPage;
   }
 
   async getSortType(): Promise<NotebookSortType> {
@@ -145,6 +189,16 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     await this.fileDataSource.writeText(NotebookRepositoryImpl.NOTEBOOK_LIST_FILE_PATH, content);
   }
 
+  private async loadNotebookPageList(notebookId: string): Promise<NotebookPage[]> {
+    const fileContent: string = await this.fileDataSource.readText(this.buildNotebookPageListFilePath(notebookId), '');
+    return this.parseNotebookPageList(notebookId, fileContent);
+  }
+
+  private async persistNotebookPageList(notebookId: string, notebookPageList: NotebookPage[]): Promise<void> {
+    const content: string = JSON.stringify(notebookPageList);
+    await this.fileDataSource.writeText(this.buildNotebookPageListFilePath(notebookId), content);
+  }
+
   private parseNotebookList(content: string): Notebook[] {
     if (content.length === 0) {
       return [];
@@ -172,6 +226,50 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     }
   }
 
+  private parseNotebookPageList(notebookId: string, content: string): NotebookPage[] {
+    if (content.length === 0) {
+      return [];
+    }
+
+    try {
+      const parsedNotebookPageList: NotebookPage[] = JSON.parse(content) as NotebookPage[];
+      if (!Array.isArray(parsedNotebookPageList)) {
+        return [];
+      }
+
+      const normalizedNotebookPageList: NotebookPage[] = [];
+      for (let index: number = 0; index < parsedNotebookPageList.length; index += 1) {
+        const item: NotebookPage = parsedNotebookPageList[index];
+        const notebookPage: NotebookPage = {
+          id: typeof item.id === 'string' && item.id.length > 0 ? item.id : IdUtil.createNotebookPageId(),
+          notebookId: notebookId,
+          order: NotebookPageEntity.normalizeOrder(item.order, index),
+          createdAt: TimeUtil.isValidTimestamp(item.createdAt) ? item.createdAt : TimeUtil.now(),
+          updatedAt: TimeUtil.isValidTimestamp(item.updatedAt) ? item.updatedAt : TimeUtil.now(),
+          templateType: NotebookPageEntity.normalizeTemplateType(item.templateType)
+        };
+        normalizedNotebookPageList.push(notebookPage);
+      }
+
+      normalizedNotebookPageList.sort((left: NotebookPage, right: NotebookPage): number => {
+        return left.order - right.order;
+      });
+
+      return normalizedNotebookPageList.map((page: NotebookPage, index: number): NotebookPage => {
+        return {
+          id: page.id,
+          notebookId: page.notebookId,
+          order: index,
+          createdAt: page.createdAt,
+          updatedAt: page.updatedAt,
+          templateType: page.templateType
+        };
+      });
+    } catch (_error) {
+      return [];
+    }
+  }
+
   private sortNotebookList(notebookList: Notebook[], sortType: NotebookSortType): Notebook[] {
     const sortedNotebookList: Notebook[] = notebookList.slice();
 
@@ -188,5 +286,29 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     });
 
     return sortedNotebookList;
+  }
+
+  private buildNotebookPageListFilePath(notebookId: string): string {
+    return `notebooks/pages/${notebookId}.json`;
+  }
+
+  private buildNotebookPage(notebookId: string, order: number, timestamp: number): NotebookPage {
+    return {
+      id: IdUtil.createNotebookPageId(),
+      notebookId: notebookId,
+      order: order,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      templateType: NotebookPageEntity.DEFAULT_TEMPLATE_TYPE
+    };
+  }
+
+  private findNotebookIndexById(notebookList: Notebook[], notebookId: string): number {
+    for (let index: number = 0; index < notebookList.length; index += 1) {
+      if (notebookList[index].id === notebookId) {
+        return index;
+      }
+    }
+    return -1;
   }
 }

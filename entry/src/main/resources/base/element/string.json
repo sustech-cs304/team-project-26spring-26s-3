@@ -110,7 +110,7 @@
     },
     {
       "name": "notebook_create_dialog_desc",
-      "value": "输入标题后即可创建，留空时会自动使用默认名称。"
+      "value": "输入标题后即可创建，留空时会自动使用默认名称，并默认生成第一页。"
     },
     {
       "name": "notebook_create_placeholder",
@@ -214,19 +214,107 @@
     },
     {
       "name": "editor_page_title",
-      "value": "编辑页"
+      "value": "页面与画布管理"
     },
     {
       "name": "editor_page_desc",
-      "value": "这里是后续编辑器能力的承接页面，当前先提供最小导航骨架。"
+      "value": "当前先按功能三的顺序实现第一个子功能：在笔记本中新增页面，并把页面信息保存到本地。"
     },
     {
-      "name": "editor_page_hint",
-      "value": "后续可以在这个页面继续接入画布、工具栏、缩略图侧栏和自动保存逻辑。"
+      "name": "editor_loading",
+      "value": "正在加载页面数据..."
+    },
+    {
+      "name": "editor_loading_desc",
+      "value": "会先读取当前笔记本，再恢复这个笔记本下已经创建的页面。"
+    },
+    {
+      "name": "editor_back_notebooks",
+      "value": "返回笔记本列表"
     },
     {
       "name": "editor_back_home",
       "value": "返回首页"
+    },
+    {
+      "name": "editor_missing_notebook_title",
+      "value": "还没有选中笔记本"
+    },
+    {
+      "name": "editor_missing_notebook_desc",
+      "value": "请先从笔记本列表进入某个笔记本，再在这里为它新增页面。"
+    },
+    {
+      "name": "editor_not_found_title",
+      "value": "没有找到这个笔记本"
+    },
+    {
+      "name": "editor_not_found_desc",
+      "value": "当前路由对应的笔记本不存在，可能已经被删除，可以返回列表重新选择。"
+    },
+    {
+      "name": "editor_page_summary_title",
+      "value": "页面管理"
+    },
+    {
+      "name": "editor_page_summary_desc",
+      "value": "新建笔记本时会默认生成第一页，后续每次新增页面也会立即写入本地文件。"
+    },
+    {
+      "name": "editor_page_count_suffix",
+      "value": "页"
+    },
+    {
+      "name": "editor_page_add",
+      "value": "新增页面"
+    },
+    {
+      "name": "editor_page_adding",
+      "value": "新增中..."
+    },
+    {
+      "name": "editor_page_empty_title",
+      "value": "这个笔记本还没有页面"
+    },
+    {
+      "name": "editor_page_empty_desc",
+      "value": "现在可以先创建第一页，后续我们再继续补删除、排序、缩略图和页面切换。"
+    },
+    {
+      "name": "editor_page_create_first",
+      "value": "创建第一页"
+    },
+    {
+      "name": "editor_current_page_title",
+      "value": "当前页面"
+    },
+    {
+      "name": "editor_current_page_desc",
+      "value": "新增页面后会自动聚焦到最新创建的页面，方便你继续在后续步骤接入画布能力。"
+    },
+    {
+      "name": "editor_page_list_title",
+      "value": "已创建页面"
+    },
+    {
+      "name": "editor_page_current_badge",
+      "value": "当前页"
+    },
+    {
+      "name": "editor_page_card_prefix",
+      "value": "第 "
+    },
+    {
+      "name": "editor_page_card_suffix",
+      "value": " 页"
+    },
+    {
+      "name": "editor_page_created_prefix",
+      "value": "创建时间："
+    },
+    {
+      "name": "editor_page_updated_prefix",
+      "value": "最近更新："
     }
   ]
 }
