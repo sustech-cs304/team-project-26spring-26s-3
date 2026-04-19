@@ -1,5 +1,6 @@
 import { Notebook } from '../entities/Notebook';
 import { NotebookPage } from '../entities/NotebookPage';
+import { NotebookPageCanvas } from '../entities/NotebookPageCanvas';
 
 export enum NotebookSortType {
   UPDATED_DESC = 'updated_desc',
@@ -25,6 +26,11 @@ export interface DeleteNotebookPageRequest {
   pageId: string;
 }
 
+export interface GetNotebookPageCanvasRequest {
+  notebookId: string;
+  pageId: string;
+}
+
 export interface NotebookRepository {
   getNotebookList(): Promise<Notebook[]>;
   getNotebookById(notebookId: string): Promise<Notebook | null>;
@@ -32,6 +38,7 @@ export interface NotebookRepository {
   renameNotebook(request: RenameNotebookRequest): Promise<Notebook | null>;
   deleteNotebook(notebookId: string): Promise<boolean>;
   getNotebookPages(notebookId: string): Promise<NotebookPage[]>;
+  getNotebookPageCanvas(request: GetNotebookPageCanvasRequest): Promise<NotebookPageCanvas | null>;
   createNotebookPage(request: CreateNotebookPageRequest): Promise<NotebookPage | null>;
   deleteNotebookPage(request: DeleteNotebookPageRequest): Promise<boolean>;
   getSortType(): Promise<NotebookSortType>;

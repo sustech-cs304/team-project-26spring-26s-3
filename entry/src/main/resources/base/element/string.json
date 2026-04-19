@@ -218,15 +218,15 @@
     },
     {
       "name": "editor_page_desc",
-      "value": "当前按功能三的顺序继续完善页面管理，已经支持默认建页，接下来补齐页面删除。"
+      "value": "左侧缩略图用于切换页面，右侧会打开对应页面的独立画布。"
     },
     {
       "name": "editor_loading",
-      "value": "正在加载页面数据..."
+      "value": "正在打开笔记本..."
     },
     {
       "name": "editor_loading_desc",
-      "value": "会先读取当前笔记本，再恢复这个笔记本下已经创建的页面。"
+      "value": "正在读取笔记本、页面列表和当前页面画布。"
     },
     {
       "name": "editor_back_notebooks",
@@ -278,7 +278,7 @@
     },
     {
       "name": "editor_page_empty_desc",
-      "value": "现在可以先创建第一页，后续我们再继续补删除、排序、缩略图和页面切换。"
+      "value": "先创建一页，左侧会立即出现新的页面缩略图。"
     },
     {
       "name": "editor_page_create_first",
@@ -290,11 +290,23 @@
     },
     {
       "name": "editor_current_page_desc",
-      "value": "新增页面后会自动聚焦到最新创建的页面，方便你继续在后续步骤接入画布能力。"
+      "value": "点击下方页面卡片可以切换当前页面；当前页面切换后，下方会打开对应的独立画布。"
     },
     {
       "name": "editor_page_list_title",
       "value": "已创建页面"
+    },
+    {
+      "name": "editor_canvas_title",
+      "value": "当前页面画布"
+    },
+    {
+      "name": "editor_canvas_desc",
+      "value": "每个页面都绑定独立画布文件，后续手写、绘图和页面内容都会落在当前选中页面的画布上。"
+    },
+    {
+      "name": "editor_canvas_loading",
+      "value": "正在打开当前页面的画布..."
     },
     {
       "name": "editor_page_current_badge",
@@ -326,11 +338,43 @@
     },
     {
       "name": "editor_page_delete_confirm_desc",
-      "value": "删除后该页面无法恢复，剩余页面会自动重新编号。"
+      "value": "删除后该页面和对应画布都会被移除，剩余页面会自动重新编号。"
     },
     {
       "name": "editor_page_deleting",
       "value": "删除中..."
+    },
+    {
+      "name": "editor_nav_notebooks",
+      "value": "笔记本"
+    },
+    {
+      "name": "editor_nav_home",
+      "value": "首页"
+    },
+    {
+      "name": "editor_sidebar_title",
+      "value": "页面缩略图"
+    },
+    {
+      "name": "editor_workspace_desc",
+      "value": "左侧点选页面，右侧即时打开对应画布。"
+    },
+    {
+      "name": "editor_canvas_empty_title",
+      "value": "还没有可打开的页面"
+    },
+    {
+      "name": "editor_canvas_empty_desc",
+      "value": "先在左侧创建一页，再开始编辑。"
+    },
+    {
+      "name": "editor_canvas_ready_badge",
+      "value": "独立画布"
+    },
+    {
+      "name": "editor_page_delete_current",
+      "value": "删除当前页"
     }
   ]
 }

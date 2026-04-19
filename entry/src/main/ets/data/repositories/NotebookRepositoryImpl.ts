@@ -4,10 +4,12 @@ import { IdUtil } from '../../common/utils/IdUtil';
 import { TimeUtil } from '../../common/utils/TimeUtil';
 import { Notebook, NotebookEntity } from '../../domain/entities/Notebook';
 import { NotebookPage, NotebookPageEntity } from '../../domain/entities/NotebookPage';
+import { NotebookPageCanvas, NotebookPageCanvasEntity } from '../../domain/entities/NotebookPageCanvas';
 import {
   CreateNotebookPageRequest,
   CreateNotebookRequest,
   DeleteNotebookPageRequest,
+  GetNotebookPageCanvasRequest,
   NotebookRepository,
   NotebookSortType,
   RenameNotebookRequest
@@ -18,6 +20,7 @@ import { PreferencesDataSource } from '../sources/local/PreferencesDataSource';
 export class NotebookRepositoryImpl implements NotebookRepository {
   private static readonly NOTEBOOK_LIST_FILE_PATH: string = 'notebooks/notebook-list.json';
   private static readonly NOTEBOOK_PAGE_FILE_MISSING: string = '__notebook_page_file_missing__';
+  private static readonly NOTEBOOK_PAGE_CANVAS_FILE_MISSING: string = '__notebook_page_canvas_file_missing__';
 
   private readonly preferencesDataSource: PreferencesDataSource;
   private readonly fileDataSource: FileDataSource;
@@ -58,10 +61,10 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     };
 
     notebookList.push(notebook);
+    const firstNotebookPage: NotebookPage = this.buildNotebookPage(notebook.id, 0, currentTime);
     await this.persistNotebookList(notebookList);
-    await this.persistNotebookPageList(notebook.id, [
-      this.buildNotebookPage(notebook.id, 0, currentTime)
-    ]);
+    await this.persistNotebookPageList(notebook.id, [firstNotebookPage]);
+    await this.persistNotebookPageCanvas(this.buildNotebookPageCanvas(firstNotebookPage, currentTime));
     return notebook;
   }
 
@@ -89,6 +92,7 @@ export class NotebookRepositoryImpl implements NotebookRepository {
 
   async deleteNotebook(notebookId: string): Promise<boolean> {
     const notebookList: Notebook[] = await this.loadNotebookList();
+    const notebookPageList: NotebookPage[] = await this.loadNotebookPageList(notebookId);
     const filteredNotebookList: Notebook[] = [];
     let hasDeleted: boolean = false;
 
@@ -104,6 +108,9 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       return false;
     }
 
+    for (const notebookPage of notebookPageList) {
+      await this.fileDataSource.delete(this.buildNotebookPageCanvasFilePath(notebookPage.id));
+    }
     await this.fileDataSource.delete(this.buildNotebookPageListFilePath(notebookId));
     await this.persistNotebookList(filteredNotebookList);
     return true;
@@ -116,6 +123,22 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     }
 
     return this.loadOrBootstrapNotebookPageList(notebook);
+  }
+
+  async getNotebookPageCanvas(request: GetNotebookPageCanvasRequest): Promise<NotebookPageCanvas | null> {
+    const notebook: Notebook | null = await this.getNotebookById(request.notebookId);
+    if (notebook === null) {
+      return null;
+    }
+
+    const notebookPageList: NotebookPage[] = await this.loadOrBootstrapNotebookPageList(notebook);
+    for (const notebookPage of notebookPageList) {
+      if (notebookPage.id === request.pageId) {
+        return this.loadOrBootstrapNotebookPageCanvas(notebookPage);
+      }
+    }
+
+    return null;
   }
 
   async createNotebookPage(request: CreateNotebookPageRequest): Promise<NotebookPage | null> {
@@ -135,6 +158,7 @@ export class NotebookRepositoryImpl implements NotebookRepository {
 
     notebookPageList.push(notebookPage);
     await this.persistNotebookPageList(request.notebookId, notebookPageList);
+    await this.persistNotebookPageCanvas(this.buildNotebookPageCanvas(notebookPage, currentTime));
 
     const notebook: Notebook = notebookList[notebookIndex];
     notebookList[notebookIndex] = {
@@ -170,6 +194,7 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       return false;
     }
 
+    await this.fileDataSource.delete(this.buildNotebookPageCanvasFilePath(request.pageId));
     const reorderedNotebookPageList: NotebookPage[] = filteredNotebookPageList.map(
       (notebookPage: NotebookPage, index: number): NotebookPage => {
         return {
@@ -250,6 +275,11 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     await this.fileDataSource.writeText(this.buildNotebookPageListFilePath(notebookId), content);
   }
 
+  private async persistNotebookPageCanvas(notebookPageCanvas: NotebookPageCanvas): Promise<void> {
+    const content: string = JSON.stringify(notebookPageCanvas);
+    await this.fileDataSource.writeText(this.buildNotebookPageCanvasFilePath(notebookPageCanvas.pageId), content);
+  }
+
   private async loadOrBootstrapNotebookPageList(notebook: Notebook): Promise<NotebookPage[]> {
     const filePath: string = this.buildNotebookPageListFilePath(notebook.id);
     const fileContent: string = await this.fileDataSource.readText(
@@ -265,7 +295,23 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       this.buildNotebookPage(notebook.id, 0, notebook.createdAt)
     ];
     await this.persistNotebookPageList(notebook.id, defaultNotebookPageList);
+    await this.persistNotebookPageCanvas(this.buildNotebookPageCanvas(defaultNotebookPageList[0], notebook.createdAt));
     return defaultNotebookPageList;
+  }
+
+  private async loadOrBootstrapNotebookPageCanvas(notebookPage: NotebookPage): Promise<NotebookPageCanvas> {
+    const fileContent: string = await this.fileDataSource.readText(
+      this.buildNotebookPageCanvasFilePath(notebookPage.id),
+      NotebookRepositoryImpl.NOTEBOOK_PAGE_CANVAS_FILE_MISSING
+    );
+
+    if (fileContent !== NotebookRepositoryImpl.NOTEBOOK_PAGE_CANVAS_FILE_MISSING) {
+      return this.parseNotebookPageCanvas(notebookPage, fileContent);
+    }
+
+    const notebookPageCanvas: NotebookPageCanvas = this.buildNotebookPageCanvas(notebookPage, notebookPage.createdAt);
+    await this.persistNotebookPageCanvas(notebookPageCanvas);
+    return notebookPageCanvas;
   }
 
   private parseNotebookList(content: string): Notebook[] {
@@ -339,6 +385,33 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     }
   }
 
+  private parseNotebookPageCanvas(notebookPage: NotebookPage, content: string): NotebookPageCanvas {
+    if (content.length === 0) {
+      return this.buildNotebookPageCanvas(notebookPage, notebookPage.createdAt);
+    }
+
+    try {
+      const parsedNotebookPageCanvas: NotebookPageCanvas = JSON.parse(content) as NotebookPageCanvas;
+      return {
+        pageId: notebookPage.id,
+        notebookId: notebookPage.notebookId,
+        width: NotebookPageCanvasEntity.normalizeDimension(
+          parsedNotebookPageCanvas.width,
+          NotebookPageCanvasEntity.DEFAULT_WIDTH
+        ),
+        height: NotebookPageCanvasEntity.normalizeDimension(
+          parsedNotebookPageCanvas.height,
+          NotebookPageCanvasEntity.DEFAULT_HEIGHT
+        ),
+        backgroundColor: NotebookPageCanvasEntity.normalizeBackgroundColor(parsedNotebookPageCanvas.backgroundColor),
+        createdAt: TimeUtil.isValidTimestamp(parsedNotebookPageCanvas.createdAt) ? parsedNotebookPageCanvas.createdAt : notebookPage.createdAt,
+        updatedAt: TimeUtil.isValidTimestamp(parsedNotebookPageCanvas.updatedAt) ? parsedNotebookPageCanvas.updatedAt : notebookPage.updatedAt
+      };
+    } catch (_error) {
+      return this.buildNotebookPageCanvas(notebookPage, notebookPage.createdAt);
+    }
+  }
+
   private sortNotebookList(notebookList: Notebook[], sortType: NotebookSortType): Notebook[] {
     const sortedNotebookList: Notebook[] = notebookList.slice();
 
@@ -361,6 +434,10 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     return `notebooks/pages/${notebookId}.json`;
   }
 
+  private buildNotebookPageCanvasFilePath(pageId: string): string {
+    return `notebooks/canvases/${pageId}.json`;
+  }
+
   private buildNotebookPage(notebookId: string, order: number, timestamp: number): NotebookPage {
     return {
       id: IdUtil.createNotebookPageId(),
@@ -369,6 +446,18 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       createdAt: timestamp,
       updatedAt: timestamp,
       templateType: NotebookPageEntity.DEFAULT_TEMPLATE_TYPE
+    };
+  }
+
+  private buildNotebookPageCanvas(notebookPage: NotebookPage, timestamp: number): NotebookPageCanvas {
+    return {
+      pageId: notebookPage.id,
+      notebookId: notebookPage.notebookId,
+      width: NotebookPageCanvasEntity.DEFAULT_WIDTH,
+      height: NotebookPageCanvasEntity.DEFAULT_HEIGHT,
+      backgroundColor: NotebookPageCanvasEntity.DEFAULT_BACKGROUND_COLOR,
+      createdAt: timestamp,
+      updatedAt: timestamp
     };
   }
 

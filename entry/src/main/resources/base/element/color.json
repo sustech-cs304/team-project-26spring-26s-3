@@ -39,6 +39,58 @@
     {
       "name": "overlay_mask",
       "value": "#66000000"
+    },
+    {
+      "name": "editor_shell_background",
+      "value": "#E9F0F8"
+    },
+    {
+      "name": "editor_toolbar_background",
+      "value": "#FCFDFE"
+    },
+    {
+      "name": "editor_toolbar_border",
+      "value": "#D5DFEE"
+    },
+    {
+      "name": "editor_sidebar_background",
+      "value": "#F7FAFE"
+    },
+    {
+      "name": "editor_sidebar_border",
+      "value": "#D7E1EE"
+    },
+    {
+      "name": "editor_workspace_background",
+      "value": "#DCE6F4"
+    },
+    {
+      "name": "editor_thumbnail_background",
+      "value": "#EEF3FA"
+    },
+    {
+      "name": "editor_thumbnail_active",
+      "value": "#FFFFFF"
+    },
+    {
+      "name": "editor_thumbnail_line",
+      "value": "#D8E5F8"
+    },
+    {
+      "name": "editor_paper_line",
+      "value": "#D5E3F7"
+    },
+    {
+      "name": "editor_paper_border",
+      "value": "#C4D2E6"
+    },
+    {
+      "name": "editor_accent",
+      "value": "#2E6BFF"
+    },
+    {
+      "name": "editor_accent_soft",
+      "value": "#E6EEFF"
     }
   ]
 }
