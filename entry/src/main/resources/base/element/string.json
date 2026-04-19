@@ -375,6 +375,18 @@
     {
       "name": "editor_page_delete_current",
       "value": "删除当前页"
+    },
+    {
+      "name": "editor_page_move_up",
+      "value": "页面上移"
+    },
+    {
+      "name": "editor_page_move_down",
+      "value": "页面下移"
+    },
+    {
+      "name": "editor_page_delete_menu",
+      "value": "删除页面"
     }
   ]
 }
