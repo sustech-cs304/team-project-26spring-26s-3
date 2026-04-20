@@ -17,6 +17,8 @@ struct EditorPage {
   @State private isLoading: boolean = true;
   @State private isCanvasLoading: boolean = false;
   @State private isCreatingPage: boolean = false;
+  @State private isReorderingPages: boolean = false;
+  @State private pageActionMenuPageId: string = '';
   @State private isDeletePageDialogVisible: boolean = false;
   @State private isDeletingPage: boolean = false;
   @State private deleteTargetPageId: string = '';
@@ -99,6 +101,7 @@ struct EditorPage {
     this.activePageId = '';
     this.activePageCanvas = null;
     this.isCanvasLoading = false;
+    this.pageActionMenuPageId = '';
     this.resetDeletePageDialogState();
   }
 
@@ -118,7 +121,7 @@ struct EditorPage {
   }
 
   private async createNotebookPage(): Promise<void> {
-    if (this.isCreatingPage || this.notebookId.length === 0) {
+    if (this.isCreatingPage || this.isReorderingPages || this.notebookId.length === 0) {
       return;
     }
 
@@ -136,6 +139,7 @@ struct EditorPage {
 
       this.notebookPageList = cachedNotebookPageList;
       this.syncActivePageId();
+      this.closePageActionMenu();
 
       if (notebookPage !== null) {
         this.activePageId = notebookPage.id;
@@ -149,22 +153,29 @@ struct EditorPage {
   }
 
   private async selectNotebookPage(page: NotebookPage): Promise<void> {
-    if (this.isDeletingPage || this.isCreatingPage || this.isLoading || page.id === this.activePageId) {
+    if (this.isDeletingPage || this.isCreatingPage || this.isReorderingPages || this.isLoading) {
+      return;
+    }
+
+    if (page.id === this.activePageId) {
+      this.closePageActionMenu();
       return;
     }
 
     this.activePageId = page.id;
+    this.closePageActionMenu();
     await this.loadActivePageCanvas();
   }
 
   private openDeletePageDialog(page: NotebookPage): void {
-    if (this.isDeletingPage || this.isCreatingPage) {
+    if (this.isDeletingPage || this.isCreatingPage || this.isReorderingPages) {
       return;
     }
 
     this.deleteTargetPageId = page.id;
     this.deleteTargetPageLabel = this.getPageLabel(page.order);
     this.deleteTargetPageOrder = page.order;
+    this.closePageActionMenu();
     this.isDeletePageDialogVisible = true;
   }
 
@@ -184,7 +195,8 @@ struct EditorPage {
   }
 
   private async confirmDeleteSelectedPage(): Promise<void> {
-    if (this.isDeletingPage || this.notebookId.length === 0 || this.deleteTargetPageId.length === 0) {
+    if (this.isDeletingPage || this.isReorderingPages || this.notebookId.length === 0 ||
+      this.deleteTargetPageId.length === 0) {
       return;
     }
 
@@ -206,6 +218,7 @@ struct EditorPage {
       }
 
       this.notebookPageList = cachedNotebookPageList;
+      this.closePageActionMenu();
       if (wasActivePage) {
         this.focusPageAfterDeletion(deletedPageOrder);
       } else {
@@ -365,6 +378,142 @@ struct EditorPage {
     return `${page.id}_${page.order.toString()}`;
   }
 
+  private closePageActionMenu(): void {
+    this.pageActionMenuPageId = '';
+  }
+
+  private togglePageActionMenu(pageId: string): void {
+    if (this.isLoading || this.isCreatingPage || this.isDeletingPage || this.isReorderingPages) {
+      return;
+    }
+
+    if (this.pageActionMenuPageId === pageId) {
+      this.pageActionMenuPageId = '';
+      return;
+    }
+
+    this.pageActionMenuPageId = pageId;
+  }
+
+  private isPageActionMenuVisible(pageId: string): boolean {
+    return this.pageActionMenuPageId === pageId;
+  }
+
+  private canMovePageUp(page: NotebookPage): boolean {
+    return page.order > 0;
+  }
+
+  private canMovePageDown(page: NotebookPage): boolean {
+    return page.order < this.notebookPageList.length - 1;
+  }
+
+  private canMoveActivePageUp(): boolean {
+    const activePage: NotebookPage | null = this.getActivePage();
+    return activePage !== null && this.canMovePageUp(activePage);
+  }
+
+  private canMoveActivePageDown(): boolean {
+    const activePage: NotebookPage | null = this.getActivePage();
+    return activePage !== null && this.canMovePageDown(activePage);
+  }
+
+  private moveNotebookPageByOffset(page: NotebookPage, offset: number): void {
+    if (this.isLoading || this.isCreatingPage || this.isDeletingPage || this.isReorderingPages) {
+      return;
+    }
+
+    const targetIndex: number = page.order + offset;
+    if (targetIndex < 0 || targetIndex >= this.notebookPageList.length) {
+      return;
+    }
+
+    this.closePageActionMenu();
+    this.handleNotebookPageMove(page.order, targetIndex);
+  }
+
+  private handleNotebookPageMove(fromIndex: number, toIndex: number): boolean {
+    if (this.isLoading || this.isCreatingPage || this.isDeletingPage || this.isReorderingPages) {
+      return false;
+    }
+
+    if (fromIndex === toIndex || this.notebookId.length === 0) {
+      return false;
+    }
+
+    const previousNotebookPageList: NotebookPage[] = this.notebookPageList.slice();
+    const reorderedNotebookPageList: NotebookPage[] = this.buildLocallyReorderedNotebookPageList(
+      previousNotebookPageList,
+      fromIndex,
+      toIndex
+    );
+
+    if (reorderedNotebookPageList.length === 0) {
+      return false;
+    }
+
+    this.notebookPageList = reorderedNotebookPageList;
+    void this.persistNotebookPageMove(fromIndex, toIndex, previousNotebookPageList);
+    return true;
+  }
+
+  private async persistNotebookPageMove(
+    fromIndex: number,
+    toIndex: number,
+    previousNotebookPageList: NotebookPage[]
+  ): Promise<void> {
+    this.isReorderingPages = true;
+    try {
+      const hasReordered: boolean = await this.ensureViewModel().reorderNotebookPages(this.notebookId, fromIndex, toIndex);
+      if (!hasReordered) {
+        this.notebookPageList = previousNotebookPageList;
+        this.syncActivePageId();
+        return;
+      }
+
+      const cachedNotebook: Notebook | null = this.ensureViewModel().getCachedNotebook();
+      if (cachedNotebook !== null) {
+        this.notebookTitle = cachedNotebook.title;
+      }
+
+      this.notebookPageList = this.ensureViewModel().getCachedNotebookPages();
+      this.syncActivePageId();
+    } catch (_error) {
+      this.notebookPageList = previousNotebookPageList;
+      this.syncActivePageId();
+    } finally {
+      this.isReorderingPages = false;
+    }
+  }
+
+  private buildLocallyReorderedNotebookPageList(
+    notebookPageList: NotebookPage[],
+    fromIndex: number,
+    toIndex: number
+  ): NotebookPage[] {
+    if (fromIndex < 0 || fromIndex >= notebookPageList.length || toIndex < 0 || notebookPageList.length === 0) {
+      return [];
+    }
+
+    const normalizedToIndex: number = Math.min(toIndex, notebookPageList.length - 1);
+    const reorderedNotebookPageList: NotebookPage[] = notebookPageList.slice();
+    const movedNotebookPageList: NotebookPage[] = reorderedNotebookPageList.splice(fromIndex, 1);
+    if (movedNotebookPageList.length === 0) {
+      return [];
+    }
+
+    reorderedNotebookPageList.splice(normalizedToIndex, 0, movedNotebookPageList[0]);
+    return reorderedNotebookPageList.map((notebookPage: NotebookPage, index: number): NotebookPage => {
+      return {
+        id: notebookPage.id,
+        notebookId: notebookPage.notebookId,
+        order: index,
+        createdAt: notebookPage.createdAt,
+        updatedAt: notebookPage.updatedAt,
+        templateType: notebookPage.templateType
+      };
+    });
+  }
+
   build() {
     Stack() {
       if (this.isLoading) {
@@ -498,7 +647,7 @@ struct EditorPage {
                   .fontSize($r('app.float.section_title_size'))
                   .fontWeight(FontWeight.Medium)
                   .fontColor($r('app.color.primary_text'))
-                  .layoutWeight(1)
+                .layoutWeight(1)
 
                 Text(this.getPageCountText())
                   .fontSize($r('app.float.caption_text_size'))
@@ -515,63 +664,34 @@ struct EditorPage {
               .width('100%')
               .alignItems(VerticalAlign.Center)
 
-              Scroll() {
-                Column({ space: 12 }) {
-                  if (this.notebookPageList.length === 0) {
-                    Column({ space: 10 }) {
-                      Text($r('app.string.editor_page_empty_title'))
-                        .fontSize($r('app.float.body_text_size'))
-                        .fontWeight(FontWeight.Medium)
-                        .fontColor($r('app.color.primary_text'))
+              if (this.notebookPageList.length === 0) {
+                Column({ space: 10 }) {
+                  Text($r('app.string.editor_page_empty_title'))
+                    .fontSize($r('app.float.body_text_size'))
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor($r('app.color.primary_text'))
 
-                      Text($r('app.string.editor_page_empty_desc'))
-                        .fontSize($r('app.float.caption_text_size'))
-                        .fontColor($r('app.color.secondary_text'))
-                    }
-                    .width('100%')
-                    .alignItems(HorizontalAlign.Start)
-                    .padding(18)
-                    .backgroundColor($r('app.color.editor_thumbnail_background'))
-                    .borderRadius(22)
-                    .border({
-                      width: 1,
-                      color: $r('app.color.editor_sidebar_border')
-                    })
-                  } else {
+                  Text($r('app.string.editor_page_empty_desc'))
+                    .fontSize($r('app.float.caption_text_size'))
+                    .fontColor($r('app.color.secondary_text'))
+                }
+                .layoutWeight(1)
+                .width('100%')
+                .alignItems(HorizontalAlign.Start)
+                .padding(18)
+                .backgroundColor($r('app.color.editor_thumbnail_background'))
+                .borderRadius(22)
+                .border({
+                  width: 1,
+                  color: $r('app.color.editor_sidebar_border')
+                })
+              } else {
+                Scroll() {
+                  Column({ space: 12 }) {
                     ForEach(this.notebookPageList, (page: NotebookPage) => {
                       Column({ space: 10 }) {
-                        Column({ space: 10 }) {
-                          Row()
-                            .width('36%')
-                            .height(10)
-                            .backgroundColor(page.id === this.activePageId ?
-                              $r('app.color.editor_accent_soft') : $r('app.color.app_background'))
-                            .borderRadius(999)
-
-                          ForEach(this.thumbnailGuideLineList, (guideIndex: number) => {
-                            Row()
-                              .width('100%')
-                              .height(2)
-                              .backgroundColor($r('app.color.editor_thumbnail_line'))
-                              .opacity(guideIndex === this.thumbnailGuideLineList.length - 1 ? 0.45 : 0.75)
-                              .borderRadius(999)
-                          }, (guideIndex: number): string => guideIndex.toString())
-                        }
-                        .width('100%')
-                        .height(132)
-                        .padding(14)
-                        .alignItems(HorizontalAlign.Start)
-                        .backgroundColor($r('app.color.surface_background'))
-                        .borderRadius(18)
-                        .border({
-                          width: 1,
-                          color: page.id === this.activePageId ? $r('app.color.editor_accent') :
-                            $r('app.color.editor_paper_border')
-                        })
-
                         Row({ space: 8 }) {
                           Text(this.getPageLabel(page.order))
-                            .layoutWeight(1)
                             .fontSize($r('app.float.body_text_size'))
                             .fontWeight(FontWeight.Medium)
                             .fontColor($r('app.color.primary_text'))
@@ -584,6 +704,41 @@ struct EditorPage {
                         }
                         .width('100%')
                         .alignItems(VerticalAlign.Center)
+
+                        Stack() {
+                          Column({ space: 10 }) {
+                            Row()
+                              .width('36%')
+                              .height(10)
+                              .backgroundColor(page.id === this.activePageId ?
+                                $r('app.color.editor_accent_soft') : $r('app.color.app_background'))
+                              .borderRadius(999)
+
+                            ForEach(this.thumbnailGuideLineList, (guideIndex: number) => {
+                              Row()
+                                .width('100%')
+                                .height(2)
+                                .backgroundColor($r('app.color.editor_thumbnail_line'))
+                                .opacity(guideIndex === this.thumbnailGuideLineList.length - 1 ? 0.45 : 0.75)
+                                .borderRadius(999)
+                            }, (guideIndex: number): string => guideIndex.toString())
+                          }
+                          .width('100%')
+                          .height(132)
+                          .padding(14)
+                          .alignItems(HorizontalAlign.Start)
+                          .backgroundColor($r('app.color.surface_background'))
+                          .borderRadius(18)
+                          .border({
+                            width: 1,
+                            color: page.id === this.activePageId ? $r('app.color.editor_accent') :
+                              $r('app.color.editor_paper_border')
+                          })
+                          .onClick(() => {
+                            void this.selectNotebookPage(page);
+                          })
+                        }
+                        .width('100%')
                       }
                       .width('100%')
                       .alignItems(HorizontalAlign.Start)
@@ -596,24 +751,21 @@ struct EditorPage {
                         color: page.id === this.activePageId ? $r('app.color.editor_accent') :
                           $r('app.color.editor_sidebar_border')
                       })
-                      .onClick(() => {
-                        void this.selectNotebookPage(page);
-                      })
                     }, (page: NotebookPage): string => this.getPageRenderKey(page))
                   }
+                  .width('100%')
+                  .alignItems(HorizontalAlign.Start)
                 }
+                .layoutWeight(1)
                 .width('100%')
-                .alignItems(HorizontalAlign.Start)
               }
-              .layoutWeight(1)
-              .width('100%')
 
               Button(this.isCreatingPage ? $r('app.string.editor_page_adding') : $r('app.string.editor_page_add'))
                 .width('100%')
                 .height($r('app.float.button_height'))
                 .backgroundColor($r('app.color.editor_accent'))
                 .fontColor($r('app.color.inverse_text'))
-                .enabled(!this.isCreatingPage && !this.isDeletingPage)
+                .enabled(!this.isCreatingPage && !this.isDeletingPage && !this.isReorderingPages)
                 .onClick(() => {
                   void this.createNotebookPage();
                 })
@@ -628,47 +780,246 @@ struct EditorPage {
               color: $r('app.color.editor_sidebar_border')
             })
 
-            Column({ space: 16 }) {
-              Row({ space: 12 }) {
-                Column({ space: 4 }) {
-                  if (this.activePageId.length > 0) {
-                    Text(this.getActivePageLabel())
-                      .fontSize($r('app.float.section_title_size'))
-                      .fontWeight(FontWeight.Medium)
-                      .fontColor($r('app.color.primary_text'))
-                  } else {
-                    Text($r('app.string.editor_canvas_empty_title'))
-                      .fontSize($r('app.float.section_title_size'))
-                      .fontWeight(FontWeight.Medium)
-                      .fontColor($r('app.color.primary_text'))
-                  }
+            Stack({ alignContent: Alignment.TopEnd }) {
+              Column({ space: 16 }) {
+                Row({ space: 12 }) {
+                  Column({ space: 4 }) {
+                    if (this.activePageId.length > 0) {
+                      Text(this.getActivePageLabel())
+                        .fontSize($r('app.float.section_title_size'))
+                        .fontWeight(FontWeight.Medium)
+                        .fontColor($r('app.color.primary_text'))
+                    } else {
+                      Text($r('app.string.editor_canvas_empty_title'))
+                        .fontSize($r('app.float.section_title_size'))
+                        .fontWeight(FontWeight.Medium)
+                        .fontColor($r('app.color.primary_text'))
+                    }
 
-                  Text($r('app.string.editor_workspace_desc'))
-                    .fontSize($r('app.float.caption_text_size'))
-                    .fontColor($r('app.color.secondary_text'))
+                    Text($r('app.string.editor_workspace_desc'))
+                      .fontSize($r('app.float.caption_text_size'))
+                      .fontColor($r('app.color.secondary_text'))
+                  }
+                  .layoutWeight(1)
+                  .alignItems(HorizontalAlign.Start)
+
+                  if (this.notebookPageList.length > 0) {
+                    Row({ space: 8 }) {
+                      Button() {
+                        Row({ space: 4 }) {
+                          Text('•')
+                            .fontSize(10)
+                            .fontColor($r('app.color.secondary_text'))
+
+                          Text('•')
+                            .fontSize(10)
+                            .fontColor($r('app.color.secondary_text'))
+
+                          Text('•')
+                            .fontSize(10)
+                            .fontColor($r('app.color.secondary_text'))
+                        }
+                        .width('100%')
+                        .justifyContent(FlexAlign.Center)
+                        .alignItems(VerticalAlign.Center)
+                      }
+                      .width(40)
+                      .height(40)
+                      .backgroundColor($r('app.color.surface_background'))
+                      .enabled(!this.isCreatingPage && !this.isDeletingPage && !this.isReorderingPages)
+                      .borderRadius(12)
+                      .onClick(() => {
+                        this.togglePageActionMenu(this.activePageId);
+                      })
+
+                      Text(this.getActivePageIndexText())
+                        .fontSize($r('app.float.caption_text_size'))
+                        .fontColor($r('app.color.editor_accent'))
+                        .padding({
+                          left: 12,
+                          right: 12,
+                          top: 6,
+                          bottom: 6
+                        })
+                        .backgroundColor($r('app.color.editor_accent_soft'))
+                        .borderRadius(999)
+                    }
+                    .alignItems(VerticalAlign.Center)
+                  }
+                }
+                .width('100%')
+                .alignItems(VerticalAlign.Center)
+
+                Stack() {
+                  Column()
+                    .width('100%')
+                    .height('100%')
+                    .backgroundColor($r('app.color.editor_workspace_background'))
+                    .borderRadius(32)
+
+                  if (this.notebookPageList.length === 0) {
+                    Column({ space: 12 }) {
+                      Text($r('app.string.editor_canvas_empty_title'))
+                        .fontSize($r('app.float.section_title_size'))
+                        .fontWeight(FontWeight.Medium)
+                        .fontColor($r('app.color.primary_text'))
+
+                      Text($r('app.string.editor_canvas_empty_desc'))
+                        .fontSize($r('app.float.body_text_size'))
+                        .fontColor($r('app.color.secondary_text'))
+                    }
+                    .width('100%')
+                    .height('100%')
+                    .justifyContent(FlexAlign.Center)
+                    .alignItems(HorizontalAlign.Center)
+                    .padding(24)
+                  } else if (this.isCanvasLoading) {
+                    Column({ space: 12 }) {
+                      LoadingProgress()
+                        .width(42)
+                        .height(42)
+
+                      Text($r('app.string.editor_canvas_loading'))
+                        .fontSize($r('app.float.body_text_size'))
+                        .fontColor($r('app.color.secondary_text'))
+                    }
+                    .width('100%')
+                    .height('100%')
+                    .justifyContent(FlexAlign.Center)
+                    .alignItems(HorizontalAlign.Center)
+                    .padding(24)
+                  } else if (this.activePageCanvas === null) {
+                    Column({ space: 12 }) {
+                      Text($r('app.string.editor_canvas_empty_title'))
+                        .fontSize($r('app.float.section_title_size'))
+                        .fontWeight(FontWeight.Medium)
+                        .fontColor($r('app.color.primary_text'))
+
+                      Text($r('app.string.editor_canvas_empty_desc'))
+                        .fontSize($r('app.float.body_text_size'))
+                        .fontColor($r('app.color.secondary_text'))
+                    }
+                    .width('100%')
+                    .height('100%')
+                    .justifyContent(FlexAlign.Center)
+                    .alignItems(HorizontalAlign.Center)
+                    .padding(24)
+                  } else {
+                    Column({ space: 18 }) {
+                      Stack() {
+                        Column({ space: 0 }) {
+                          Row({ space: 12 }) {
+                            Text(this.getActivePageLabel())
+                              .fontSize($r('app.float.section_title_size'))
+                              .fontWeight(FontWeight.Medium)
+                              .fontColor($r('app.color.primary_text'))
+
+                            Text($r('app.string.editor_canvas_ready_badge'))
+                              .fontSize($r('app.float.caption_text_size'))
+                              .fontColor($r('app.color.editor_accent'))
+                              .padding({
+                                left: 10,
+                                right: 10,
+                                top: 6,
+                                bottom: 6
+                              })
+                              .backgroundColor($r('app.color.editor_accent_soft'))
+                              .borderRadius(999)
+                          }
+                          .width('100%')
+                          .justifyContent(FlexAlign.Start)
+                          .padding({
+                            left: 24,
+                            right: 24,
+                            top: 22,
+                            bottom: 16
+                          })
+
+                          Column({ space: 24 }) {
+                            ForEach(this.paperGuideLineList, (guideIndex: number) => {
+                              Row()
+                                .width('100%')
+                                .height(2)
+                                .backgroundColor($r('app.color.editor_paper_line'))
+                                .opacity(guideIndex === this.paperGuideLineList.length - 1 ? 0.4 : 0.78)
+                                .borderRadius(999)
+                            }, (guideIndex: number): string => guideIndex.toString())
+                          }
+                          .width('100%')
+                          .layoutWeight(1)
+                          .padding({
+                            left: 24,
+                            right: 24,
+                            top: 10,
+                            bottom: 24
+                          })
+                          .alignItems(HorizontalAlign.Start)
+                        }
+                        .width('100%')
+                        .height('100%')
+                        .backgroundColor(this.getActiveCanvasBackgroundColor())
+                        .borderRadius(30)
+
+                        Canvas(this.pageCanvasRenderingContext)
+                          .width('100%')
+                          .height('100%')
+                      }
+                      .width('76%')
+                      .height('100%')
+                      .constraintSize({ maxWidth: 860 })
+                      .borderRadius(30)
+                      .border({
+                        width: 1,
+                        color: $r('app.color.editor_paper_border')
+                      })
+                    }
+                    .width('100%')
+                    .height('100%')
+                    .padding(24)
+                    .justifyContent(FlexAlign.Center)
+                    .alignItems(HorizontalAlign.Center)
+                  }
                 }
                 .layoutWeight(1)
-                .alignItems(HorizontalAlign.Start)
+                .width('100%')
+              }
+              .width('100%')
+              .height('100%')
 
-                if (this.notebookPageList.length > 0) {
-                  Text(this.getActivePageIndexText())
-                    .fontSize($r('app.float.caption_text_size'))
-                    .fontColor($r('app.color.editor_accent'))
-                    .padding({
-                      left: 12,
-                      right: 12,
-                      top: 6,
-                      bottom: 6
+              if (this.activePageId.length > 0 && this.isPageActionMenuVisible(this.activePageId)) {
+                Column({ space: 6 }) {
+                  Button($r('app.string.editor_page_move_up'))
+                    .width(132)
+                    .height(36)
+                    .backgroundColor($r('app.color.app_background'))
+                    .fontColor($r('app.color.primary_text'))
+                    .enabled(this.canMoveActivePageUp() && !this.isReorderingPages)
+                    .onClick(() => {
+                      const activePage: NotebookPage | null = this.getActivePage();
+                      if (activePage !== null) {
+                        this.moveNotebookPageByOffset(activePage, -1);
+                      }
                     })
-                    .backgroundColor($r('app.color.editor_accent_soft'))
-                    .borderRadius(999)
 
-                  Button(this.isDeletingPage ? $r('app.string.editor_page_deleting') :
-                    $r('app.string.editor_page_delete_current'))
-                    .height($r('app.float.button_height'))
+                  Button($r('app.string.editor_page_move_down'))
+                    .width(132)
+                    .height(36)
+                    .backgroundColor($r('app.color.app_background'))
+                    .fontColor($r('app.color.primary_text'))
+                    .enabled(this.canMoveActivePageDown() && !this.isReorderingPages)
+                    .onClick(() => {
+                      const activePage: NotebookPage | null = this.getActivePage();
+                      if (activePage !== null) {
+                        this.moveNotebookPageByOffset(activePage, 1);
+                      }
+                    })
+
+                  Button($r('app.string.editor_page_delete_menu'))
+                    .width(132)
+                    .height(36)
                     .backgroundColor($r('app.color.danger_surface'))
                     .fontColor($r('app.color.danger_text'))
-                    .enabled(!this.isDeletingPage && !this.isCreatingPage && this.getActivePage() !== null)
+                    .enabled(!this.isDeletingPage && !this.isReorderingPages && this.getActivePage() !== null)
                     .onClick(() => {
                       const activePage: NotebookPage | null = this.getActivePage();
                       if (activePage !== null) {
@@ -676,144 +1027,22 @@ struct EditorPage {
                       }
                     })
                 }
+                .margin({
+                  top: 54
+                })
+                .padding(8)
+                .backgroundColor($r('app.color.surface_background'))
+                .borderRadius(16)
+                .border({
+                  width: 1,
+                  color: $r('app.color.editor_sidebar_border')
+                })
+                .shadow(ShadowStyle.OUTER_FLOATING_MD)
+                .zIndex(1)
               }
-              .width('100%')
-              .alignItems(VerticalAlign.Center)
-
-              Stack() {
-                Column()
-                  .width('100%')
-                  .height('100%')
-                  .backgroundColor($r('app.color.editor_workspace_background'))
-                  .borderRadius(32)
-
-                if (this.notebookPageList.length === 0) {
-                  Column({ space: 12 }) {
-                    Text($r('app.string.editor_canvas_empty_title'))
-                      .fontSize($r('app.float.section_title_size'))
-                      .fontWeight(FontWeight.Medium)
-                      .fontColor($r('app.color.primary_text'))
-
-                    Text($r('app.string.editor_canvas_empty_desc'))
-                      .fontSize($r('app.float.body_text_size'))
-                      .fontColor($r('app.color.secondary_text'))
-                  }
-                  .width('100%')
-                  .height('100%')
-                  .justifyContent(FlexAlign.Center)
-                  .alignItems(HorizontalAlign.Center)
-                  .padding(24)
-                } else if (this.isCanvasLoading) {
-                  Column({ space: 12 }) {
-                    LoadingProgress()
-                      .width(42)
-                      .height(42)
-
-                    Text($r('app.string.editor_canvas_loading'))
-                      .fontSize($r('app.float.body_text_size'))
-                      .fontColor($r('app.color.secondary_text'))
-                  }
-                  .width('100%')
-                  .height('100%')
-                  .justifyContent(FlexAlign.Center)
-                  .alignItems(HorizontalAlign.Center)
-                  .padding(24)
-                } else if (this.activePageCanvas === null) {
-                  Column({ space: 12 }) {
-                    Text($r('app.string.editor_canvas_empty_title'))
-                      .fontSize($r('app.float.section_title_size'))
-                      .fontWeight(FontWeight.Medium)
-                      .fontColor($r('app.color.primary_text'))
-
-                    Text($r('app.string.editor_canvas_empty_desc'))
-                      .fontSize($r('app.float.body_text_size'))
-                      .fontColor($r('app.color.secondary_text'))
-                  }
-                  .width('100%')
-                  .height('100%')
-                  .justifyContent(FlexAlign.Center)
-                  .alignItems(HorizontalAlign.Center)
-                  .padding(24)
-                } else {
-                  Column({ space: 18 }) {
-                    Stack() {
-                      Column({ space: 0 }) {
-                        Row({ space: 12 }) {
-                          Text(this.getActivePageLabel())
-                            .fontSize($r('app.float.section_title_size'))
-                            .fontWeight(FontWeight.Medium)
-                            .fontColor($r('app.color.primary_text'))
-
-                          Text($r('app.string.editor_canvas_ready_badge'))
-                            .fontSize($r('app.float.caption_text_size'))
-                            .fontColor($r('app.color.editor_accent'))
-                            .padding({
-                              left: 10,
-                              right: 10,
-                              top: 6,
-                              bottom: 6
-                            })
-                            .backgroundColor($r('app.color.editor_accent_soft'))
-                            .borderRadius(999)
-                        }
-                        .width('100%')
-                        .justifyContent(FlexAlign.Start)
-                        .padding({
-                          left: 24,
-                          right: 24,
-                          top: 22,
-                          bottom: 16
-                        })
-
-                        Column({ space: 24 }) {
-                          ForEach(this.paperGuideLineList, (guideIndex: number) => {
-                            Row()
-                              .width('100%')
-                              .height(2)
-                              .backgroundColor($r('app.color.editor_paper_line'))
-                              .opacity(guideIndex === this.paperGuideLineList.length - 1 ? 0.4 : 0.78)
-                              .borderRadius(999)
-                          }, (guideIndex: number): string => guideIndex.toString())
-                        }
-                        .width('100%')
-                        .layoutWeight(1)
-                        .padding({
-                          left: 24,
-                          right: 24,
-                          top: 10,
-                          bottom: 24
-                        })
-                        .alignItems(HorizontalAlign.Start)
-                      }
-                      .width('100%')
-                      .height('100%')
-                      .backgroundColor(this.getActiveCanvasBackgroundColor())
-                      .borderRadius(30)
-
-                      Canvas(this.pageCanvasRenderingContext)
-                        .width('100%')
-                        .height('100%')
-                    }
-                    .width('76%')
-                    .height('100%')
-                    .constraintSize({ maxWidth: 860 })
-                    .borderRadius(30)
-                    .border({
-                      width: 1,
-                      color: $r('app.color.editor_paper_border')
-                    })
-                  }
-                  .width('100%')
-                  .height('100%')
-                  .padding(24)
-                  .justifyContent(FlexAlign.Center)
-                  .alignItems(HorizontalAlign.Center)
-                }
-              }
-              .layoutWeight(1)
-              .width('100%')
             }
             .layoutWeight(1)
+            .width('100%')
             .height('100%')
             .padding(18)
             .backgroundColor($r('app.color.editor_sidebar_background'))
@@ -822,6 +1051,7 @@ struct EditorPage {
               width: 1,
               color: $r('app.color.editor_sidebar_border')
             })
+            .clip(false)
           }
           .layoutWeight(1)
           .width('100%')

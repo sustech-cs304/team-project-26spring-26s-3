@@ -6,6 +6,7 @@ import { CreateNotebookPage } from '../../../domain/usecases/CreateNotebookPage'
 import { DeleteNotebookPage } from '../../../domain/usecases/DeleteNotebookPage';
 import { GetNotebookPageCanvas } from '../../../domain/usecases/GetNotebookPageCanvas';
 import { GetNotebookPages } from '../../../domain/usecases/GetNotebookPages';
+import { ReorderNotebookPages } from '../../../domain/usecases/ReorderNotebookPages';
 import { NotebookRepository } from '../../../domain/repositories/NotebookRepository';
 import { NotebookRepositoryImpl } from '../../../data/repositories/NotebookRepositoryImpl';
 
@@ -15,6 +16,7 @@ export class EditorViewModel {
   private readonly deleteNotebookPageUseCase: DeleteNotebookPage;
   private readonly getNotebookPageCanvasUseCase: GetNotebookPageCanvas;
   private readonly getNotebookPagesUseCase: GetNotebookPages;
+  private readonly reorderNotebookPagesUseCase: ReorderNotebookPages;
   private notebook: Notebook | null = null;
   private notebookPageList: NotebookPage[] = [];
   private activeNotebookPageCanvas: NotebookPageCanvas | null = null;
@@ -25,6 +27,7 @@ export class EditorViewModel {
     this.deleteNotebookPageUseCase = new DeleteNotebookPage(this.notebookRepository);
     this.getNotebookPageCanvasUseCase = new GetNotebookPageCanvas(this.notebookRepository);
     this.getNotebookPagesUseCase = new GetNotebookPages(this.notebookRepository);
+    this.reorderNotebookPagesUseCase = new ReorderNotebookPages(this.notebookRepository);
   }
 
   async loadNotebook(notebookId: string): Promise<Notebook | null> {
@@ -64,6 +67,18 @@ export class EditorViewModel {
       pageId: pageId
     });
     return this.getCachedNotebookPageCanvas();
+  }
+
+  async reorderNotebookPages(notebookId: string, fromIndex: number, toIndex: number): Promise<boolean> {
+    const hasReordered: boolean = await this.reorderNotebookPagesUseCase.execute({
+      notebookId: notebookId,
+      fromIndex: fromIndex,
+      toIndex: toIndex
+    });
+
+    this.notebook = await this.notebookRepository.getNotebookById(notebookId);
+    this.notebookPageList = await this.getNotebookPagesUseCase.execute(notebookId);
+    return hasReordered;
   }
 
   getCachedNotebook(): Notebook | null {

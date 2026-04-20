@@ -12,6 +12,7 @@ import {
   GetNotebookPageCanvasRequest,
   NotebookRepository,
   NotebookSortType,
+  ReorderNotebookPagesRequest,
   RenameNotebookRequest
 } from '../../domain/repositories/NotebookRepository';
 import { FileDataSource } from '../sources/local/FileDataSource';
@@ -211,6 +212,38 @@ export class NotebookRepositoryImpl implements NotebookRepository {
 
     const currentTime: number = TimeUtil.now();
     const notebook: Notebook = notebookList[notebookIndex];
+    notebookList[notebookIndex] = {
+      id: notebook.id,
+      title: notebook.title,
+      createdAt: notebook.createdAt,
+      updatedAt: currentTime
+    };
+    await this.persistNotebookList(notebookList);
+    return true;
+  }
+
+  async reorderNotebookPages(request: ReorderNotebookPagesRequest): Promise<boolean> {
+    const notebookList: Notebook[] = await this.loadNotebookList();
+    const notebookIndex: number = this.findNotebookIndexById(notebookList, request.notebookId);
+    if (notebookIndex < 0) {
+      return false;
+    }
+
+    const notebook: Notebook = notebookList[notebookIndex];
+    const notebookPageList: NotebookPage[] = await this.loadOrBootstrapNotebookPageList(notebook);
+    const reorderedNotebookPageList: NotebookPage[] = this.buildReorderedNotebookPageList(
+      notebookPageList,
+      request.fromIndex,
+      request.toIndex
+    );
+
+    if (reorderedNotebookPageList.length === 0) {
+      return false;
+    }
+
+    await this.persistNotebookPageList(request.notebookId, reorderedNotebookPageList);
+
+    const currentTime: number = TimeUtil.now();
     notebookList[notebookIndex] = {
       id: notebook.id,
       title: notebook.title,
@@ -428,6 +461,35 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     });
 
     return sortedNotebookList;
+  }
+
+  private buildReorderedNotebookPageList(
+    notebookPageList: NotebookPage[],
+    fromIndex: number,
+    toIndex: number
+  ): NotebookPage[] {
+    if (fromIndex < 0 || fromIndex >= notebookPageList.length || toIndex < 0 || notebookPageList.length === 0) {
+      return [];
+    }
+
+    const normalizedToIndex: number = Math.min(toIndex, notebookPageList.length - 1);
+    const reorderedNotebookPageList: NotebookPage[] = notebookPageList.slice();
+    const movedNotebookPageList: NotebookPage[] = reorderedNotebookPageList.splice(fromIndex, 1);
+    if (movedNotebookPageList.length === 0) {
+      return [];
+    }
+
+    reorderedNotebookPageList.splice(normalizedToIndex, 0, movedNotebookPageList[0]);
+    return reorderedNotebookPageList.map((notebookPage: NotebookPage, index: number): NotebookPage => {
+      return {
+        id: notebookPage.id,
+        notebookId: notebookPage.notebookId,
+        order: index,
+        createdAt: notebookPage.createdAt,
+        updatedAt: notebookPage.updatedAt,
+        templateType: notebookPage.templateType
+      };
+    });
   }
 
   private buildNotebookPageListFilePath(notebookId: string): string {

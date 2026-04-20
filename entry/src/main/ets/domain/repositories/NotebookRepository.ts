@@ -26,6 +26,12 @@ export interface DeleteNotebookPageRequest {
   pageId: string;
 }
 
+export interface ReorderNotebookPagesRequest {
+  notebookId: string;
+  fromIndex: number;
+  toIndex: number;
+}
+
 export interface GetNotebookPageCanvasRequest {
   notebookId: string;
   pageId: string;
@@ -41,6 +47,7 @@ export interface NotebookRepository {
   getNotebookPageCanvas(request: GetNotebookPageCanvasRequest): Promise<NotebookPageCanvas | null>;
   createNotebookPage(request: CreateNotebookPageRequest): Promise<NotebookPage | null>;
   deleteNotebookPage(request: DeleteNotebookPageRequest): Promise<boolean>;
+  reorderNotebookPages(request: ReorderNotebookPagesRequest): Promise<boolean>;
   getSortType(): Promise<NotebookSortType>;
   saveSortType(sortType: NotebookSortType): Promise<void>;
 }
