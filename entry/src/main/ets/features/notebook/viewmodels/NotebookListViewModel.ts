@@ -28,7 +28,7 @@ export class NotebookListViewModel {
 
   async loadNotebookList(): Promise<Notebook[]> {
     this.notebookList = await this.getNotebookListUseCase.execute();
-    return this.notebookList.slice();
+    return this.cloneNotebookList(this.notebookList);
   }
 
   async loadSortType(): Promise<NotebookSortType> {
@@ -58,10 +58,23 @@ export class NotebookListViewModel {
 
   async changeSortType(sortType: NotebookSortType): Promise<Notebook[]> {
     this.notebookList = await this.sortNotebookListUseCase.execute(sortType);
-    return this.notebookList.slice();
+    return this.cloneNotebookList(this.notebookList);
   }
 
   getCachedNotebookList(): Notebook[] {
-    return this.notebookList.slice();
+    return this.cloneNotebookList(this.notebookList);
+  }
+
+  private cloneNotebookList(notebookList: Notebook[]): Notebook[] {
+    const clonedNotebookList: Notebook[] = [];
+    for (const notebook of notebookList) {
+      clonedNotebookList.push({
+        id: notebook.id,
+        title: notebook.title,
+        createdAt: notebook.createdAt,
+        updatedAt: notebook.updatedAt
+      });
+    }
+    return clonedNotebookList;
   }
 }
