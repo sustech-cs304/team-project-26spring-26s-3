@@ -1,3 +1,7 @@
+export function createId(prefix: string): string {
+  return IdUtil.createId(prefix);
+}
+
 export class IdUtil {
   private static sequence: number = 0;
 
