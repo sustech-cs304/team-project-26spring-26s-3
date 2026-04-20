@@ -1,3 +1,7 @@
+export function now(): number {
+  return TimeUtil.now();
+}
+
 export class TimeUtil {
   static now(): number {
     return Date.now();
