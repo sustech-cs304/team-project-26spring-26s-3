@@ -1,7 +1,7 @@
 @Component
 export struct NotebookCard {
-  title: string = '';
-  updatedAtText: string = '';
+  @Prop title: string = '';
+  @Prop updatedAtText: string = '';
 
   build() {
     Column({ space: 8 }) {

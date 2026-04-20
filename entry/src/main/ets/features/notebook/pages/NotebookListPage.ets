@@ -11,6 +11,7 @@ import { NotebookListViewModel } from '../viewmodels/NotebookListViewModel';
 @Component
 struct NotebookListPage {
   @State private notebookList: Notebook[] = [];
+  @State private notebookListRenderVersion: number = 0;
   @State private isLoading: boolean = true;
   @State private isInputDialogVisible: boolean = false;
   @State private isRenameMode: boolean = false;
@@ -47,14 +48,23 @@ struct NotebookListPage {
       const viewModel: NotebookListViewModel = this.ensureViewModel();
       this.shouldHandleSortTypeChange = false;
       this.currentSortType = await viewModel.loadSortType();
-      this.notebookList = await viewModel.loadNotebookList();
+      this.applyNotebookList(await viewModel.loadNotebookList());
     } catch (_error) {
-      this.notebookList = [];
+      this.applyNotebookList([]);
       this.currentSortType = NotebookSortType.UPDATED_DESC;
     } finally {
       this.shouldHandleSortTypeChange = true;
       this.isLoading = false;
     }
+  }
+
+  private applyNotebookList(notebookList: Notebook[]): void {
+    this.notebookList = notebookList;
+    this.notebookListRenderVersion += 1;
+  }
+
+  private async refreshNotebookList(): Promise<void> {
+    this.applyNotebookList(await this.ensureViewModel().loadNotebookList());
   }
 
   private openCreateDialog(): void {
@@ -99,7 +109,7 @@ struct NotebookListPage {
       } else {
         await this.ensureViewModel().createNotebook(this.draftNotebookTitle);
       }
-      this.notebookList = this.ensureViewModel().getCachedNotebookList();
+      await this.refreshNotebookList();
       this.closeDeleteDialog();
       this.resetInputDialogState();
     } catch (_error) {
@@ -123,7 +133,7 @@ struct NotebookListPage {
 
     this.isLoading = true;
     try {
-      this.notebookList = await this.ensureViewModel().changeSortType(this.currentSortType);
+      this.applyNotebookList(await this.ensureViewModel().changeSortType(this.currentSortType));
     } catch (_error) {
       this.shouldHandleSortTypeChange = false;
       try {
@@ -171,7 +181,7 @@ struct NotebookListPage {
     this.isDeletingNotebook = true;
     try {
       hasDeleted = await this.ensureViewModel().deleteNotebook(this.deleteTargetNotebookId);
-      this.notebookList = this.ensureViewModel().getCachedNotebookList();
+      await this.refreshNotebookList();
     } catch (_error) {
     } finally {
       this.isDeletingNotebook = false;
@@ -355,7 +365,7 @@ struct NotebookListPage {
                   .width('100%')
                 }
                 .width('100%')
-              }, (notebook: Notebook): string => notebook.id)
+              }, (notebook: Notebook): string => `${this.notebookListRenderVersion}-${notebook.id}`)
             }
             .width('100%')
           }

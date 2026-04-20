@@ -1,8 +1,8 @@
 @Component
 export struct CreateNotebookDialog {
   @Link title: string;
-  isRenameMode: boolean = false;
-  isSubmitting: boolean = false;
+  @Prop isRenameMode: boolean = false;
+  @Prop isSubmitting: boolean = false;
   onCancel: () => void = (): void => {};
   onConfirm: () => void = (): void => {};
 
