@@ -1,8 +1,10 @@
-import { StrokePoint } from '../../domain/entities/Stroke';
+import { Stroke, StrokePoint } from '../../domain/entities/Stroke';
 
 const DEFAULT_POINT_MERGE_THRESHOLD = 0.5;
 const SINGLE_POINT_OFFSET = 0.1;
 const DEFAULT_STROKE_SAMPLING_STEP = 2;
+const DEFAULT_RENDER_BOUNDS_PADDING = 12;
+const RENDER_BOUNDS_WIDTH_FACTOR = 2.5;
 
 export interface BoundingBox {
   minX: number;
@@ -118,6 +120,53 @@ export function expandBoundingBox(box: BoundingBox, padding: number): BoundingBo
     maxX: box.maxX + padding,
     maxY: box.maxY + padding
   };
+}
+
+export function mergeBoundingBoxes(left: BoundingBox | null, right: BoundingBox | null): BoundingBox | null {
+  if (left === null) {
+    return right === null ? null : { ...right };
+  }
+
+  if (right === null) {
+    return { ...left };
+  }
+
+  return {
+    minX: Math.min(left.minX, right.minX),
+    minY: Math.min(left.minY, right.minY),
+    maxX: Math.max(left.maxX, right.maxX),
+    maxY: Math.max(left.maxY, right.maxY)
+  };
+}
+
+export function clampBoundingBox(box: BoundingBox, width: number, height: number): BoundingBox | null {
+  const maxWidth = Math.max(0, width);
+  const maxHeight = Math.max(0, height);
+  const minX = Math.max(0, Math.min(box.minX, maxWidth));
+  const minY = Math.max(0, Math.min(box.minY, maxHeight));
+  const maxX = Math.max(0, Math.min(box.maxX, maxWidth));
+  const maxY = Math.max(0, Math.min(box.maxY, maxHeight));
+
+  if (maxX <= minX || maxY <= minY) {
+    return null;
+  }
+
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY
+  };
+}
+
+export function getStrokeRenderBoundingBox(stroke: Stroke): BoundingBox | null {
+  const box = getBoundingBox(stroke.points);
+  if (box === null) {
+    return null;
+  }
+
+  const padding = Math.max(DEFAULT_RENDER_BOUNDS_PADDING, stroke.style.width * RENDER_BOUNDS_WIDTH_FACTOR);
+  return expandBoundingBox(box, padding);
 }
 
 export function doBoundingBoxesIntersect(left: BoundingBox, right: BoundingBox): boolean {

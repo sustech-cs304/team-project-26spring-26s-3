@@ -75,7 +75,17 @@ export class StrokeController {
       return null;
     }
 
-    return this.cloneStroke(this.activeStroke);
+    const normalizedPoints = normalizePoints(this.activeStroke.points);
+    const renderablePoints = ensureRenderablePoints(normalizedPoints);
+
+    return {
+      id: this.activeStroke.id,
+      pageId: this.activeStroke.pageId,
+      points: renderablePoints.map((point: StrokePoint) => this.clonePoint(point)),
+      style: this.cloneStyle(this.activeStroke.style),
+      createdAt: this.activeStroke.createdAt,
+      updatedAt: this.activeStroke.updatedAt
+    };
   }
 
   hasActiveStroke(): boolean {

@@ -1055,7 +1055,8 @@ struct EditorPage {
   private syncDrawingSnapshot(
     redrawCanvas: boolean = false,
     viewModel?: DrawingEditorViewModel | null,
-    pageId?: string
+    pageId?: string,
+    refreshThumbnailImmediately: boolean = true
   ): void {
     const targetViewModel: DrawingEditorViewModel | null = viewModel ?? this.drawingViewModel;
     const targetPageId: string = pageId ?? this.currentDrawingPageId;
@@ -1078,7 +1079,7 @@ struct EditorPage {
     this.editorSnapshot = targetViewModel.getDebugSnapshot();
     if (redrawCanvas) {
       this.canvasVersion += 1;
-      this.requestThumbnailRefresh(true);
+      this.requestThumbnailRefresh(refreshThumbnailImmediately);
     }
   }
 
@@ -1160,10 +1161,8 @@ struct EditorPage {
     }
 
     const targetPageId: string = this.currentDrawingPageId;
-    const undoTask = this.drawingViewModel.undo();
-    this.syncDrawingSnapshot(true, this.drawingViewModel, targetPageId);
-    await undoTask;
-    this.syncDrawingSnapshot(true, this.drawingViewModel, targetPageId);
+    await this.drawingViewModel.undo();
+    this.syncDrawingSnapshot(true, this.drawingViewModel, targetPageId, false);
   }
 
   private async handleRedo(): Promise<void> {
@@ -1172,10 +1171,8 @@ struct EditorPage {
     }
 
     const targetPageId: string = this.currentDrawingPageId;
-    const redoTask = this.drawingViewModel.redo();
-    this.syncDrawingSnapshot(true, this.drawingViewModel, targetPageId);
-    await redoTask;
-    this.syncDrawingSnapshot(true, this.drawingViewModel, targetPageId);
+    await this.drawingViewModel.redo();
+    this.syncDrawingSnapshot(true, this.drawingViewModel, targetPageId, false);
   }
 
   private async handleClear(): Promise<void> {
@@ -1184,10 +1181,8 @@ struct EditorPage {
     }
 
     const targetPageId: string = this.currentDrawingPageId;
-    const clearTask = this.drawingViewModel.clear();
-    this.syncDrawingSnapshot(true, this.drawingViewModel, targetPageId);
-    await clearTask;
-    this.syncDrawingSnapshot(true, this.drawingViewModel, targetPageId);
+    await this.drawingViewModel.clear();
+    this.syncDrawingSnapshot(true, this.drawingViewModel, targetPageId, false);
   }
 
   private closePageActionMenu(): void {
