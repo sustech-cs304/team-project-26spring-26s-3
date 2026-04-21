@@ -7,14 +7,19 @@ export interface AppendStrokeOperation {
   stroke: Stroke;
 }
 
-export interface ReplacePageOperation {
-  type: 'replace_page';
-  before: Stroke[];
-  after: Stroke[];
+export interface IndexedStrokeRecord {
+  index: number;
+  stroke: Stroke;
+}
+
+export interface ReplacePageDeltaOperation {
+  type: 'replace_page_delta';
+  removed: IndexedStrokeRecord[];
+  added: IndexedStrokeRecord[];
   label: 'erase' | 'clear';
 }
 
-export type EditorOperation = AppendStrokeOperation | ReplacePageOperation;
+export type EditorOperation = AppendStrokeOperation | ReplacePageDeltaOperation;
 
 export interface UndoRedoSnapshot {
   undoStack: EditorOperation[];
@@ -24,6 +29,12 @@ export interface UndoRedoSnapshot {
 export interface UndoRedoDebugState {
   undoDepth: number;
   redoDepth: number;
+}
+
+export interface UndoRedoApplyResult {
+  strokes: Stroke[];
+  removed: IndexedStrokeRecord[];
+  added: IndexedStrokeRecord[];
 }
 
 export class UndoRedoController {
@@ -39,33 +50,41 @@ export class UndoRedoController {
     });
   }
 
-  recordReplacePage(before: Stroke[], after: Stroke[], label: 'erase' | 'clear'): void {
-    if (this.areStrokeListsEqual(before, after)) {
+  recordDelta(removed: IndexedStrokeRecord[], added: IndexedStrokeRecord[], label: 'erase' | 'clear'): void {
+    if (removed.length === 0 && added.length === 0) {
       return;
     }
 
     this.pushUndoOperation({
-      type: 'replace_page',
-      before: this.cloneStrokes(before),
-      after: this.cloneStrokes(after),
+      type: 'replace_page_delta',
+      removed: removed.map((record: IndexedStrokeRecord) => this.cloneIndexedStrokeRecord(record)),
+      added: added.map((record: IndexedStrokeRecord) => this.cloneIndexedStrokeRecord(record)),
       label
     });
   }
 
-  undo(currentStrokes: Stroke[]): Stroke[] {
+  undo(currentStrokes: Stroke[]): UndoRedoApplyResult {
     const operation = this.undoStack.pop();
     if (!operation) {
-      return this.cloneStrokes(currentStrokes);
+      return {
+        strokes: currentStrokes.slice(),
+        removed: [],
+        added: []
+      };
     }
 
     this.redoStack.push(this.cloneOperation(operation));
     return this.applyInverse(operation, currentStrokes);
   }
 
-  redo(currentStrokes: Stroke[]): Stroke[] {
+  redo(currentStrokes: Stroke[]): UndoRedoApplyResult {
     const operation = this.redoStack.pop();
     if (!operation) {
-      return this.cloneStrokes(currentStrokes);
+      return {
+        strokes: currentStrokes.slice(),
+        removed: [],
+        added: []
+      };
     }
 
     this.undoStack.push(this.cloneOperation(operation));
@@ -116,42 +135,101 @@ export class UndoRedoController {
     this.redoStack = [];
   }
 
-  private applyForward(operation: EditorOperation, currentStrokes: Stroke[]): Stroke[] {
+  private applyForward(operation: EditorOperation, currentStrokes: Stroke[]): UndoRedoApplyResult {
     switch (operation.type) {
       case 'append_stroke': {
-        const nextStrokes = this.cloneStrokes(currentStrokes);
+        const nextStrokes = currentStrokes.slice();
+        const addedStroke = this.cloneStroke(operation.stroke);
         nextStrokes.push(this.cloneStroke(operation.stroke));
-        return nextStrokes;
+        return {
+          strokes: nextStrokes,
+          removed: [],
+          added: [{
+            index: currentStrokes.length,
+            stroke: addedStroke
+          }]
+        };
       }
-      case 'replace_page':
-        return this.cloneStrokes(operation.after);
+      case 'replace_page_delta':
+        return this.applyDelta(currentStrokes, operation.removed, operation.added);
       default:
-        return this.cloneStrokes(currentStrokes);
+        return {
+          strokes: currentStrokes.slice(),
+          removed: [],
+          added: []
+        };
     }
   }
 
-  private applyInverse(operation: EditorOperation, currentStrokes: Stroke[]): Stroke[] {
+  private applyInverse(operation: EditorOperation, currentStrokes: Stroke[]): UndoRedoApplyResult {
     switch (operation.type) {
       case 'append_stroke':
         return this.removeStrokeById(currentStrokes, operation.stroke.id);
-      case 'replace_page':
-        return this.cloneStrokes(operation.before);
+      case 'replace_page_delta':
+        return this.applyDelta(currentStrokes, operation.added, operation.removed);
       default:
-        return this.cloneStrokes(currentStrokes);
+        return {
+          strokes: currentStrokes.slice(),
+          removed: [],
+          added: []
+        };
     }
   }
 
-  private removeStrokeById(strokes: Stroke[], strokeId: string): Stroke[] {
-    const nextStrokes = this.cloneStrokes(strokes);
+  private applyDelta(
+    currentStrokes: Stroke[],
+    removed: IndexedStrokeRecord[],
+    added: IndexedStrokeRecord[]
+  ): UndoRedoApplyResult {
+    const nextStrokes = currentStrokes.slice();
+    const removedIds = new Set<string>();
+
+    for (const record of removed) {
+      removedIds.add(record.stroke.id);
+    }
+
+    for (let index = nextStrokes.length - 1; index >= 0; index -= 1) {
+      if (removedIds.has(nextStrokes[index].id)) {
+        nextStrokes.splice(index, 1);
+      }
+    }
+
+    const sortedAdded = added
+      .map((record: IndexedStrokeRecord) => this.cloneIndexedStrokeRecord(record))
+      .sort((left: IndexedStrokeRecord, right: IndexedStrokeRecord) => left.index - right.index);
+
+    for (const record of sortedAdded) {
+      const insertionIndex = Math.max(0, Math.min(record.index, nextStrokes.length));
+      nextStrokes.splice(insertionIndex, 0, this.cloneStroke(record.stroke));
+    }
+
+    return {
+      strokes: nextStrokes,
+      removed: removed.map((record: IndexedStrokeRecord) => this.cloneIndexedStrokeRecord(record)),
+      added: added.map((record: IndexedStrokeRecord) => this.cloneIndexedStrokeRecord(record))
+    };
+  }
+
+  private removeStrokeById(strokes: Stroke[], strokeId: string): UndoRedoApplyResult {
+    const nextStrokes = strokes.slice();
+    let removedRecord: IndexedStrokeRecord | null = null;
 
     for (let index = nextStrokes.length - 1; index >= 0; index -= 1) {
       if (nextStrokes[index].id === strokeId) {
+        removedRecord = {
+          index,
+          stroke: this.cloneStroke(nextStrokes[index])
+        };
         nextStrokes.splice(index, 1);
         break;
       }
     }
 
-    return nextStrokes;
+    return {
+      strokes: nextStrokes,
+      removed: removedRecord === null ? [] : [removedRecord],
+      added: []
+    };
   }
 
   private cloneOperation(operation: EditorOperation): EditorOperation {
@@ -161,80 +239,28 @@ export class UndoRedoController {
           type: 'append_stroke',
           stroke: this.cloneStroke(operation.stroke)
         };
-      case 'replace_page':
+      case 'replace_page_delta':
         return {
-          type: 'replace_page',
-          before: this.cloneStrokes(operation.before),
-          after: this.cloneStrokes(operation.after),
+          type: 'replace_page_delta',
+          removed: operation.removed.map((record: IndexedStrokeRecord) => this.cloneIndexedStrokeRecord(record)),
+          added: operation.added.map((record: IndexedStrokeRecord) => this.cloneIndexedStrokeRecord(record)),
           label: operation.label
         };
       default:
         return {
-          type: 'replace_page',
-          before: [],
-          after: [],
+          type: 'replace_page_delta',
+          removed: [],
+          added: [],
           label: 'clear'
         };
     }
   }
 
-  private areStrokeListsEqual(left: Stroke[], right: Stroke[]): boolean {
-    if (left.length !== right.length) {
-      return false;
-    }
-
-    for (let index = 0; index < left.length; index += 1) {
-      if (!this.areStrokesEqual(left[index], right[index])) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  private areStrokesEqual(left: Stroke, right: Stroke): boolean {
-    if (
-      left.id !== right.id ||
-      left.pageId !== right.pageId ||
-      left.createdAt !== right.createdAt ||
-      left.updatedAt !== right.updatedAt
-    ) {
-      return false;
-    }
-
-    if (
-      left.style.tool !== right.style.tool ||
-      left.style.color !== right.style.color ||
-      left.style.width !== right.style.width ||
-      left.style.opacity !== right.style.opacity
-    ) {
-      return false;
-    }
-
-    if (left.points.length !== right.points.length) {
-      return false;
-    }
-
-    for (let index = 0; index < left.points.length; index += 1) {
-      if (!this.arePointsEqual(left.points[index], right.points[index])) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  private arePointsEqual(left: StrokePoint, right: StrokePoint): boolean {
-    return (
-      left.x === right.x &&
-      left.y === right.y &&
-      left.t === right.t &&
-      left.pressure === right.pressure
-    );
-  }
-
-  private cloneStrokes(strokes: Stroke[]): Stroke[] {
-    return strokes.map((stroke: Stroke) => this.cloneStroke(stroke));
+  private cloneIndexedStrokeRecord(record: IndexedStrokeRecord): IndexedStrokeRecord {
+    return {
+      index: record.index,
+      stroke: this.cloneStroke(record.stroke)
+    };
   }
 
   private cloneStroke(stroke: Stroke): Stroke {

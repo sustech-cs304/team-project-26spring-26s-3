@@ -1,11 +1,19 @@
 import common from '@ohos.app.ability.common';
 
+import {
+  BoundingBox,
+  clampBoundingBox,
+  doBoundingBoxesIntersect
+} from '../../../common/utils/GeometryUtil';
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
 import { ToolSetting } from '../../../domain/entities/ToolSetting';
 import { StrokeRenderer } from '../controllers/StrokeRenderer';
+import { IndexedStrokeRecord } from '../controllers/UndoRedoController';
+import { StrokeSpatialHashIndex } from '../controllers/StrokeSpatialHashIndex';
 import { EditorDebugSnapshot } from '../viewmodels/EditorDebugSnapshot';
 import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
+import { RenderInvalidation } from '../viewmodels/RenderInvalidation';
 
 interface CanvasSize {
   width: number;
@@ -19,9 +27,6 @@ interface ExtendedTouchObject extends TouchObject {
   eventTime?: number;
   t?: number;
 }
-
-const LIVE_PREVIEW_MIN_DISTANCE = 0.75;
-const MATERIAL_REDRAW_DELAY_MS = 260;
 
 @Component
 export struct CanvasBoard {
@@ -40,18 +45,17 @@ export struct CanvasBoard {
     new CanvasRenderingContext2D(this.committedRenderingSettings);
   private readonly overlayContext2D: CanvasRenderingContext2D =
     new CanvasRenderingContext2D(this.overlayRenderingSettings);
-  private lastLivePreviewPoint: StrokePoint | null = null;
-  private materialRedrawTimerId: number = -1;
+  private readonly renderedStrokesById: Map<string, Stroke> = new Map<string, Stroke>();
+  private renderedStrokeOrder: string[] = [];
+  private readonly renderedStrokeIndexById: Map<string, number> = new Map<string, number>();
+  private readonly strokeSpatialIndex: StrokeSpatialHashIndex = new StrokeSpatialHashIndex();
+  private lastAppliedRenderInvalidationSequence: number = 0;
 
   @State private isCommittedLayerReady: boolean = false;
   @State private isOverlayLayerReady: boolean = false;
 
   aboutToAppear(): void {
     this.resolveViewModel();
-  }
-
-  aboutToDisappear(): void {
-    this.clearScheduledMaterialRedraw();
   }
 
   build() {
@@ -83,13 +87,14 @@ export struct CanvasBoard {
   }
 
   private onCanvasVersionChanged(): void {
-    this.clearScheduledMaterialRedraw();
     const viewModel = this.getViewModel();
     if (viewModel) {
       viewModel.appendDebugEvent('CanvasBoard', `canvasRefresh version=${this.canvasVersion}`);
     }
     this.notifyCanvasMetricsChanged();
-    this.redrawCommittedLayer();
+    if (!this.tryApplyLatestRenderInvalidation()) {
+      this.redrawCommittedLayer();
+    }
     this.redrawOverlayLayer();
   }
 
@@ -113,7 +118,6 @@ export struct CanvasBoard {
     const point = this.buildPoint(touch);
 
     if (event.type === TouchType.Down) {
-      this.clearScheduledMaterialRedraw();
       viewModel.appendDebugEvent(
         'CanvasBoard',
         `touchDown tool=${toolSetting.tool} color=${toolSetting.color} width=${toolSetting.width} opacity=${toolSetting.opacity.toFixed(2)}`
@@ -122,25 +126,20 @@ export struct CanvasBoard {
       this.syncEditorSnapshot();
 
       if (activeTool === 'eraser') {
-        this.lastLivePreviewPoint = null;
         this.redrawOverlayLayer();
       } else {
-        this.clearOverlayLayer();
-        this.drawLivePreviewPoint(point, toolSetting);
-        this.lastLivePreviewPoint = point;
+        this.redrawOverlayLayer();
       }
       return;
     }
 
     if (event.type === TouchType.Move) {
-      viewModel.appendPoint(point);
+      const activeStroke = viewModel.appendPoint(point);
 
       if (activeTool === 'eraser') {
-        this.lastLivePreviewPoint = null;
         this.redrawOverlayLayer();
-      } else if (this.shouldDrawLivePreviewSegment(this.lastLivePreviewPoint, point)) {
-        this.drawLivePreviewSegment(this.lastLivePreviewPoint, point, toolSetting);
-        this.lastLivePreviewPoint = point;
+      } else if (activeStroke !== null) {
+        this.redrawOverlayLayer();
       }
       return;
     }
@@ -148,10 +147,6 @@ export struct CanvasBoard {
     if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
       viewModel.appendDebugEvent('CanvasBoard', `touchEnd type=${event.type} tool=${activeTool}`);
       viewModel.appendPoint(point);
-      if (activeTool !== 'eraser') {
-        this.drawLivePreviewSegment(this.lastLivePreviewPoint, point, toolSetting);
-      }
-      this.lastLivePreviewPoint = null;
       void this.finishStrokeAndRedraw(activeTool);
       return;
     }
@@ -166,68 +161,17 @@ export struct CanvasBoard {
     viewModel.appendDebugEvent('CanvasBoard', `finishStroke start tool=${activeTool}`);
     const completedStroke = await viewModel.finishStroke();
     this.syncEditorSnapshot();
-    if (activeTool === 'eraser' || completedStroke === null) {
-      this.redrawCommittedLayer();
-    } else if (this.isCommittedLayerReady) {
-      StrokeRenderer.drawStrokeFast(this.committedContext2D, completedStroke);
-      this.scheduleMaterialRedraw();
+    if (activeTool === 'eraser') {
+      if (!this.tryApplyLatestRenderInvalidation()) {
+        this.redrawCommittedLayer();
+      }
+    } else if (completedStroke !== null && this.isCommittedLayerReady) {
+      this.drawStroke(this.committedContext2D, completedStroke);
+      this.appendRenderedStroke(completedStroke);
     }
     this.clearOverlayLayer();
     this.onContentChanged(true);
     viewModel.appendDebugEvent('CanvasBoard', 'finishStroke done');
-  }
-
-  private drawLivePreviewPoint(point: StrokePoint, toolSetting: ToolSetting): void {
-    const previewEndPoint: StrokePoint = {
-      x: point.x + 0.01,
-      y: point.y + 0.01,
-      t: point.t,
-      pressure: point.pressure
-    };
-    this.drawLivePreviewSegment(point, previewEndPoint, toolSetting);
-  }
-
-  private drawLivePreviewSegment(
-    startPoint: StrokePoint | null,
-    endPoint: StrokePoint,
-    toolSetting: ToolSetting
-  ): void {
-    if (!this.isOverlayLayerReady || startPoint === null) {
-      return;
-    }
-
-    this.overlayContext2D.strokeStyle = toolSetting.color;
-    this.overlayContext2D.lineCap = toolSetting.tool === 'highlighter' ? 'butt' : 'round';
-    this.overlayContext2D.lineJoin = 'round';
-    this.overlayContext2D.lineWidth = Math.max(1, toolSetting.width);
-    this.overlayContext2D.globalAlpha = this.getLivePreviewOpacity(toolSetting);
-    this.overlayContext2D.beginPath();
-    this.overlayContext2D.moveTo(startPoint.x, startPoint.y);
-    this.overlayContext2D.lineTo(endPoint.x, endPoint.y);
-    this.overlayContext2D.stroke();
-    this.overlayContext2D.globalAlpha = 1;
-  }
-
-  private getLivePreviewOpacity(toolSetting: ToolSetting): number {
-    if (toolSetting.tool === 'highlighter') {
-      return Math.min(1, Math.max(0.08, toolSetting.opacity * 0.42));
-    }
-
-    if (toolSetting.tool === 'pencil') {
-      return Math.min(1, Math.max(0.12, toolSetting.opacity * 0.72));
-    }
-
-    return Math.min(1, Math.max(0.12, toolSetting.opacity));
-  }
-
-  private shouldDrawLivePreviewSegment(startPoint: StrokePoint | null, endPoint: StrokePoint): boolean {
-    if (startPoint === null) {
-      return false;
-    }
-
-    const deltaX = startPoint.x - endPoint.x;
-    const deltaY = startPoint.y - endPoint.y;
-    return deltaX * deltaX + deltaY * deltaY >= LIVE_PREVIEW_MIN_DISTANCE * LIVE_PREVIEW_MIN_DISTANCE;
   }
 
   private buildPoint(touch: TouchObject): StrokePoint {
@@ -246,6 +190,7 @@ export struct CanvasBoard {
       return;
     }
 
+    this.clearRenderedStrokeState();
     const size = this.getCanvasSize(this.committedContext2D);
     this.committedContext2D.clearRect(0, 0, size.width, size.height);
     this.committedContext2D.fillStyle = '#FFFFFF';
@@ -259,6 +204,7 @@ export struct CanvasBoard {
     const strokes = viewModel.getStrokesForRendering();
     for (const stroke of strokes) {
       this.drawStroke(this.committedContext2D, stroke);
+      this.appendRenderedStroke(stroke);
     }
   }
 
@@ -320,27 +266,143 @@ export struct CanvasBoard {
   }
 
   private drawPreviewStroke(context: CanvasRenderingContext2D, stroke: Stroke): void {
-    StrokeRenderer.drawPreviewStroke(context, stroke);
+    StrokeRenderer.drawStroke(context, stroke);
   }
 
-  private scheduleMaterialRedraw(): void {
-    if (this.materialRedrawTimerId >= 0) {
-      clearTimeout(this.materialRedrawTimerId);
+  private tryApplyLatestRenderInvalidation(): boolean {
+    if (!this.isCommittedLayerReady) {
+      return false;
     }
 
-    this.materialRedrawTimerId = setTimeout(() => {
-      this.materialRedrawTimerId = -1;
+    const viewModel = this.getViewModel();
+    if (!viewModel) {
+      return false;
+    }
+
+    const invalidation = viewModel.getRenderInvalidation();
+    if (invalidation === null) {
+      return false;
+    }
+
+    if (invalidation.sequence <= this.lastAppliedRenderInvalidationSequence) {
+      return true;
+    }
+
+    this.lastAppliedRenderInvalidationSequence = invalidation.sequence;
+    if (invalidation.mode === 'full') {
       this.redrawCommittedLayer();
-    }, MATERIAL_REDRAW_DELAY_MS);
+      return true;
+    }
+
+    return this.applyPartialRenderInvalidation(invalidation);
   }
 
-  private clearScheduledMaterialRedraw(): void {
-    if (this.materialRedrawTimerId < 0) {
+  private applyPartialRenderInvalidation(invalidation: RenderInvalidation): boolean {
+    this.applyRenderedStrokeMutation(invalidation);
+    const dirtyRect = this.clipDirtyRectToCanvas(invalidation.dirtyRect);
+    if (dirtyRect === null) {
+      return true;
+    }
+
+    this.clearCommittedRegion(dirtyRect);
+
+    const candidateStrokeIds = this.strokeSpatialIndex.queryStrokeIds(dirtyRect)
+      .sort((left: string, right: string) => this.getRenderedStrokeIndex(left) - this.getRenderedStrokeIndex(right));
+
+    for (const strokeId of candidateStrokeIds) {
+      const stroke = this.renderedStrokesById.get(strokeId);
+      if (stroke === undefined) {
+        continue;
+      }
+
+      const strokeBounds = this.strokeSpatialIndex.getBounds(strokeId);
+      if (strokeBounds !== null && doBoundingBoxesIntersect(strokeBounds, dirtyRect)) {
+        this.drawStroke(this.committedContext2D, stroke);
+      }
+    }
+
+    return true;
+  }
+
+  private applyRenderedStrokeMutation(invalidation: RenderInvalidation): void {
+    const removedIdSet = new Set<string>(invalidation.removedStrokeIds);
+    for (const strokeId of invalidation.removedStrokeIds) {
+      this.renderedStrokesById.delete(strokeId);
+      this.strokeSpatialIndex.removeStrokeById(strokeId);
+    }
+
+    if (removedIdSet.size > 0) {
+      this.renderedStrokeOrder = this.renderedStrokeOrder.filter((strokeId: string) => !removedIdSet.has(strokeId));
+      this.rebuildRenderedStrokeIndexMap();
+    }
+
+    const sortedAddedRecords = invalidation.addedRecords
+      .map((record: IndexedStrokeRecord): IndexedStrokeRecord => ({
+        index: record.index,
+        stroke: record.stroke
+      }))
+      .sort((left: IndexedStrokeRecord, right: IndexedStrokeRecord) => left.index - right.index);
+
+    for (const record of sortedAddedRecords) {
+      this.cacheRenderedStrokeState(record.stroke);
+      const insertionIndex = Math.max(0, Math.min(record.index, this.renderedStrokeOrder.length));
+      this.renderedStrokeOrder.splice(insertionIndex, 0, record.stroke.id);
+    }
+
+    if (sortedAddedRecords.length > 0) {
+      this.rebuildRenderedStrokeIndexMap();
+    }
+  }
+
+  private appendRenderedStroke(stroke: Stroke): void {
+    this.cacheRenderedStrokeState(stroke);
+    this.renderedStrokeOrder.push(stroke.id);
+    this.renderedStrokeIndexById.set(stroke.id, this.renderedStrokeOrder.length - 1);
+  }
+
+  private cacheRenderedStrokeState(stroke: Stroke): void {
+    this.renderedStrokesById.set(stroke.id, stroke);
+    this.strokeSpatialIndex.upsertStroke(stroke);
+  }
+
+  private clearRenderedStrokeState(): void {
+    this.renderedStrokesById.clear();
+    this.renderedStrokeOrder = [];
+    this.renderedStrokeIndexById.clear();
+    this.strokeSpatialIndex.clear();
+  }
+
+  private rebuildRenderedStrokeIndexMap(): void {
+    this.renderedStrokeIndexById.clear();
+    for (let index = 0; index < this.renderedStrokeOrder.length; index += 1) {
+      this.renderedStrokeIndexById.set(this.renderedStrokeOrder[index], index);
+    }
+  }
+
+  private getRenderedStrokeIndex(strokeId: string): number {
+    const index = this.renderedStrokeIndexById.get(strokeId);
+    return index === undefined ? Number.MAX_SAFE_INTEGER : index;
+  }
+
+  private clipDirtyRectToCanvas(dirtyRect: BoundingBox | null): BoundingBox | null {
+    if (dirtyRect === null) {
+      return null;
+    }
+
+    const size = this.getCanvasSize(this.committedContext2D);
+    return clampBoundingBox(dirtyRect, size.width, size.height);
+  }
+
+  private clearCommittedRegion(region: BoundingBox): void {
+    const width = region.maxX - region.minX;
+    const height = region.maxY - region.minY;
+    if (width <= 0 || height <= 0) {
       return;
     }
 
-    clearTimeout(this.materialRedrawTimerId);
-    this.materialRedrawTimerId = -1;
+    this.committedContext2D.clearRect(region.minX, region.minY, width, height);
+    this.committedContext2D.fillStyle = '#FFFFFF';
+    this.committedContext2D.fillRect(region.minX, region.minY, width, height);
   }
 
   private drawErasePreview(context: CanvasRenderingContext2D, path: StrokePoint[], width: number): void {
@@ -411,7 +473,8 @@ export struct CanvasBoard {
   }
 
   private onPageIdChanged(): void {
-    this.clearScheduledMaterialRedraw();
+    this.clearRenderedStrokeState();
+    this.lastAppliedRenderInvalidationSequence = 0;
     this.resolveViewModel();
   }
 
@@ -426,6 +489,8 @@ export struct CanvasBoard {
   private resolveViewModel(): void {
     if (this.pageId.length === 0) {
       this.viewModel = null;
+      this.clearRenderedStrokeState();
+      this.lastAppliedRenderInvalidationSequence = 0;
       return;
     }
 

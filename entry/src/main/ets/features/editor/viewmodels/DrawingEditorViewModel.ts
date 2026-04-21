@@ -1,10 +1,13 @@
 import common from '@ohos.app.ability.common';
 
 import {
+  BoundingBox,
   doBoundingBoxesIntersect,
   eraseStrokePointsWithPath,
   expandBoundingBox,
   getBoundingBox,
+  getStrokeRenderBoundingBox,
+  mergeBoundingBoxes,
   isSamePoint
 } from '../../../common/utils/GeometryUtil';
 import { now } from '../../../common/utils/TimeUtil';
@@ -13,8 +16,15 @@ import { Stroke, StrokePoint, StrokeStyle } from '../../../domain/entities/Strok
 import { DrawableToolType, ToolSetting } from '../../../domain/entities/ToolSetting';
 import { SaveStroke } from '../../../domain/usecases/SaveStroke';
 import { StrokeController } from '../controllers/StrokeController';
-import { UndoRedoController, UndoRedoDebugState } from '../controllers/UndoRedoController';
+import { StrokeSpatialHashIndex } from '../controllers/StrokeSpatialHashIndex';
+import {
+  IndexedStrokeRecord,
+  UndoRedoApplyResult,
+  UndoRedoController,
+  UndoRedoDebugState
+} from '../controllers/UndoRedoController';
 import { EditorDebugSnapshot } from './EditorDebugSnapshot';
+import { RenderInvalidation, RenderInvalidationReason } from './RenderInvalidation';
 
 const DEFAULT_TOOL_SETTING: ToolSetting = {
   tool: 'pen',
@@ -26,6 +36,8 @@ const DEFAULT_TOOL_SETTING: ToolSetting = {
 interface EraseResult {
   strokes: Stroke[];
   changed: boolean;
+  removed: IndexedStrokeRecord[];
+  added: IndexedStrokeRecord[];
 }
 
 const MAX_DEBUG_EVENTS = 20;
@@ -36,6 +48,7 @@ let nextEditorViewModelInstanceId = 1;
 export class DrawingEditorViewModel {
   private readonly strokeController: StrokeController = new StrokeController();
   private readonly undoRedoController: UndoRedoController = new UndoRedoController();
+  private readonly strokeSpatialIndex: StrokeSpatialHashIndex = new StrokeSpatialHashIndex();
 
   private pageId: string = '';
   private strokes: Stroke[] = [];
@@ -56,6 +69,8 @@ export class DrawingEditorViewModel {
   private isPersisting: boolean = false;
   private hasQueuedPersistence: boolean = false;
   private queuedPersistenceReason: string = 'update';
+  private renderInvalidationSequence: number = 0;
+  private lastRenderInvalidation: RenderInvalidation | null = null;
   private readonly instanceId: number = nextEditorViewModelInstanceId++;
 
   constructor(private readonly contextProvider: () => common.Context) {}
@@ -72,14 +87,18 @@ export class DrawingEditorViewModel {
 
     try {
       this.strokes = await this.createRepository().getStrokes(pageId);
+      this.rebuildStrokeSpatialIndex();
       this.resetTransientState();
       this.undoRedoController.seedLoadedStrokes(this.strokes);
+      this.markFullRenderInvalidation('load');
       this.persistenceStatus = `loaded count=${this.strokes.length}`;
       this.appendDebugEvent('loadPage', `loaded strokes=${this.strokes.length}`);
     } catch (error) {
       this.errorMessage = this.stringifyError(error);
       this.strokes = [];
+      this.strokeSpatialIndex.clear();
       this.resetTransientState();
+      this.markFullRenderInvalidation('load');
       this.persistenceStatus = `loadFailed error=${this.errorMessage}`;
       this.appendDebugEvent('loadPage', `failed error=${this.errorMessage}`);
     } finally {
@@ -132,6 +151,7 @@ export class DrawingEditorViewModel {
     const nextStrokes = this.strokes.slice();
     nextStrokes.push(completedStroke);
     this.strokes = nextStrokes;
+    this.strokeSpatialIndex.upsertStroke(completedStroke);
     this.undoRedoController.recordAppendStroke(completedStroke);
     this.persistenceStatus = 'pending stroke save';
     this.appendDebugEvent('finishStroke', `queuedSave count=${nextStrokes.length} stroke=${this.describeStroke(completedStroke)}`);
@@ -149,62 +169,40 @@ export class DrawingEditorViewModel {
     this.strokeController.cancelStroke();
   }
 
-  async undo(): Promise<Stroke[]> {
+  async undo(): Promise<void> {
     if (this.pageId.length === 0) {
       this.errorMessage = 'Page is not loaded.';
-      return this.getStrokes();
+      return;
     }
 
     this.cancelStroke();
-    const sourceSnapshot = this.cloneStrokes(this.strokes);
-    const historySnapshot = this.undoRedoController.createSnapshot();
     this.appendDebugEvent('undo', `requested count=${this.strokes.length} history=${this.describeHistoryState()}`);
-
-    try {
-      const nextStrokes = this.undoRedoController.undo(this.strokes);
-      this.strokes = nextStrokes;
-      this.persistenceStatus = 'pending undo save';
-      this.schedulePersistCurrentStrokes('undo', 0);
-      this.errorMessage = '';
-      this.appendDebugEvent('undo', `applied queuedSave count=${this.strokes.length} history=${this.describeHistoryState()}`);
-    } catch (error) {
-      this.strokes = sourceSnapshot;
-      this.undoRedoController.restoreSnapshot(historySnapshot);
-      this.errorMessage = this.stringifyError(error);
-      this.persistenceStatus = `undoFailed restored error=${this.errorMessage}`;
-      this.appendDebugEvent('undo', `failed restored error=${this.errorMessage}`);
-    }
-
-    return this.getStrokes();
+    const undoResult: UndoRedoApplyResult = this.undoRedoController.undo(this.strokes);
+    this.strokes = undoResult.strokes;
+    this.applyStrokeSpatialIndexMutation(undoResult.removed, undoResult.added);
+    this.markPartialRenderInvalidation('undo', undoResult.removed, undoResult.added);
+    this.persistenceStatus = 'pending undo save';
+    this.schedulePersistCurrentStrokes('undo', 0);
+    this.errorMessage = '';
+    this.appendDebugEvent('undo', `applied queuedSave count=${this.strokes.length} history=${this.describeHistoryState()}`);
   }
 
-  async redo(): Promise<Stroke[]> {
+  async redo(): Promise<void> {
     if (this.pageId.length === 0) {
       this.errorMessage = 'Page is not loaded.';
-      return this.getStrokes();
+      return;
     }
 
     this.cancelStroke();
-    const sourceSnapshot = this.cloneStrokes(this.strokes);
-    const historySnapshot = this.undoRedoController.createSnapshot();
     this.appendDebugEvent('redo', `requested count=${this.strokes.length} history=${this.describeHistoryState()}`);
-
-    try {
-      const nextStrokes = this.undoRedoController.redo(this.strokes);
-      this.strokes = nextStrokes;
-      this.persistenceStatus = 'pending redo save';
-      this.schedulePersistCurrentStrokes('redo', 0);
-      this.errorMessage = '';
-      this.appendDebugEvent('redo', `applied queuedSave count=${this.strokes.length} history=${this.describeHistoryState()}`);
-    } catch (error) {
-      this.strokes = sourceSnapshot;
-      this.undoRedoController.restoreSnapshot(historySnapshot);
-      this.errorMessage = this.stringifyError(error);
-      this.persistenceStatus = `redoFailed restored error=${this.errorMessage}`;
-      this.appendDebugEvent('redo', `failed restored error=${this.errorMessage}`);
-    }
-
-    return this.getStrokes();
+    const redoResult: UndoRedoApplyResult = this.undoRedoController.redo(this.strokes);
+    this.strokes = redoResult.strokes;
+    this.applyStrokeSpatialIndexMutation(redoResult.removed, redoResult.added);
+    this.markPartialRenderInvalidation('redo', redoResult.removed, redoResult.added);
+    this.persistenceStatus = 'pending redo save';
+    this.schedulePersistCurrentStrokes('redo', 0);
+    this.errorMessage = '';
+    this.appendDebugEvent('redo', `applied queuedSave count=${this.strokes.length} history=${this.describeHistoryState()}`);
   }
 
   async clear(): Promise<void> {
@@ -217,7 +215,23 @@ export class DrawingEditorViewModel {
     const sourceSnapshot = this.cloneStrokes(this.strokes);
     this.appendDebugEvent('clear', `requested count=${sourceSnapshot.length} history=${this.describeHistoryState()}`);
     this.strokes = [];
-    this.undoRedoController.recordReplacePage(sourceSnapshot, [], 'clear');
+    this.strokeSpatialIndex.clear();
+    this.undoRedoController.recordDelta(
+      sourceSnapshot.map((stroke: Stroke, index: number): IndexedStrokeRecord => ({
+        index,
+        stroke: this.cloneStroke(stroke)
+      })),
+      [],
+      'clear'
+    );
+    this.markPartialRenderInvalidation(
+      'clear',
+      sourceSnapshot.map((stroke: Stroke, index: number): IndexedStrokeRecord => ({
+        index,
+        stroke: this.cloneStroke(stroke)
+      })),
+      []
+    );
     this.persistenceStatus = 'pending clear save';
     this.schedulePersistCurrentStrokes('clear', 0);
     this.errorMessage = '';
@@ -311,6 +325,14 @@ export class DrawingEditorViewModel {
     return this.isLoading;
   }
 
+  getRenderInvalidation(): RenderInvalidation | null {
+    if (this.lastRenderInvalidation === null) {
+      return null;
+    }
+
+    return this.cloneRenderInvalidation(this.lastRenderInvalidation);
+  }
+
   async flushPendingSave(): Promise<void> {
     this.clearScheduledSave();
     await this.persistCurrentStrokes('flush');
@@ -353,7 +375,9 @@ export class DrawingEditorViewModel {
     }
 
     this.strokes = eraseResult.strokes;
-    this.undoRedoController.recordReplacePage(sourceSnapshot, this.strokes, 'erase');
+    this.applyStrokeSpatialIndexMutation(eraseResult.removed, eraseResult.added);
+    this.undoRedoController.recordDelta(eraseResult.removed, eraseResult.added, 'erase');
+    this.markPartialRenderInvalidation('erase', eraseResult.removed, eraseResult.added);
     this.persistenceStatus = 'pending erase save';
     this.schedulePersistCurrentStrokes('erase');
     this.errorMessage = '';
@@ -438,16 +462,36 @@ export class DrawingEditorViewModel {
     if (!eraserBounds) {
       return {
         strokes: this.cloneStrokes(sourceStrokes),
-        changed: false
+        changed: false,
+        removed: [],
+        added: []
       };
     }
 
     const result: Stroke[] = [];
     let changed = false;
+    const removed: IndexedStrokeRecord[] = [];
+    const added: IndexedStrokeRecord[] = [];
     const expandedEraserBounds = expandBoundingBox(eraserBounds, this.toolSetting.width / 2);
+    const candidateStrokeIds = new Set<string>(this.strokeSpatialIndex.queryStrokeIds(expandedEraserBounds));
+    if (candidateStrokeIds.size === 0) {
+      return {
+        strokes: sourceStrokes,
+        changed: false,
+        removed: [],
+        added: []
+      };
+    }
+
     const updateTime = now();
 
-    for (const stroke of sourceStrokes) {
+    for (let strokeIndex = 0; strokeIndex < sourceStrokes.length; strokeIndex += 1) {
+      const stroke = sourceStrokes[strokeIndex];
+      if (!candidateStrokeIds.has(stroke.id)) {
+        result.push(stroke);
+        continue;
+      }
+
       const strokeBounds = getBoundingBox(stroke.points);
       if (!strokeBounds) {
         continue;
@@ -455,7 +499,7 @@ export class DrawingEditorViewModel {
 
       const expandedStrokeBounds = expandBoundingBox(strokeBounds, stroke.style.width / 2);
       if (!doBoundingBoxesIntersect(expandedEraserBounds, expandedStrokeBounds)) {
-        result.push(this.cloneStroke(stroke));
+        result.push(stroke);
         continue;
       }
 
@@ -464,27 +508,39 @@ export class DrawingEditorViewModel {
       const remainingSegments = eraseStrokePointsWithPath(stroke.points, eraserPath, effectiveRadius, samplingStep);
 
       if (remainingSegments.length === 1 && this.arePointListsEqual(remainingSegments[0], stroke.points)) {
-        result.push(this.cloneStroke(stroke));
+        result.push(stroke);
         continue;
       }
 
       changed = true;
+      removed.push({
+        index: strokeIndex,
+        stroke: this.cloneStroke(stroke)
+      });
 
-      for (let index = 0; index < remainingSegments.length; index += 1) {
-        result.push({
-          id: this.buildDerivedStrokeId(stroke.id, index),
+      const insertionStartIndex = result.length;
+      for (let segmentIndex = 0; segmentIndex < remainingSegments.length; segmentIndex += 1) {
+        const nextStroke: Stroke = {
+          id: this.buildDerivedStrokeId(stroke.id, segmentIndex, updateTime),
           pageId: stroke.pageId,
-          points: remainingSegments[index].map((point: StrokePoint) => this.clonePoint(point)),
+          points: remainingSegments[segmentIndex].map((point: StrokePoint) => this.clonePoint(point)),
           style: this.cloneStyle(stroke.style),
           createdAt: stroke.createdAt,
           updatedAt: updateTime
+        };
+        result.push(nextStroke);
+        added.push({
+          index: insertionStartIndex + segmentIndex,
+          stroke: this.cloneStroke(nextStroke)
         });
       }
     }
 
     return {
       strokes: result,
-      changed
+      changed,
+      removed,
+      added
     };
   }
 
@@ -508,12 +564,8 @@ export class DrawingEditorViewModel {
     }
   }
 
-  private buildDerivedStrokeId(baseId: string, index: number): string {
-    if (index === 0) {
-      return baseId;
-    }
-
-    return `${baseId}__split_${index}`;
+  private buildDerivedStrokeId(baseId: string, index: number, versionToken: number): string {
+    return `${baseId}__split_${versionToken}_${index}`;
   }
 
   private arePointListsEqual(left: StrokePoint[], right: StrokePoint[]): boolean {
@@ -574,6 +626,92 @@ export class DrawingEditorViewModel {
 
   private isEraseGestureActive(): boolean {
     return this.eraseSourceStrokes !== null;
+  }
+
+  private markFullRenderInvalidation(reason: RenderInvalidationReason): void {
+    this.renderInvalidationSequence += 1;
+    this.lastRenderInvalidation = {
+      sequence: this.renderInvalidationSequence,
+      mode: 'full',
+      reason,
+      dirtyRect: null,
+      removedStrokeIds: [],
+      addedRecords: []
+    };
+  }
+
+  private markPartialRenderInvalidation(
+    reason: Exclude<RenderInvalidationReason, 'load'>,
+    removed: IndexedStrokeRecord[],
+    added: IndexedStrokeRecord[]
+  ): void {
+    const dirtyRect = this.buildDirtyRectFromRecords(removed, added);
+    if (dirtyRect === null) {
+      return;
+    }
+
+    this.renderInvalidationSequence += 1;
+    this.lastRenderInvalidation = {
+      sequence: this.renderInvalidationSequence,
+      mode: 'partial',
+      reason,
+      dirtyRect,
+      removedStrokeIds: removed.map((record: IndexedStrokeRecord) => record.stroke.id),
+      addedRecords: added.map((record: IndexedStrokeRecord): IndexedStrokeRecord => ({
+        index: record.index,
+        stroke: this.cloneStroke(record.stroke)
+      }))
+    };
+  }
+
+  private buildDirtyRectFromRecords(removed: IndexedStrokeRecord[], added: IndexedStrokeRecord[]): BoundingBox | null {
+    let dirtyRect: BoundingBox | null = null;
+
+    for (const record of removed) {
+      dirtyRect = mergeBoundingBoxes(dirtyRect, getStrokeRenderBoundingBox(record.stroke));
+    }
+
+    for (const record of added) {
+      dirtyRect = mergeBoundingBoxes(dirtyRect, getStrokeRenderBoundingBox(record.stroke));
+    }
+
+    return dirtyRect;
+  }
+
+  private rebuildStrokeSpatialIndex(): void {
+    this.strokeSpatialIndex.clear();
+    for (const stroke of this.strokes) {
+      this.strokeSpatialIndex.upsertStroke(stroke);
+    }
+  }
+
+  private applyStrokeSpatialIndexMutation(removed: IndexedStrokeRecord[], added: IndexedStrokeRecord[]): void {
+    for (const record of removed) {
+      this.strokeSpatialIndex.removeStrokeById(record.stroke.id);
+    }
+
+    for (const record of added) {
+      this.strokeSpatialIndex.upsertStroke(record.stroke);
+    }
+  }
+
+  private cloneRenderInvalidation(invalidation: RenderInvalidation): RenderInvalidation {
+    return {
+      sequence: invalidation.sequence,
+      mode: invalidation.mode,
+      reason: invalidation.reason,
+      dirtyRect: invalidation.dirtyRect === null ? null : {
+        minX: invalidation.dirtyRect.minX,
+        minY: invalidation.dirtyRect.minY,
+        maxX: invalidation.dirtyRect.maxX,
+        maxY: invalidation.dirtyRect.maxY
+      },
+      removedStrokeIds: [...invalidation.removedStrokeIds],
+      addedRecords: invalidation.addedRecords.map((record: IndexedStrokeRecord): IndexedStrokeRecord => ({
+        index: record.index,
+        stroke: this.cloneStroke(record.stroke)
+      }))
+    };
   }
 
   private stringifyError(error: Object): string {
