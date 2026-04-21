@@ -22,7 +22,6 @@ export struct ToolPropertyPanel {
   build() {
     Column({ space: 6 }) {
       this.buildSummaryCard()
-      this.buildToolSelector()
       this.buildBrushSettings()
     }
     .width('100%')
@@ -174,15 +173,15 @@ export struct ToolPropertyPanel {
       Row({ space: 5 }) {
         ForEach(WIDTH_OPTIONS, (width: number) => {
           Button() {
-            this.buildWidthGlyph(width, this.getToolSetting().width === width)
+            this.buildWidthGlyph(width)
           }
           .layoutWeight(1)
           .height(28)
-          .backgroundColor(this.getToolSetting().width === width ? '#0F172A' : '#FFFFFF')
+          .backgroundColor(this.isSelectedWidth(width) ? '#0F172A' : '#FFFFFF')
           .borderRadius(10)
           .border({
             width: 1,
-            color: this.getToolSetting().width === width ? '#0F172A' : '#CBD5E1'
+            color: this.isSelectedWidth(width) ? '#CBD5E1' : '#CBD5E1'
           })
           .onClick(() => {
             this.updateToolSetting({
@@ -383,12 +382,16 @@ export struct ToolPropertyPanel {
   }
 
   @Builder
-  private buildWidthGlyph(width: number, isSelected: boolean): void {
+  private buildWidthGlyph(width: number): void {
     Column() {}
       .width(14)
       .height(Math.max(2, Math.min(12, width)))
-      .backgroundColor(isSelected ? '#FFFFFF' : '#0F172A')
+      .backgroundColor(this.isSelectedWidth(width) ? '#FFFFFF' : '#000000')
       .borderRadius(6)
+  }
+
+  private isSelectedWidth(width: number): boolean {
+    return this.getToolSetting().width === width;
   }
 
   private isSelectedTool(tool: ToolType): boolean {

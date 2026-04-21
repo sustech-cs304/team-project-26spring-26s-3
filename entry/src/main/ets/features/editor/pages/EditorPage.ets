@@ -5,7 +5,7 @@ import { AppRouter, RouterParams } from '../../../app/AppRouter';
 import { Notebook } from '../../../domain/entities/Notebook';
 import { NotebookPage } from '../../../domain/entities/NotebookPage';
 import { NotebookPageCanvas } from '../../../domain/entities/NotebookPageCanvas';
-import { ToolSetting } from '../../../domain/entities/ToolSetting';
+import { ToolSetting, ToolType } from '../../../domain/entities/ToolSetting';
 import { CanvasBoard } from '../components/CanvasBoard';
 import { PageThumbnailPreview } from '../components/PageThumbnailPreview';
 import { ToolPropertyPanel } from '../components/ToolPropertyPanel';
@@ -20,6 +20,10 @@ interface PageCanvasRenderSize {
 }
 
 const THUMBNAIL_REFRESH_INTERVAL_MS = 320;
+const SIDEBAR_EXPANDED_WIDTH = 232;
+const SIDEBAR_COLLAPSED_WIDTH = 56;
+const WORKSPACE_MENU_BUTTON_FONT_SIZE = 26;
+const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser'];
 
 @Entry
 @Component
@@ -45,6 +49,8 @@ struct EditorPage {
   @State private editorSnapshot: EditorDebugSnapshot = this.buildEmptySnapshot('');
   @State private canvasVersion: number = 0;
   @State private thumbnailRefreshVersion: number = 0;
+  @State private isPagePreviewCollapsed: boolean = false;
+  @State private isToolDropdownVisible: boolean = false;
   private readonly pageCanvasRenderSizeMap: Map<string, PageCanvasRenderSize> = new Map<string, PageCanvasRenderSize>();
   private thumbnailRefreshTimerId: number = -1;
   private lastThumbnailRefreshTime: number = 0;
@@ -62,6 +68,7 @@ struct EditorPage {
     EditorSessionRegistry.clearAll();
     this.drawingViewModel = null;
     this.currentDrawingPageId = '';
+    this.isToolDropdownVisible = false;
   }
 
   build() {
@@ -132,6 +139,7 @@ struct EditorPage {
             .backgroundColor($r('app.color.primary_text'))
             .fontColor($r('app.color.inverse_text'))
             .onClick(() => {
+              this.closeTransientDropdowns();
               AppRouter.openNotebookList();
             })
 
@@ -140,6 +148,7 @@ struct EditorPage {
             .backgroundColor($r('app.color.surface_background'))
             .fontColor($r('app.color.primary_text'))
             .onClick(() => {
+              this.closeTransientDropdowns();
               AppRouter.goHome();
             })
         }
@@ -191,43 +200,42 @@ struct EditorPage {
 
   @Builder
   private buildTopBar(): void {
-    Row({ space: 16 }) {
-      Button($r('app.string.editor_nav_notebooks'))
-        .height($r('app.float.button_height'))
-        .backgroundColor($r('app.color.surface_background'))
-        .fontColor($r('app.color.primary_text'))
-        .onClick(() => {
-          AppRouter.openNotebookList();
-        })
-
-      Column({ space: 4 }) {
-        Text(this.notebookTitle)
-          .fontSize($r('app.float.hero_title_size'))
-          .fontWeight(FontWeight.Bold)
+    Stack({ alignContent: Alignment.Center }) {
+      Row() {
+        Button('返回')
+          .height(34)
+          .padding({
+            left: 12,
+            right: 12
+          })
+          .backgroundColor($r('app.color.surface_background'))
           .fontColor($r('app.color.primary_text'))
+          .onClick(() => {
+            this.closeTransientDropdowns();
+            AppRouter.back();
+          })
 
-        Text(this.getNotebookSummaryText())
-          .fontSize($r('app.float.caption_text_size'))
-          .fontColor($r('app.color.secondary_text'))
+        Blank()
+          .layoutWeight(1)
       }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
 
-      Button($r('app.string.editor_nav_home'))
-        .height($r('app.float.button_height'))
-        .backgroundColor($r('app.color.surface_background'))
+      Text(this.notebookTitle)
+        .fontSize($r('app.float.section_title_size'))
+        .fontWeight(FontWeight.Medium)
         .fontColor($r('app.color.primary_text'))
-        .onClick(() => {
-          AppRouter.goHome();
-        })
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.Center)
+        .constraintSize({ maxWidth: '40%' })
     }
     .width('100%')
-    .alignItems(VerticalAlign.Center)
     .padding({
-      left: 20,
-      right: 20,
-      top: 16,
-      bottom: 16
+      left: 16,
+      right: 16,
+      top: 10,
+      bottom: 10
     })
     .backgroundColor($r('app.color.editor_toolbar_background'))
     .borderRadius(28)
@@ -235,131 +243,182 @@ struct EditorPage {
       width: 1,
       color: $r('app.color.editor_toolbar_border')
     })
+    .onClick(() => {
+      this.closeToolDropdown();
+    })
   }
 
   @Builder
   private buildSidebar(): void {
     Column({ space: 14 }) {
-      Row({ space: 10 }) {
-        Text($r('app.string.editor_sidebar_title'))
-          .fontSize($r('app.float.section_title_size'))
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.primary_text'))
-          .layoutWeight(1)
+      Row({ space: this.isPagePreviewCollapsed ? 6 : 10 }) {
+        if (!this.isPagePreviewCollapsed) {
+          // Text($r('app.string.editor_sidebar_title'))
+          //   .fontSize($r('app.float.section_title_size'))
+          //   .fontWeight(FontWeight.Medium)
+          //   .fontColor($r('app.color.primary_text'))
+          //   .layoutWeight(1)
 
-        Text(this.getPageCountText())
-          .fontSize($r('app.float.caption_text_size'))
-          .fontColor($r('app.color.editor_accent'))
-          .padding({
-            left: 12,
-            right: 12,
-            top: 6,
-            bottom: 6
+          Text(this.getPageCountText())
+            .fontSize($r('app.float.caption_text_size'))
+            .fontColor($r('app.color.editor_accent'))
+            .padding({
+              left: 12,
+              right: 12,
+              top: 6,
+              bottom: 6
+            })
+            .backgroundColor($r('app.color.editor_accent_soft'))
+            .borderRadius(999)
+        }
+
+        if (!this.isPagePreviewCollapsed) {
+          Blank()
+            .layoutWeight(1)
+        }
+
+        if (!this.isPagePreviewCollapsed) {
+          Button() {
+            Text('+')
+              .fontColor('#000000')
+              .fontSize(22)
+              .fontWeight(FontWeight.Bold)
+              .textAlign(TextAlign.Center)
+              .width('100%')
+          }
+          .width(32)
+          .height(32)
+          .padding(0)
+          .backgroundColor('#fff2f2f2')
+          .borderRadius(10)
+          .enabled(!this.isCreatingPage && !this.isDeletingPage && !this.isReorderingPages)
+          .onClick(() => {
+            this.closeTransientDropdowns();
+            void this.createNotebookPage();
           })
-          .backgroundColor($r('app.color.editor_accent_soft'))
-          .borderRadius(999)
+        }
+
+        Button() {
+          Text(this.isPagePreviewCollapsed ? '>' : '<')
+            .fontColor('#000000')
+            .fontSize(22)
+            .fontWeight(FontWeight.Bold)
+            .textAlign(TextAlign.Center)
+            .width('100%')
+        }
+        .width(32)
+        .height(32)
+        .padding(0)
+        .backgroundColor('#fff2f2f2')
+        .borderRadius(10)
+        .onClick(() => {
+          this.closeTransientDropdowns();
+          this.isPagePreviewCollapsed = !this.isPagePreviewCollapsed;
+        })
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)
+      .justifyContent(FlexAlign.End)
 
-      if (this.notebookPageList.length === 0) {
-        Column({ space: 10 }) {
-          Text($r('app.string.editor_page_empty_title'))
-            .fontSize($r('app.float.body_text_size'))
-            .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.primary_text'))
+      if (!this.isPagePreviewCollapsed) {
+        if (this.notebookPageList.length === 0) {
+          Column({ space: 10 }) {
+            Text($r('app.string.editor_page_empty_title'))
+              .fontSize($r('app.float.body_text_size'))
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.primary_text'))
 
-          Text($r('app.string.editor_page_empty_desc'))
-            .fontSize($r('app.float.caption_text_size'))
-            .fontColor($r('app.color.secondary_text'))
-        }
-        .layoutWeight(1)
-        .width('100%')
-        .alignItems(HorizontalAlign.Start)
-        .padding(18)
-        .backgroundColor($r('app.color.editor_thumbnail_background'))
-        .borderRadius(22)
-        .border({
-          width: 1,
-          color: $r('app.color.editor_sidebar_border')
-        })
-      } else {
-        Scroll() {
-          Column({ space: 12 }) {
-            ForEach(this.notebookPageList, (page: NotebookPage) => {
-              this.buildPageThumbnail(page);
-            }, (page: NotebookPage): string => this.getPageRenderKey(page))
+            Text($r('app.string.editor_page_empty_desc'))
+              .fontSize($r('app.float.caption_text_size'))
+              .fontColor($r('app.color.secondary_text'))
           }
+          .layoutWeight(1)
           .width('100%')
           .alignItems(HorizontalAlign.Start)
+          .padding(18)
+          .backgroundColor($r('app.color.editor_thumbnail_background'))
+          .borderRadius(22)
+          .border({
+            width: 1,
+            color: $r('app.color.editor_sidebar_border')
+          })
+        } else {
+          Scroll() {
+            Column({ space: 12 }) {
+              ForEach(this.notebookPageList, (page: NotebookPage) => {
+                this.buildPageThumbnail(page);
+              }, (page: NotebookPage): string => this.getPageRenderKey(page))
+            }
+            .width('100%')
+            .alignItems(HorizontalAlign.Start)
+          }
+          .layoutWeight(1)
+          .width('100%')
         }
-        .layoutWeight(1)
-        .width('100%')
-      }
 
-      Button(this.isCreatingPage ? $r('app.string.editor_page_adding') : $r('app.string.editor_page_add'))
-        .width('100%')
-        .height($r('app.float.button_height'))
-        .backgroundColor($r('app.color.editor_accent'))
-        .fontColor($r('app.color.inverse_text'))
-        .enabled(!this.isCreatingPage && !this.isDeletingPage && !this.isReorderingPages)
-        .onClick(() => {
-          void this.createNotebookPage();
-        })
+      }
     }
-    .width(232)
+    .width(this.isPagePreviewCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH)
     .height('100%')
-    .padding(16)
+    .padding(this.isPagePreviewCollapsed ? 10 : 16)
     .backgroundColor($r('app.color.editor_sidebar_background'))
     .borderRadius(28)
     .border({
       width: 1,
       color: $r('app.color.editor_sidebar_border')
     })
+    .onClick(() => {
+      this.closeToolDropdown();
+    })
   }
 
   @Builder
   private buildPageThumbnail(page: NotebookPage): void {
-    Column({ space: 10 }) {
-      Row({ space: 8 }) {
-        Text(this.getPageLabel(page.order))
-          .fontSize($r('app.float.body_text_size'))
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.primary_text'))
+    Column() {
+      Stack({ alignContent: Alignment.BottomEnd }) {
+        PageThumbnailPreview({
+          pageId: page.id,
+          isActive: page.id === this.activePageId,
+          refreshVersion: this.thumbnailRefreshVersion,
+          paperBackgroundColor: page.id === this.activePageId ? this.getActiveCanvasBackgroundColor() : '#FFFFFF',
+          canvasWidth: this.getThumbnailCanvasWidth(page.id),
+          canvasHeight: this.getThumbnailCanvasHeight(page.id)
+        })
+        .width('100%')
+        .height('100%')
+        .backgroundColor($r('app.color.surface_background'))
+        .borderRadius(18)
+        .border({
+          width: 1,
+          color: page.id === this.activePageId ? $r('app.color.editor_accent') :
+            $r('app.color.editor_paper_border')
+        })
 
-        if (page.id === this.activePageId) {
-          Text($r('app.string.editor_page_current_badge'))
-            .fontSize($r('app.float.caption_text_size'))
-            .fontColor($r('app.color.editor_accent'))
-        }
+        Text(`${page.order + 1}`)
+          .fontSize(12)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(page.id === this.activePageId ? '#FFFFFF' : $r('app.color.primary_text'))
+          .width(24)
+          .height(24)
+          .textAlign(TextAlign.Center)
+          .backgroundColor(page.id === this.activePageId ? $r('app.color.editor_accent') : '#FFFFFF')
+          .borderRadius(6)
+          .margin({
+            right: 8,
+            bottom: 8
+          })
       }
       .width('100%')
-      .alignItems(VerticalAlign.Center)
-
-      PageThumbnailPreview({
-        pageId: page.id,
-        isActive: page.id === this.activePageId,
-        refreshVersion: this.thumbnailRefreshVersion,
-        paperBackgroundColor: page.id === this.activePageId ? this.getActiveCanvasBackgroundColor() : '#FFFFFF',
-        canvasWidth: this.getThumbnailCanvasWidth(page.id),
-        canvasHeight: this.getThumbnailCanvasHeight(page.id)
-      })
-      .width('100%')
-      .height(132)
-      .backgroundColor($r('app.color.surface_background'))
-      .borderRadius(18)
-      .border({
-        width: 1,
-        color: page.id === this.activePageId ? $r('app.color.editor_accent') :
-          $r('app.color.editor_paper_border')
-      })
+      .layoutWeight(1)
       .onClick(() => {
+        this.closeTransientDropdowns();
         void this.selectNotebookPage(page);
       })
     }
     .width('100%')
+    .height(164)
     .alignItems(HorizontalAlign.Start)
-    .padding(12)
+    // .padding(12)
     .backgroundColor(page.id === this.activePageId ? $r('app.color.editor_thumbnail_active') :
       $r('app.color.editor_thumbnail_background'))
     .borderRadius(22)
@@ -375,36 +434,117 @@ struct EditorPage {
     Stack({ alignContent: Alignment.TopEnd }) {
       Column({ space: 16 }) {
         Row({ space: 12 }) {
-          Column({ space: 4 }) {
-            if (this.activePageId.length > 0) {
-              Text(this.getActivePageLabel())
-                .fontSize($r('app.float.section_title_size'))
-                .fontWeight(FontWeight.Medium)
-                .fontColor($r('app.color.primary_text'))
-            } else {
-              Text($r('app.string.editor_canvas_empty_title'))
-                .fontSize($r('app.float.section_title_size'))
-                .fontWeight(FontWeight.Medium)
-                .fontColor($r('app.color.primary_text'))
-            }
-
-            Text($r('app.string.editor_workspace_desc'))
-              .fontSize($r('app.float.caption_text_size'))
-              .fontColor($r('app.color.secondary_text'))
-          }
-          .layoutWeight(1)
-          .alignItems(HorizontalAlign.Start)
 
           if (this.notebookPageList.length > 0) {
             Row({ space: 8 }) {
-              Button('...')
+              ForEach(WORKSPACE_TOOL_OPTIONS, (tool: ToolType) => {
+                Button(this.getWorkspaceToolLabel(tool))
+                  .height(32)
+                  .padding({
+                    left: 10,
+                    right: 10
+                  })
+                  .fontSize(12)
+                  .backgroundColor(this.toolSetting.tool === tool ? '#0F172A' : '#FFFFFF')
+                  .fontColor(this.toolSetting.tool === tool ? '#FFFFFF' : '#475569')
+                  .borderRadius(10)
+                  .border({
+                    width: 1,
+                    color: this.toolSetting.tool === tool ? '#0F172A' : '#CBD5E1'
+                  })
+                  .enabled(!this.isCanvasLoading)
+                  .onClick(() => {
+                    this.handleWorkspaceToolButtonClick(tool);
+                  })
+              }, (tool: ToolType): string => tool)
+            }
+            .alignItems(VerticalAlign.Center)
+
+            Blank()
+              .layoutWeight(1)
+
+            Row({ space: 8 }) {
+              Button() {
+                if (this.editorSnapshot.undoDepth > 0 && !this.isCanvasLoading) {
+                  Image($r('app.media.undo_white'))
+                    .width(18)
+                    .height(18)
+                } else {
+                  Image($r('app.media.undo'))
+                    .width(18)
+                    .height(18)
+                    .opacity(0.45)
+                }
+              }
                 .width(40)
                 .height(40)
-                .backgroundColor($r('app.color.surface_background'))
-                .fontColor($r('app.color.secondary_text'))
+                .enabled(this.editorSnapshot.undoDepth > 0 && !this.isCanvasLoading)
+                .backgroundColor(this.editorSnapshot.undoDepth > 0 && !this.isCanvasLoading ?
+                  $r('app.color.primary_text') : $r('app.color.app_background'))
+                .borderRadius(12)
+                .onClick(() => {
+                  this.closeTransientDropdowns();
+                  void this.handleUndo();
+                })
+
+              Button() {
+                if (this.editorSnapshot.redoDepth > 0 && !this.isCanvasLoading) {
+                  Image($r('app.media.redo_white'))
+                    .width(18)
+                    .height(18)
+                } else {
+                  Image($r('app.media.redo'))
+                    .width(18)
+                    .height(18)
+                    .opacity(0.45)
+                }
+              }
+                .width(40)
+                .height(40)
+                .enabled(this.editorSnapshot.redoDepth > 0 && !this.isCanvasLoading)
+                .backgroundColor(this.editorSnapshot.redoDepth > 0 && !this.isCanvasLoading ?
+                  $r('app.color.primary_text') : $r('app.color.app_background'))
+                .borderRadius(12)
+                .onClick(() => {
+                  this.closeTransientDropdowns();
+                  void this.handleRedo();
+                })
+
+              Button() {
+                if (this.editorSnapshot.strokeCount > 0 && !this.isCanvasLoading) {
+                  Image($r('app.media.clear_white'))
+                    .width(18)
+                    .height(18)
+                } else {
+                  Image($r('app.media.clear'))
+                    .width(18)
+                    .height(18)
+                    .opacity(0.45)
+                }
+              }
+                .width(40)
+                .height(40)
+                .enabled(this.editorSnapshot.strokeCount > 0 && !this.isCanvasLoading)
+                .backgroundColor(this.editorSnapshot.strokeCount > 0 && !this.isCanvasLoading ?
+                  $r('app.color.danger_text') : $r('app.color.danger_surface'))
+                .borderRadius(12)
+                .onClick(() => {
+                  this.closeTransientDropdowns();
+                  void this.handleClear();
+                })
+
+              Button() {
+                Image($r('app.media.page'))
+                  .width(18)
+                  .height(18)
+              }
+                .width(40)
+                .height(40)
+                .backgroundColor('#fff3f3f3')
                 .enabled(!this.isCreatingPage && !this.isDeletingPage && !this.isReorderingPages)
                 .borderRadius(12)
                 .onClick(() => {
+                  this.closeTransientDropdowns();
                   this.togglePageActionMenu(this.activePageId);
                 })
 
@@ -430,9 +570,16 @@ struct EditorPage {
       }
       .width('100%')
       .height('100%')
+      .onClick(() => {
+        this.closeToolDropdown();
+      })
 
       if (this.activePageId.length > 0 && this.isPageActionMenuVisible(this.activePageId)) {
         this.buildPageActionMenu()
+      }
+
+      if (this.isToolDropdownVisible) {
+        this.buildToolDropdown()
       }
     }
     .layoutWeight(1)
@@ -462,18 +609,24 @@ struct EditorPage {
       } else if (this.activePageCanvas === null) {
         this.buildWorkspaceEmptyState()
       } else {
-        Row({ space: 18 }) {
-          this.buildDrawingSidebar()
+        Row() {
           this.buildPaperSurface()
         }
         .width('100%')
         .height('100%')
-        .padding(24)
         .alignItems(VerticalAlign.Top)
       }
     }
     .layoutWeight(1)
     .width('100%')
+    .onClick(() => {
+      this.closeTransientDropdowns();
+    })
+    .onTouch((event: TouchEvent) => {
+      if (event.type === TouchType.Down) {
+        this.closeTransientDropdowns();
+      }
+    })
   }
 
   @Builder
@@ -516,13 +669,6 @@ struct EditorPage {
   @Builder
   private buildDrawingSidebar(): void {
     Column({ space: 12 }) {
-      this.buildDrawingActionBar()
-
-      ToolPropertyPanel({
-        pageId: this.activePageId,
-        toolSetting: $toolSetting
-      })
-
       if (this.editorSnapshot.errorMessage.length > 0) {
         Text(this.editorSnapshot.errorMessage)
           .width('100%')
@@ -533,90 +679,55 @@ struct EditorPage {
           .borderRadius(14)
       }
     }
-    .width(276)
+    .width('100%')
     .height('100%')
     .alignItems(HorizontalAlign.Start)
   }
 
   @Builder
-  private buildDrawingActionBar(): void {
-    Column({ space: 8 }) {
-      Row({ space: 8 }) {
-        Button('Undo')
-          .layoutWeight(1)
-          .height(36)
-          .enabled(this.editorSnapshot.undoDepth > 0 && !this.isCanvasLoading)
-          .backgroundColor(this.editorSnapshot.undoDepth > 0 && !this.isCanvasLoading ?
-            $r('app.color.primary_text') : $r('app.color.app_background'))
-          .fontColor(this.editorSnapshot.undoDepth > 0 && !this.isCanvasLoading ?
-            $r('app.color.inverse_text') : $r('app.color.secondary_text'))
-          .onClick(() => {
-            void this.handleUndo();
-          })
-
-        Button('Redo')
-          .layoutWeight(1)
-          .height(36)
-          .enabled(this.editorSnapshot.redoDepth > 0 && !this.isCanvasLoading)
-          .backgroundColor(this.editorSnapshot.redoDepth > 0 && !this.isCanvasLoading ?
-            $r('app.color.primary_text') : $r('app.color.app_background'))
-          .fontColor(this.editorSnapshot.redoDepth > 0 && !this.isCanvasLoading ?
-            $r('app.color.inverse_text') : $r('app.color.secondary_text'))
-          .onClick(() => {
-            void this.handleRedo();
-          })
-
-        Button('Clear')
-          .layoutWeight(1)
-          .height(36)
-          .enabled(this.editorSnapshot.strokeCount > 0 && !this.isCanvasLoading)
-          .backgroundColor(this.editorSnapshot.strokeCount > 0 && !this.isCanvasLoading ?
-            $r('app.color.danger_text') : $r('app.color.danger_surface'))
-          .fontColor(this.editorSnapshot.strokeCount > 0 && !this.isCanvasLoading ?
-            $r('app.color.inverse_text') : $r('app.color.danger_text'))
-          .onClick(() => {
-            void this.handleClear();
-          })
-      }
-      .width('100%')
+  private buildToolDropdown(): void {
+    Row() {
+      ToolPropertyPanel({
+        pageId: this.activePageId,
+        toolSetting: $toolSetting
+      })
+      .width(276)
     }
     .width('100%')
-    .padding(12)
-    .backgroundColor($r('app.color.surface_background'))
-    .borderRadius(18)
-    .border({
-      width: 1,
-      color: $r('app.color.editor_sidebar_border')
+    .margin({
+      top: 52
     })
+    .justifyContent(FlexAlign.Start)
+    .alignItems(VerticalAlign.Top)
   }
 
   @Builder
   private buildPaperSurface(): void {
     Column({ space: 14 }) {
-      Row({ space: 12 }) {
-        Text(this.getActivePageLabel())
-          .fontSize($r('app.float.section_title_size'))
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.primary_text'))
-
-        Text($r('app.string.editor_canvas_ready_badge'))
-          .fontSize($r('app.float.caption_text_size'))
-          .fontColor($r('app.color.editor_accent'))
-          .padding({
-            left: 10,
-            right: 10,
-            top: 6,
-            bottom: 6
-          })
-          .backgroundColor($r('app.color.editor_accent_soft'))
-          .borderRadius(999)
-
-        Text(this.getCanvasText())
-          .fontSize($r('app.float.caption_text_size'))
-          .fontColor($r('app.color.secondary_text'))
-      }
-      .width('100%')
-      .alignItems(VerticalAlign.Center)
+      // Row({ space: 12 }) {
+      //   Text(this.getActivePageLabel())
+      //     .fontSize($r('app.float.section_title_size'))
+      //     .fontWeight(FontWeight.Medium)
+      //     .fontColor($r('app.color.primary_text'))
+      //
+      //   Text($r('app.string.editor_canvas_ready_badge'))
+      //     .fontSize($r('app.float.caption_text_size'))
+      //     .fontColor($r('app.color.editor_accent'))
+      //     .padding({
+      //       left: 10,
+      //       right: 10,
+      //       top: 6,
+      //       bottom: 6
+      //     })
+      //     .backgroundColor($r('app.color.editor_accent_soft'))
+      //     .borderRadius(999)
+      //
+      //   Text(this.getCanvasText())
+      //     .fontSize($r('app.float.caption_text_size'))
+      //     .fontColor($r('app.color.secondary_text'))
+      // }
+      // .width('100%')
+      // .alignItems(VerticalAlign.Center)
 
       Stack() {
         Column()
@@ -649,7 +760,6 @@ struct EditorPage {
     }
     .layoutWeight(1)
     .height('100%')
-    .constraintSize({ maxWidth: 860 })
   }
 
   @Builder
@@ -662,6 +772,7 @@ struct EditorPage {
         .fontColor($r('app.color.primary_text'))
         .enabled(this.canMoveActivePageUp() && !this.isReorderingPages)
         .onClick(() => {
+          this.closeToolDropdown();
           const activePage: NotebookPage | null = this.getActivePage();
           if (activePage !== null) {
             this.moveNotebookPageByOffset(activePage, -1);
@@ -675,6 +786,7 @@ struct EditorPage {
         .fontColor($r('app.color.primary_text'))
         .enabled(this.canMoveActivePageDown() && !this.isReorderingPages)
         .onClick(() => {
+          this.closeToolDropdown();
           const activePage: NotebookPage | null = this.getActivePage();
           if (activePage !== null) {
             this.moveNotebookPageByOffset(activePage, 1);
@@ -688,6 +800,7 @@ struct EditorPage {
         .fontColor($r('app.color.danger_text'))
         .enabled(!this.isDeletingPage)
         .onClick(() => {
+          this.closeToolDropdown();
           const activePage: NotebookPage | null = this.getActivePage();
           if (activePage !== null) {
             this.openDeletePageDialog(activePage);
@@ -727,7 +840,7 @@ struct EditorPage {
           .textAlign(TextAlign.Center)
 
         Row({ space: 10 }) {
-          Button('Cancel')
+          Button('取消')
             .layoutWeight(1)
             .height(38)
             .enabled(!this.isDeletingPage)
@@ -1185,8 +1298,66 @@ struct EditorPage {
     this.syncDrawingSnapshot(true, this.drawingViewModel, targetPageId, false);
   }
 
+  private handleWorkspaceToolButtonClick(tool: ToolType): void {
+    const isCurrentTool = this.toolSetting.tool === tool;
+    this.handleWorkspaceToolChange(tool);
+    this.closePageActionMenu();
+
+    if (isCurrentTool) {
+      this.isToolDropdownVisible = !this.isToolDropdownVisible;
+      return;
+    }
+
+    this.isToolDropdownVisible = true;
+  }
+
+  private handleWorkspaceToolChange(tool: ToolType): void {
+    const nextSetting: ToolSetting = {
+      tool,
+      color: this.toolSetting.color,
+      width: this.toolSetting.width,
+      opacity: tool === 'eraser' ? 1 : this.toolSetting.opacity
+    };
+
+    this.toolSetting = {
+      tool: nextSetting.tool,
+      color: nextSetting.color,
+      width: nextSetting.width,
+      opacity: nextSetting.opacity
+    };
+
+    if (this.drawingViewModel !== null) {
+      this.drawingViewModel.updateToolSetting(nextSetting);
+      this.syncDrawingSnapshot(false, this.drawingViewModel, this.currentDrawingPageId);
+    }
+  }
+
+  private getWorkspaceToolLabel(tool: ToolType): string {
+    switch (tool) {
+      case 'pen':
+        return 'Pen';
+      case 'pencil':
+        return 'Pencil';
+      case 'highlighter':
+        return 'Highlight';
+      case 'eraser':
+        return 'Eraser';
+      default:
+        return tool;
+    }
+  }
+
   private closePageActionMenu(): void {
     this.pageActionMenuPageId = '';
+  }
+
+  private closeToolDropdown(): void {
+    this.isToolDropdownVisible = false;
+  }
+
+  private closeTransientDropdowns(): void {
+    this.closePageActionMenu();
+    this.closeToolDropdown();
   }
 
   private togglePageActionMenu(pageId: string): void {
