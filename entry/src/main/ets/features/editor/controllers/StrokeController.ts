@@ -21,7 +21,7 @@ export class StrokeController {
       updatedAt: timestamp
     };
 
-    return this.getActiveStroke();
+    return this.activeStroke;
   }
 
   appendPoint(point: StrokePoint): Stroke | null {
@@ -31,22 +31,13 @@ export class StrokeController {
 
     const lastPoint = this.activeStroke.points[this.activeStroke.points.length - 1];
     if (lastPoint && isSamePoint(lastPoint, point)) {
-      return this.getActiveStroke();
+      return this.activeStroke;
     }
 
-    const nextPoints: StrokePoint[] = this.activeStroke.points.map((item: StrokePoint) => this.clonePoint(item));
-    nextPoints.push(this.clonePoint(point));
+    this.activeStroke.points.push(this.clonePoint(point));
+    this.activeStroke.updatedAt = now();
 
-    this.activeStroke = {
-      id: this.activeStroke.id,
-      pageId: this.activeStroke.pageId,
-      points: nextPoints,
-      style: this.cloneStyle(this.activeStroke.style),
-      createdAt: this.activeStroke.createdAt,
-      updatedAt: now()
-    };
-
-    return this.getActiveStroke();
+    return this.activeStroke;
   }
 
   finishStroke(): Stroke | null {

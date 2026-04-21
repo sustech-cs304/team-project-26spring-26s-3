@@ -110,6 +110,14 @@ const MIN_RENDER_WIDTH = 0.8;
 const MIN_PRESSURE = 0.12;
 const HASH_OFFSET = 2166136261;
 export class StrokeRenderer {
+  static drawStrokeFast(context: CanvasRenderingContext2D, stroke: Stroke): void {
+    this.drawRawPolyline(context, stroke);
+  }
+
+  static drawPreviewStrokeFast(context: CanvasRenderingContext2D, stroke: Stroke): void {
+    this.drawRawPolyline(context, stroke);
+  }
+
   static drawStroke(context: CanvasRenderingContext2D, stroke: Stroke): void {
     if (stroke.points.length === 0) {
       return;
@@ -149,6 +157,44 @@ export class StrokeRenderer {
 
     const previewPasses = this.getPreviewPasses(stroke.style.tool);
     this.drawBrushPasses(context, stroke.style.tool, stroke.style.color, stroke.style.opacity, 0, samples, previewPasses);
+  }
+
+  private static drawRawPolyline(context: CanvasRenderingContext2D, stroke: Stroke): void {
+    if (stroke.points.length === 0) {
+      return;
+    }
+
+    const points = stroke.points;
+    context.strokeStyle = stroke.style.color;
+    context.lineCap = stroke.style.tool === 'highlighter' ? 'butt' : 'round';
+    context.lineJoin = 'round';
+    context.lineWidth = Math.max(MIN_RENDER_WIDTH, stroke.style.width);
+    context.globalAlpha = this.getFastStrokeOpacity(stroke.style.tool, stroke.style.opacity);
+    context.beginPath();
+    context.moveTo(points[0].x, points[0].y);
+
+    if (points.length === 1) {
+      context.lineTo(points[0].x + 0.01, points[0].y + 0.01);
+    } else {
+      for (let index = 1; index < points.length; index += 1) {
+        context.lineTo(points[index].x, points[index].y);
+      }
+    }
+
+    context.stroke();
+    context.globalAlpha = 1;
+  }
+
+  private static getFastStrokeOpacity(tool: DrawableToolType, opacity: number): number {
+    if (tool === 'highlighter') {
+      return this.clamp(opacity * 0.42, 0.08, 1);
+    }
+
+    if (tool === 'pencil') {
+      return this.clamp(opacity * 0.72, 0.12, 1);
+    }
+
+    return this.clamp(opacity, 0.12, 1);
   }
 
   private static getProfile(tool: DrawableToolType): BrushProfile {

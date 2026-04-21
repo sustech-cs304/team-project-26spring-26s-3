@@ -11,9 +11,7 @@ import { now } from '../../../common/utils/TimeUtil';
 import { EditorRepositoryImpl } from '../../../data/repositories/EditorRepositoryImpl';
 import { Stroke, StrokePoint, StrokeStyle } from '../../../domain/entities/Stroke';
 import { DrawableToolType, ToolSetting } from '../../../domain/entities/ToolSetting';
-import { RedoLastAction } from '../../../domain/usecases/RedoLastAction';
 import { SaveStroke } from '../../../domain/usecases/SaveStroke';
-import { UndoLastAction } from '../../../domain/usecases/UndoLastAction';
 import { StrokeController } from '../controllers/StrokeController';
 import { UndoRedoController, UndoRedoDebugState } from '../controllers/UndoRedoController';
 import { EditorDebugSnapshot } from './EditorDebugSnapshot';
@@ -31,6 +29,7 @@ interface EraseResult {
 }
 
 const MAX_DEBUG_EVENTS = 20;
+const SAVE_DEBOUNCE_MS = 900;
 const EDITOR_BUILD_MARKER = 'editor-build-2026-04-20-state-link-sync-v1';
 let nextEditorViewModelInstanceId = 1;
 
@@ -53,6 +52,10 @@ export class DrawingEditorViewModel {
   private debugEvents: string[] = [];
   private debugSequence: number = 0;
   private persistenceStatus: string = 'idle';
+  private saveTimerId: number = -1;
+  private isPersisting: boolean = false;
+  private hasQueuedPersistence: boolean = false;
+  private queuedPersistenceReason: string = 'update';
   private readonly instanceId: number = nextEditorViewModelInstanceId++;
 
   constructor(private readonly contextProvider: () => common.Context) {}
@@ -90,6 +93,7 @@ export class DrawingEditorViewModel {
       return null;
     }
 
+    this.clearScheduledSave();
     this.errorMessage = '';
     this.appendDebugEvent(
       'beginStroke',
@@ -125,24 +129,13 @@ export class DrawingEditorViewModel {
       return null;
     }
 
-    const nextStrokes = [...this.cloneStrokes(this.strokes), completedStroke];
+    const nextStrokes = this.strokes.slice();
+    nextStrokes.push(completedStroke);
     this.strokes = nextStrokes;
     this.undoRedoController.recordAppendStroke(completedStroke);
-    this.persistenceStatus = 'saving stroke';
-    this.appendDebugEvent('finishStroke', `beforeSave count=${nextStrokes.length} stroke=${this.describeStroke(completedStroke)}`);
-
-    try {
-      this.appendDebugEvent('finishStroke', 'invoke saveStrokeUseCase');
-      await this.createSaveStrokeUseCase().execute(this.pageId, nextStrokes);
-      this.appendDebugEvent('finishStroke', 'saveStrokeUseCase resolved');
-      this.errorMessage = '';
-      this.persistenceStatus = `saved count=${this.strokes.length}`;
-      this.appendDebugEvent('finishStroke', `saved count=${this.strokes.length} history=${this.describeHistoryState()}`);
-    } catch (error) {
-      this.errorMessage = this.stringifyError(error);
-      this.persistenceStatus = `saveFailed keepMemory count=${this.strokes.length}`;
-      this.appendDebugEvent('finishStroke', `saveFailed keepMemory error=${this.errorMessage}`);
-    }
+    this.persistenceStatus = 'pending stroke save';
+    this.appendDebugEvent('finishStroke', `queuedSave count=${nextStrokes.length} stroke=${this.describeStroke(completedStroke)}`);
+    this.schedulePersistCurrentStrokes('stroke');
 
     return completedStroke;
   }
@@ -170,11 +163,10 @@ export class DrawingEditorViewModel {
     try {
       const nextStrokes = this.undoRedoController.undo(this.strokes);
       this.strokes = nextStrokes;
-      this.persistenceStatus = 'saving undo';
-      await this.createUndoLastActionUseCase().execute(this.pageId, nextStrokes);
+      this.persistenceStatus = 'pending undo save';
+      this.schedulePersistCurrentStrokes('undo', 0);
       this.errorMessage = '';
-      this.persistenceStatus = `saved undo count=${this.strokes.length}`;
-      this.appendDebugEvent('undo', `applied count=${this.strokes.length} history=${this.describeHistoryState()}`);
+      this.appendDebugEvent('undo', `applied queuedSave count=${this.strokes.length} history=${this.describeHistoryState()}`);
     } catch (error) {
       this.strokes = sourceSnapshot;
       this.undoRedoController.restoreSnapshot(historySnapshot);
@@ -200,11 +192,10 @@ export class DrawingEditorViewModel {
     try {
       const nextStrokes = this.undoRedoController.redo(this.strokes);
       this.strokes = nextStrokes;
-      this.persistenceStatus = 'saving redo';
-      await this.createRedoLastActionUseCase().execute(this.pageId, nextStrokes);
+      this.persistenceStatus = 'pending redo save';
+      this.schedulePersistCurrentStrokes('redo', 0);
       this.errorMessage = '';
-      this.persistenceStatus = `saved redo count=${this.strokes.length}`;
-      this.appendDebugEvent('redo', `applied count=${this.strokes.length} history=${this.describeHistoryState()}`);
+      this.appendDebugEvent('redo', `applied queuedSave count=${this.strokes.length} history=${this.describeHistoryState()}`);
     } catch (error) {
       this.strokes = sourceSnapshot;
       this.undoRedoController.restoreSnapshot(historySnapshot);
@@ -227,18 +218,10 @@ export class DrawingEditorViewModel {
     this.appendDebugEvent('clear', `requested count=${sourceSnapshot.length} history=${this.describeHistoryState()}`);
     this.strokes = [];
     this.undoRedoController.recordReplacePage(sourceSnapshot, [], 'clear');
-    this.persistenceStatus = 'saving clear';
-
-    try {
-      await this.createRepository().clearStrokes(this.pageId);
-      this.errorMessage = '';
-      this.persistenceStatus = 'saved clear';
-      this.appendDebugEvent('clear', `completed history=${this.describeHistoryState()}`);
-    } catch (error) {
-      this.persistenceStatus = `clearFailed keepMemory error=${this.stringifyError(error)}`;
-      this.errorMessage = this.stringifyError(error);
-      this.appendDebugEvent('clear', `failed keepMemory error=${this.errorMessage}`);
-    }
+    this.persistenceStatus = 'pending clear save';
+    this.schedulePersistCurrentStrokes('clear', 0);
+    this.errorMessage = '';
+    this.appendDebugEvent('clear', `queuedSave history=${this.describeHistoryState()}`);
   }
 
   updateToolSetting(nextSetting: ToolSetting): void {
@@ -266,6 +249,10 @@ export class DrawingEditorViewModel {
 
   getStrokes(): Stroke[] {
     return this.cloneStrokes(this.strokes);
+  }
+
+  getStrokesForRendering(): Stroke[] {
+    return this.strokes;
   }
 
   getActiveStroke(): Stroke | null {
@@ -324,6 +311,11 @@ export class DrawingEditorViewModel {
     return this.isLoading;
   }
 
+  async flushPendingSave(): Promise<void> {
+    this.clearScheduledSave();
+    await this.persistCurrentStrokes('flush');
+  }
+
   private beginErase(point: StrokePoint): void {
     this.strokeController.cancelStroke();
     this.activeErasePath = [this.clonePoint(point)];
@@ -341,7 +333,7 @@ export class DrawingEditorViewModel {
       return;
     }
 
-    this.activeErasePath = [...this.activeErasePath, this.clonePoint(point)];
+    this.activeErasePath.push(this.clonePoint(point));
   }
 
   private async finishErase(): Promise<Stroke | null> {
@@ -362,17 +354,10 @@ export class DrawingEditorViewModel {
 
     this.strokes = eraseResult.strokes;
     this.undoRedoController.recordReplacePage(sourceSnapshot, this.strokes, 'erase');
-    try {
-      this.persistenceStatus = 'saving erase';
-      await this.createSaveStrokeUseCase().execute(this.pageId, this.strokes);
-      this.errorMessage = '';
-      this.persistenceStatus = `saved erase count=${this.strokes.length}`;
-      this.appendDebugEvent('erase', `saved count=${this.strokes.length} history=${this.describeHistoryState()}`);
-    } catch (error) {
-      this.errorMessage = this.stringifyError(error);
-      this.persistenceStatus = `eraseFailed keepMemory error=${this.errorMessage}`;
-      this.appendDebugEvent('erase', `failed keepMemory error=${this.errorMessage}`);
-    }
+    this.persistenceStatus = 'pending erase save';
+    this.schedulePersistCurrentStrokes('erase');
+    this.errorMessage = '';
+    this.appendDebugEvent('erase', `queuedSave count=${this.strokes.length} history=${this.describeHistoryState()}`);
 
     return null;
   }
@@ -390,6 +375,62 @@ export class DrawingEditorViewModel {
   private resetTransientState(): void {
     this.strokeController.cancelStroke();
     this.clearEraseState();
+  }
+
+  private schedulePersistCurrentStrokes(reason: string, delayMs: number = SAVE_DEBOUNCE_MS): void {
+    this.queuedPersistenceReason = reason;
+
+    if (this.saveTimerId >= 0) {
+      clearTimeout(this.saveTimerId);
+    }
+
+    this.saveTimerId = setTimeout(() => {
+      this.saveTimerId = -1;
+      void this.persistCurrentStrokes(this.queuedPersistenceReason);
+    }, Math.max(0, delayMs));
+  }
+
+  private clearScheduledSave(): void {
+    if (this.saveTimerId < 0) {
+      return;
+    }
+
+    clearTimeout(this.saveTimerId);
+    this.saveTimerId = -1;
+  }
+
+  private async persistCurrentStrokes(reason: string): Promise<void> {
+    if (this.pageId.length === 0) {
+      return;
+    }
+
+    if (this.isPersisting) {
+      this.hasQueuedPersistence = true;
+      this.queuedPersistenceReason = reason;
+      return;
+    }
+
+    this.isPersisting = true;
+    const snapshot = this.cloneStrokes(this.strokes);
+    this.persistenceStatus = `saving ${reason}`;
+
+    try {
+      await this.createSaveStrokeUseCase().execute(this.pageId, snapshot);
+      this.errorMessage = '';
+      this.persistenceStatus = `saved ${reason} count=${snapshot.length}`;
+      this.appendDebugEvent('persist', `saved reason=${reason} count=${snapshot.length}`);
+    } catch (error) {
+      this.errorMessage = this.stringifyError(error);
+      this.persistenceStatus = `saveFailed reason=${reason} keepMemory count=${this.strokes.length}`;
+      this.appendDebugEvent('persist', `failed reason=${reason} error=${this.errorMessage}`);
+    } finally {
+      this.isPersisting = false;
+      if (this.hasQueuedPersistence) {
+        const queuedReason = this.queuedPersistenceReason;
+        this.hasQueuedPersistence = false;
+        void this.persistCurrentStrokes(queuedReason);
+      }
+    }
   }
 
   private eraseStrokes(sourceStrokes: Stroke[], eraserPath: StrokePoint[]): EraseResult {
@@ -549,14 +590,6 @@ export class DrawingEditorViewModel {
 
   private createSaveStrokeUseCase(): SaveStroke {
     return new SaveStroke(this.createRepository());
-  }
-
-  private createUndoLastActionUseCase(): UndoLastAction {
-    return new UndoLastAction(this.createRepository());
-  }
-
-  private createRedoLastActionUseCase(): RedoLastAction {
-    return new RedoLastAction(this.createRepository());
   }
 
   private nextDebugSequence(): number {

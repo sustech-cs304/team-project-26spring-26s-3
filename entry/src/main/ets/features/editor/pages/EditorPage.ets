@@ -7,11 +7,19 @@ import { NotebookPage } from '../../../domain/entities/NotebookPage';
 import { NotebookPageCanvas } from '../../../domain/entities/NotebookPageCanvas';
 import { ToolSetting } from '../../../domain/entities/ToolSetting';
 import { CanvasBoard } from '../components/CanvasBoard';
+import { PageThumbnailPreview } from '../components/PageThumbnailPreview';
 import { ToolPropertyPanel } from '../components/ToolPropertyPanel';
 import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
 import { EditorDebugSnapshot } from '../viewmodels/EditorDebugSnapshot';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
 import { EditorViewModel } from '../viewmodels/EditorViewModel';
+
+interface PageCanvasRenderSize {
+  width: number;
+  height: number;
+}
+
+const THUMBNAIL_REFRESH_INTERVAL_MS = 320;
 
 @Entry
 @Component
@@ -36,7 +44,10 @@ struct EditorPage {
   @State private toolSetting: ToolSetting = this.buildDefaultToolSetting();
   @State private editorSnapshot: EditorDebugSnapshot = this.buildEmptySnapshot('');
   @State private canvasVersion: number = 0;
-  private readonly thumbnailGuideLineList: number[] = [0, 1, 2, 3];
+  @State private thumbnailRefreshVersion: number = 0;
+  private readonly pageCanvasRenderSizeMap: Map<string, PageCanvasRenderSize> = new Map<string, PageCanvasRenderSize>();
+  private thumbnailRefreshTimerId: number = -1;
+  private lastThumbnailRefreshTime: number = 0;
   private editorViewModel?: EditorViewModel;
   private drawingViewModel: DrawingEditorViewModel | null = null;
   private currentDrawingPageId: string = '';
@@ -46,6 +57,8 @@ struct EditorPage {
   }
 
   aboutToDisappear(): void {
+    this.clearScheduledThumbnailRefresh();
+    void this.flushActiveDrawingSession();
     EditorSessionRegistry.clearAll();
     this.drawingViewModel = null;
     this.currentDrawingPageId = '';
@@ -323,27 +336,16 @@ struct EditorPage {
       .width('100%')
       .alignItems(VerticalAlign.Center)
 
-      Column({ space: 10 }) {
-        Row()
-          .width('36%')
-          .height(10)
-          .backgroundColor(page.id === this.activePageId ?
-            $r('app.color.editor_accent_soft') : $r('app.color.app_background'))
-          .borderRadius(999)
-
-        ForEach(this.thumbnailGuideLineList, (guideIndex: number) => {
-          Row()
-            .width('100%')
-            .height(2)
-            .backgroundColor($r('app.color.editor_thumbnail_line'))
-            .opacity(guideIndex === this.thumbnailGuideLineList.length - 1 ? 0.45 : 0.75)
-            .borderRadius(999)
-        }, (guideIndex: number): string => guideIndex.toString())
-      }
+      PageThumbnailPreview({
+        pageId: page.id,
+        isActive: page.id === this.activePageId,
+        refreshVersion: this.thumbnailRefreshVersion,
+        paperBackgroundColor: page.id === this.activePageId ? this.getActiveCanvasBackgroundColor() : '#FFFFFF',
+        canvasWidth: this.getThumbnailCanvasWidth(page.id),
+        canvasHeight: this.getThumbnailCanvasHeight(page.id)
+      })
       .width('100%')
       .height(132)
-      .padding(14)
-      .alignItems(HorizontalAlign.Start)
       .backgroundColor($r('app.color.surface_background'))
       .borderRadius(18)
       .border({
@@ -626,7 +628,13 @@ struct EditorPage {
         CanvasBoard({
           pageId: this.activePageId,
           canvasVersion: this.canvasVersion,
-          editorSnapshot: $editorSnapshot
+          editorSnapshot: $editorSnapshot,
+          onContentChanged: (immediate: boolean): void => {
+            this.requestThumbnailRefresh(immediate);
+          },
+          onCanvasMetricsChanged: (width: number, height: number): void => {
+            this.updatePageCanvasRenderSize(this.activePageId, width, height);
+          }
         })
           .width('100%')
           .height('100%')
@@ -1011,6 +1019,7 @@ struct EditorPage {
     }
 
     if (this.currentDrawingPageId.length > 0 && this.currentDrawingPageId !== pageId) {
+      await this.flushActiveDrawingSession();
       EditorSessionRegistry.clear(this.currentDrawingPageId);
     }
     EditorSessionRegistry.clear(pageId);
@@ -1033,6 +1042,7 @@ struct EditorPage {
 
   private resetDrawingState(pageId: string): void {
     if (this.currentDrawingPageId.length > 0) {
+      void this.flushActiveDrawingSession();
       EditorSessionRegistry.clear(this.currentDrawingPageId);
     }
     this.drawingViewModel = null;
@@ -1055,6 +1065,7 @@ struct EditorPage {
       this.editorSnapshot = this.buildEmptySnapshot(targetPageId);
       if (redrawCanvas) {
         this.canvasVersion += 1;
+        this.requestThumbnailRefresh(true);
       }
       return;
     }
@@ -1067,7 +1078,80 @@ struct EditorPage {
     this.editorSnapshot = targetViewModel.getDebugSnapshot();
     if (redrawCanvas) {
       this.canvasVersion += 1;
+      this.requestThumbnailRefresh(true);
     }
+  }
+
+  private requestThumbnailRefresh(immediate: boolean = false): void {
+    if (immediate) {
+      this.clearScheduledThumbnailRefresh();
+      this.bumpThumbnailRefreshVersion();
+      return;
+    }
+
+    if (this.thumbnailRefreshTimerId >= 0) {
+      return;
+    }
+
+    const nowTime = Date.now();
+    const elapsedTime = nowTime - this.lastThumbnailRefreshTime;
+    const refreshDelay = elapsedTime >= THUMBNAIL_REFRESH_INTERVAL_MS
+      ? 0
+      : THUMBNAIL_REFRESH_INTERVAL_MS - elapsedTime;
+
+    this.thumbnailRefreshTimerId = setTimeout(() => {
+      this.thumbnailRefreshTimerId = -1;
+      this.bumpThumbnailRefreshVersion();
+    }, refreshDelay);
+  }
+
+  private bumpThumbnailRefreshVersion(): void {
+    this.lastThumbnailRefreshTime = Date.now();
+    this.thumbnailRefreshVersion += 1;
+  }
+
+  private clearScheduledThumbnailRefresh(): void {
+    if (this.thumbnailRefreshTimerId < 0) {
+      return;
+    }
+
+    clearTimeout(this.thumbnailRefreshTimerId);
+    this.thumbnailRefreshTimerId = -1;
+  }
+
+  private updatePageCanvasRenderSize(pageId: string, width: number, height: number): void {
+    if (pageId.length === 0 || width <= 0 || height <= 0) {
+      return;
+    }
+
+    const cachedSize = this.pageCanvasRenderSizeMap.get(pageId);
+    if (cachedSize !== undefined && cachedSize.width === width && cachedSize.height === height) {
+      return;
+    }
+
+    this.pageCanvasRenderSizeMap.set(pageId, {
+      width,
+      height
+    });
+    this.requestThumbnailRefresh(true);
+  }
+
+  private async flushActiveDrawingSession(): Promise<void> {
+    if (this.drawingViewModel === null) {
+      return;
+    }
+
+    await this.drawingViewModel.flushPendingSave();
+  }
+
+  private getThumbnailCanvasWidth(pageId: string): number {
+    const cachedSize = this.pageCanvasRenderSizeMap.get(pageId);
+    return cachedSize === undefined ? 0 : cachedSize.width;
+  }
+
+  private getThumbnailCanvasHeight(pageId: string): number {
+    const cachedSize = this.pageCanvasRenderSizeMap.get(pageId);
+    return cachedSize === undefined ? 0 : cachedSize.height;
   }
 
   private async handleUndo(): Promise<void> {

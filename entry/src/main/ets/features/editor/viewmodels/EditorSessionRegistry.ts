@@ -16,6 +16,11 @@ export class EditorSessionRegistry {
     return nextSession;
   }
 
+  static get(pageId: string): DrawingEditorViewModel | null {
+    const existingSession = this.sessions.get(pageId);
+    return existingSession === undefined ? null : existingSession;
+  }
+
   static clear(pageId: string): void {
     this.sessions.delete(pageId);
   }
