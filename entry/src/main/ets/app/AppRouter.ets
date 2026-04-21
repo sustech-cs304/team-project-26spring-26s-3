@@ -5,6 +5,9 @@ import { RouteConstants } from '../common/constants/RouteConstants';
 export interface RouterParams {
   source?: string;
   notebookId?: string;
+  notebookTitle?: string;
+  pageId?: string;
+  pageLabel?: string;
 }
 
 export class AppRouter {
