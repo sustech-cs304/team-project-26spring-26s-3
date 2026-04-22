@@ -88,6 +88,10 @@ export class StrokeController {
     };
   }
 
+  getActiveStrokeForRendering(): Stroke | null {
+    return this.activeStroke;
+  }
+
   hasActiveStroke(): boolean {
     return this.activeStroke !== null;
   }

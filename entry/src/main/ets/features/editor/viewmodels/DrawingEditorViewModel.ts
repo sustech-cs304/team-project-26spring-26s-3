@@ -273,6 +273,10 @@ export class DrawingEditorViewModel {
     return this.strokeController.getActiveStroke();
   }
 
+  getActiveStrokeForRendering(): Stroke | null {
+    return this.strokeController.getActiveStrokeForRendering();
+  }
+
   getActiveErasePath(): StrokePoint[] {
     return this.activeErasePath.map((point: StrokePoint) => this.clonePoint(point));
   }
@@ -634,7 +638,7 @@ export class DrawingEditorViewModel {
       sequence: this.renderInvalidationSequence,
       mode: 'full',
       reason,
-      dirtyRect: null,
+      dirtyRects: [],
       removedStrokeIds: [],
       addedRecords: []
     };
@@ -645,8 +649,8 @@ export class DrawingEditorViewModel {
     removed: IndexedStrokeRecord[],
     added: IndexedStrokeRecord[]
   ): void {
-    const dirtyRect = this.buildDirtyRectFromRecords(removed, added);
-    if (dirtyRect === null) {
+    const dirtyRects = this.buildDirtyRectsFromRecords(removed, added);
+    if (dirtyRects.length === 0) {
       return;
     }
 
@@ -655,7 +659,7 @@ export class DrawingEditorViewModel {
       sequence: this.renderInvalidationSequence,
       mode: 'partial',
       reason,
-      dirtyRect,
+      dirtyRects,
       removedStrokeIds: removed.map((record: IndexedStrokeRecord) => record.stroke.id),
       addedRecords: added.map((record: IndexedStrokeRecord): IndexedStrokeRecord => ({
         index: record.index,
@@ -664,18 +668,61 @@ export class DrawingEditorViewModel {
     };
   }
 
-  private buildDirtyRectFromRecords(removed: IndexedStrokeRecord[], added: IndexedStrokeRecord[]): BoundingBox | null {
-    let dirtyRect: BoundingBox | null = null;
+  private buildDirtyRectsFromRecords(removed: IndexedStrokeRecord[], added: IndexedStrokeRecord[]): BoundingBox[] {
+    const dirtyRects: BoundingBox[] = [];
 
     for (const record of removed) {
-      dirtyRect = mergeBoundingBoxes(dirtyRect, getStrokeRenderBoundingBox(record.stroke));
+      const strokeBounds = getStrokeRenderBoundingBox(record.stroke);
+      if (strokeBounds !== null) {
+        dirtyRects.push(strokeBounds);
+      }
     }
 
     for (const record of added) {
-      dirtyRect = mergeBoundingBoxes(dirtyRect, getStrokeRenderBoundingBox(record.stroke));
+      const strokeBounds = getStrokeRenderBoundingBox(record.stroke);
+      if (strokeBounds !== null) {
+        dirtyRects.push(strokeBounds);
+      }
     }
 
-    return dirtyRect;
+    return this.mergeOverlappingDirtyRects(dirtyRects);
+  }
+
+  private mergeOverlappingDirtyRects(dirtyRects: BoundingBox[]): BoundingBox[] {
+    const mergedDirtyRects: BoundingBox[] = [];
+
+    for (const dirtyRect of dirtyRects) {
+      let nextRect: BoundingBox = {
+        minX: dirtyRect.minX,
+        minY: dirtyRect.minY,
+        maxX: dirtyRect.maxX,
+        maxY: dirtyRect.maxY
+      };
+      let hasMerged = true;
+
+      while (hasMerged) {
+        hasMerged = false;
+
+        for (let index = mergedDirtyRects.length - 1; index >= 0; index -= 1) {
+          if (!doBoundingBoxesIntersect(mergedDirtyRects[index], nextRect)) {
+            continue;
+          }
+
+          const mergedRect = mergeBoundingBoxes(mergedDirtyRects[index], nextRect);
+          if (mergedRect === null) {
+            continue;
+          }
+
+          nextRect = mergedRect;
+          mergedDirtyRects.splice(index, 1);
+          hasMerged = true;
+        }
+      }
+
+      mergedDirtyRects.push(nextRect);
+    }
+
+    return mergedDirtyRects;
   }
 
   private rebuildStrokeSpatialIndex(): void {
@@ -700,12 +747,12 @@ export class DrawingEditorViewModel {
       sequence: invalidation.sequence,
       mode: invalidation.mode,
       reason: invalidation.reason,
-      dirtyRect: invalidation.dirtyRect === null ? null : {
-        minX: invalidation.dirtyRect.minX,
-        minY: invalidation.dirtyRect.minY,
-        maxX: invalidation.dirtyRect.maxX,
-        maxY: invalidation.dirtyRect.maxY
-      },
+      dirtyRects: invalidation.dirtyRects.map((dirtyRect: BoundingBox): BoundingBox => ({
+        minX: dirtyRect.minX,
+        minY: dirtyRect.minY,
+        maxX: dirtyRect.maxX,
+        maxY: dirtyRect.maxY
+      })),
       removedStrokeIds: [...invalidation.removedStrokeIds],
       addedRecords: invalidation.addedRecords.map((record: IndexedStrokeRecord): IndexedStrokeRecord => ({
         index: record.index,

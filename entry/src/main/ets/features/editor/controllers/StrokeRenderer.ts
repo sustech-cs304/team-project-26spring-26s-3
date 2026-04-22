@@ -1,4 +1,4 @@
-import { getDistance } from '../../../common/utils/GeometryUtil';
+import { BoundingBox, getDistance, getStrokeRenderBoundingBox, mergeBoundingBoxes } from '../../../common/utils/GeometryUtil';
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
 import { DrawableToolType } from '../../../domain/entities/ToolSetting';
 
@@ -37,6 +37,25 @@ interface BrushPass {
   widthJitter: number;
   alphaJitter: number;
   normalOffsetFactor: number;
+}
+
+export interface IncrementalPreviewSession {
+  strokeId: string;
+  styleSignature: string;
+  pointCount: number;
+  mutableStartIndex: number;
+  renderStartIndex: number;
+  dirtyRect: BoundingBox | null;
+}
+
+export interface IncrementalPreviewUpdate {
+  shouldDraw: boolean;
+  requiresFullRedraw: boolean;
+  dirtyRect: BoundingBox | null;
+  promoteDirtyRect: BoundingBox | null;
+  promoteStroke: Stroke | null;
+  renderStroke: Stroke;
+  nextSession: IncrementalPreviewSession;
 }
 
 type BrushLineCap = 'round' | 'butt';
@@ -109,6 +128,9 @@ const MIN_DT = 4;
 const MIN_RENDER_WIDTH = 0.8;
 const MIN_PRESSURE = 0.12;
 const HASH_OFFSET = 2166136261;
+const INCREMENTAL_PREVIEW_MUTABLE_POINT_WINDOW = 16;
+const INCREMENTAL_PREVIEW_REPAIR_OVERLAP_POINTS = 6;
+const INCREMENTAL_PREVIEW_STABLE_PROMOTION_STEP = 4;
 export class StrokeRenderer {
   static drawStrokeFast(context: CanvasRenderingContext2D, stroke: Stroke): void {
     this.drawRawPolyline(context, stroke);
@@ -157,6 +179,102 @@ export class StrokeRenderer {
 
     const previewPasses = this.getPreviewPasses(stroke.style.tool);
     this.drawBrushPasses(context, stroke.style.tool, stroke.style.color, stroke.style.opacity, 0, samples, previewPasses);
+  }
+
+  static createIncrementalPreviewSession(stroke: Stroke): IncrementalPreviewSession {
+    const mutableStartIndex = this.getIncrementalPreviewMutableStartIndex(stroke.points.length);
+    const renderStartIndex = this.getIncrementalPreviewRenderStartIndex(mutableStartIndex);
+    const visibleStroke = this.buildStrokeSlice(stroke, mutableStartIndex);
+
+    return {
+      strokeId: stroke.id,
+      styleSignature: this.buildStyleSignature(stroke),
+      pointCount: stroke.points.length,
+      mutableStartIndex,
+      renderStartIndex,
+      dirtyRect: getStrokeRenderBoundingBox(visibleStroke)
+    };
+  }
+
+  static buildIncrementalPreviewUpdate(
+    stroke: Stroke,
+    previousSession: IncrementalPreviewSession | null
+  ): IncrementalPreviewUpdate {
+    const nextSession = this.createIncrementalPreviewSession(stroke);
+    const renderStroke = this.buildStrokeSlice(stroke, nextSession.renderStartIndex);
+
+    if (previousSession === null) {
+      return {
+        shouldDraw: true,
+        requiresFullRedraw: true,
+        dirtyRect: nextSession.dirtyRect,
+        promoteDirtyRect: null,
+        promoteStroke: null,
+        renderStroke,
+        nextSession
+      };
+    }
+
+    if (
+      previousSession.strokeId !== nextSession.strokeId ||
+      previousSession.styleSignature !== nextSession.styleSignature ||
+      nextSession.pointCount < previousSession.pointCount
+    ) {
+      return {
+        shouldDraw: true,
+        requiresFullRedraw: true,
+        dirtyRect: nextSession.dirtyRect,
+        promoteDirtyRect: null,
+        promoteStroke: null,
+        renderStroke,
+        nextSession
+      };
+    }
+
+    if (nextSession.pointCount === previousSession.pointCount) {
+      return {
+        shouldDraw: false,
+        requiresFullRedraw: false,
+        dirtyRect: null,
+        promoteDirtyRect: null,
+        promoteStroke: null,
+        renderStroke,
+        nextSession: previousSession
+      };
+    }
+
+    let promoteDirtyRect: BoundingBox | null = null;
+    let promoteStroke: Stroke | null = null;
+    if (nextSession.mutableStartIndex > previousSession.mutableStartIndex) {
+      promoteDirtyRect = this.getStrokeSliceBounds(
+        stroke,
+        previousSession.mutableStartIndex,
+        nextSession.mutableStartIndex
+      );
+
+      if (promoteDirtyRect !== null) {
+        promoteStroke = this.buildStrokeRange(stroke, 0, nextSession.mutableStartIndex);
+      }
+    }
+
+    return {
+      shouldDraw: true,
+      requiresFullRedraw: false,
+      dirtyRect: mergeBoundingBoxes(previousSession.dirtyRect, nextSession.dirtyRect),
+      promoteDirtyRect,
+      promoteStroke,
+      renderStroke,
+      nextSession
+    };
+  }
+
+  static buildStablePreviewStroke(stroke: Stroke): Stroke | null {
+    const session = this.createIncrementalPreviewSession(stroke);
+    if (session.mutableStartIndex <= 0) {
+      return null;
+    }
+
+    return this.buildStrokeRange(stroke, 0, session.mutableStartIndex);
   }
 
   private static drawRawPolyline(context: CanvasRenderingContext2D, stroke: Stroke): void {
@@ -431,8 +549,7 @@ export class StrokeRenderer {
           startSample,
           endSample,
           pass,
-          passIndex,
-          sampleIndex
+          passIndex
         );
       }
     }
@@ -450,9 +567,10 @@ export class StrokeRenderer {
     pass: BrushPass,
     passIndex: number
   ): void {
-    const position = this.offsetSamplePoint(sample, pass, strokeSeed, passIndex, 0);
-    const widthNoise = this.unitNoise(strokeSeed, passIndex, 0, 1);
-    const alphaNoise = this.unitNoise(strokeSeed, passIndex, 0, 2);
+    const sampleNoiseBasis = this.getSampleNoiseBasis(sample);
+    const position = this.offsetSamplePoint(sample, pass, strokeSeed, passIndex, sampleNoiseBasis);
+    const widthNoise = this.unitNoise(strokeSeed, passIndex, 1, sampleNoiseBasis);
+    const alphaNoise = this.unitNoise(strokeSeed, passIndex, 2, sampleNoiseBasis);
     const lineWidth = Math.max(
       MIN_RENDER_WIDTH,
       sample.width * pass.widthScale * (1 + this.centeredNoise(widthNoise) * pass.widthJitter)
@@ -484,13 +602,15 @@ export class StrokeRenderer {
     startSample: RenderSample,
     endSample: RenderSample,
     pass: BrushPass,
-    passIndex: number,
-    sampleIndex: number
+    passIndex: number
   ): void {
-    const startPosition = this.offsetSamplePoint(startSample, pass, strokeSeed, passIndex, sampleIndex * 2);
-    const endPosition = this.offsetSamplePoint(endSample, pass, strokeSeed, passIndex, sampleIndex * 2 + 1);
-    const widthNoise = this.unitNoise(strokeSeed, passIndex, sampleIndex, 3);
-    const alphaNoise = this.unitNoise(strokeSeed, passIndex, sampleIndex, 4);
+    const startNoiseBasis = this.getSampleNoiseBasis(startSample);
+    const endNoiseBasis = this.getSampleNoiseBasis(endSample);
+    const segmentNoiseBasis = this.combineNoiseBases(startNoiseBasis, endNoiseBasis);
+    const startPosition = this.offsetSamplePoint(startSample, pass, strokeSeed, passIndex, startNoiseBasis);
+    const endPosition = this.offsetSamplePoint(endSample, pass, strokeSeed, passIndex, endNoiseBasis);
+    const widthNoise = this.unitNoise(strokeSeed, passIndex, 3, segmentNoiseBasis);
+    const alphaNoise = this.unitNoise(strokeSeed, passIndex, 4, segmentNoiseBasis);
     const segmentWidth = Math.max(
       MIN_RENDER_WIDTH,
       ((startSample.width + endSample.width) / 2) * pass.widthScale *
@@ -520,11 +640,11 @@ export class StrokeRenderer {
     pass: BrushPass,
     strokeSeed: number,
     passIndex: number,
-    sampleIndex: number
+    sampleNoiseBasis: number
   ): { x: number; y: number } {
     const baseOffset = sample.width * pass.normalOffsetFactor;
-    const normalNoise = this.centeredNoise(this.unitNoise(strokeSeed, passIndex, sampleIndex, 5));
-    const tangentNoise = this.centeredNoise(this.unitNoise(strokeSeed, passIndex, sampleIndex, 6));
+    const normalNoise = this.centeredNoise(this.unitNoise(strokeSeed, passIndex, 5, sampleNoiseBasis));
+    const tangentNoise = this.centeredNoise(this.unitNoise(strokeSeed, passIndex, 6, sampleNoiseBasis));
     const normalOffset = baseOffset + sample.width * pass.jitter * normalNoise;
     const tangentOffset = sample.width * pass.jitter * 0.35 * tangentNoise;
 
@@ -598,13 +718,14 @@ export class StrokeRenderer {
     return this.clamp(value, MIN_PRESSURE, 1);
   }
 
-  private static unitNoise(strokeSeed: number, passIndex: number, sampleIndex: number, channel: number): number {
+  private static unitNoise(strokeSeed: number, passIndex: number, channel: number, noiseBasis: number): number {
     let hash = strokeSeed >>> 0;
+    hash ^= noiseBasis >>> 0;
+    hash = Math.imul(hash, 2246822519);
     hash ^= (passIndex + 1) * 374761393;
     hash = Math.imul(hash, 668265263);
-    hash ^= (sampleIndex + 1) * 2246822519;
-    hash = Math.imul(hash, 3266489917);
     hash ^= (channel + 1) * 374761393;
+    hash = Math.imul(hash, 3266489917);
     hash ^= hash >>> 13;
     hash = Math.imul(hash, 1274126177);
     hash ^= hash >>> 16;
@@ -624,6 +745,82 @@ export class StrokeRenderer {
     }
 
     return hash >>> 0;
+  }
+
+  private static getSampleNoiseBasis(sample: RenderSample): number {
+    let hash = HASH_OFFSET;
+    hash ^= Math.round(sample.x * 16);
+    hash = Math.imul(hash, 16777619);
+    hash ^= Math.round(sample.y * 16);
+    hash = Math.imul(hash, 16777619);
+    hash ^= Math.round(sample.t / 4);
+    hash = Math.imul(hash, 16777619);
+    hash ^= Math.round(sample.width * 16);
+    hash = Math.imul(hash, 16777619);
+    return hash >>> 0;
+  }
+
+  private static combineNoiseBases(left: number, right: number): number {
+    let hash = HASH_OFFSET;
+    hash ^= left >>> 0;
+    hash = Math.imul(hash, 16777619);
+    hash ^= right >>> 0;
+    hash = Math.imul(hash, 16777619);
+    return hash >>> 0;
+  }
+
+  private static getIncrementalPreviewMutableStartIndex(pointCount: number): number {
+    const rawMutableStartIndex = Math.max(0, pointCount - INCREMENTAL_PREVIEW_MUTABLE_POINT_WINDOW);
+    if (rawMutableStartIndex <= 0) {
+      return 0;
+    }
+
+    return rawMutableStartIndex - (rawMutableStartIndex % INCREMENTAL_PREVIEW_STABLE_PROMOTION_STEP);
+  }
+
+  private static getIncrementalPreviewRenderStartIndex(mutableStartIndex: number): number {
+    return Math.max(0, mutableStartIndex - INCREMENTAL_PREVIEW_REPAIR_OVERLAP_POINTS);
+  }
+
+  private static buildStrokeSlice(stroke: Stroke, startIndex: number): Stroke {
+    return this.buildStrokeRange(stroke, startIndex, stroke.points.length);
+  }
+
+  private static buildStrokeRange(stroke: Stroke, startIndex: number, endExclusive: number): Stroke {
+    const normalizedStartIndex = Math.max(0, Math.min(startIndex, stroke.points.length));
+    const normalizedEndExclusive = Math.max(normalizedStartIndex, Math.min(endExclusive, stroke.points.length));
+
+    return {
+      id: stroke.id,
+      pageId: stroke.pageId,
+      points: stroke.points.slice(normalizedStartIndex, normalizedEndExclusive).map((point: StrokePoint) => ({
+        x: point.x,
+        y: point.y,
+        t: point.t,
+        pressure: point.pressure
+      })),
+      style: {
+        tool: stroke.style.tool,
+        color: stroke.style.color,
+        width: stroke.style.width,
+        opacity: stroke.style.opacity
+      },
+      createdAt: stroke.createdAt,
+      updatedAt: stroke.updatedAt
+    };
+  }
+
+  private static getStrokeSliceBounds(stroke: Stroke, startIndex: number, endExclusive: number): BoundingBox | null {
+    const slice = this.buildStrokeRange(stroke, startIndex, endExclusive);
+    if (slice.points.length === 0) {
+      return null;
+    }
+
+    return getStrokeRenderBoundingBox(slice);
+  }
+
+  private static buildStyleSignature(stroke: Stroke): string {
+    return `${stroke.style.tool}|${stroke.style.color}|${stroke.style.width}|${stroke.style.opacity}`;
   }
 
   private static cloneRenderPoint(point: RenderPoint): RenderPoint {

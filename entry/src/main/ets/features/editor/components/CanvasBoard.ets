@@ -7,7 +7,7 @@ import {
 } from '../../../common/utils/GeometryUtil';
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
 import { ToolSetting } from '../../../domain/entities/ToolSetting';
-import { StrokeRenderer } from '../controllers/StrokeRenderer';
+import { IncrementalPreviewSession, StrokeRenderer } from '../controllers/StrokeRenderer';
 import { IndexedStrokeRecord } from '../controllers/UndoRedoController';
 import { StrokeSpatialHashIndex } from '../controllers/StrokeSpatialHashIndex';
 import { EditorDebugSnapshot } from '../viewmodels/EditorDebugSnapshot';
@@ -28,21 +28,28 @@ interface ExtendedTouchObject extends TouchObject {
   t?: number;
 }
 
+const COMMITTED_TILE_SIZE = 256;
+
 @Component
 export struct CanvasBoard {
   @Watch('onPageIdChanged')
   @Prop pageId: string = '';
   @Watch('onCanvasVersionChanged')
   @Prop canvasVersion: number = 0;
+  @Watch('onPaperBackgroundColorChanged')
+  @Prop paperBackgroundColor: string = '#FFFFFF';
   @Link editorSnapshot: EditorDebugSnapshot;
   onContentChanged: (immediate: boolean) => void = (_immediate: boolean): void => {};
   onCanvasMetricsChanged: (width: number, height: number) => void = (_width: number, _height: number): void => {};
   private viewModel: DrawingEditorViewModel | null = null;
 
   private readonly committedRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
+  private readonly stablePreviewRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
   private readonly overlayRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
   private readonly committedContext2D: CanvasRenderingContext2D =
     new CanvasRenderingContext2D(this.committedRenderingSettings);
+  private readonly stablePreviewContext2D: CanvasRenderingContext2D =
+    new CanvasRenderingContext2D(this.stablePreviewRenderingSettings);
   private readonly overlayContext2D: CanvasRenderingContext2D =
     new CanvasRenderingContext2D(this.overlayRenderingSettings);
   private readonly renderedStrokesById: Map<string, Stroke> = new Map<string, Stroke>();
@@ -50,8 +57,10 @@ export struct CanvasBoard {
   private readonly renderedStrokeIndexById: Map<string, number> = new Map<string, number>();
   private readonly strokeSpatialIndex: StrokeSpatialHashIndex = new StrokeSpatialHashIndex();
   private lastAppliedRenderInvalidationSequence: number = 0;
+  private activePreviewSession: IncrementalPreviewSession | null = null;
 
   @State private isCommittedLayerReady: boolean = false;
+  @State private isStablePreviewLayerReady: boolean = false;
   @State private isOverlayLayerReady: boolean = false;
 
   aboutToAppear(): void {
@@ -63,11 +72,20 @@ export struct CanvasBoard {
       Canvas(this.committedContext2D)
         .width('100%')
         .height('100%')
-        .backgroundColor('#FFFFFF')
+        .backgroundColor(this.paperBackgroundColor)
         .onReady(() => {
           this.isCommittedLayerReady = true;
           this.notifyCanvasMetricsChanged();
           this.redrawCommittedLayer();
+        })
+
+      Canvas(this.stablePreviewContext2D)
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#00000000')
+        .onReady(() => {
+          this.isStablePreviewLayerReady = true;
+          this.redrawOverlayLayer();
         })
 
       Canvas(this.overlayContext2D)
@@ -98,6 +116,10 @@ export struct CanvasBoard {
     this.redrawOverlayLayer();
   }
 
+  private onPaperBackgroundColorChanged(): void {
+    this.redrawCommittedLayer();
+  }
+
   private handleTouch(event: TouchEvent): void {
     const viewModel = this.getViewModel();
     if (!viewModel) {
@@ -122,11 +144,14 @@ export struct CanvasBoard {
         'CanvasBoard',
         `touchDown tool=${toolSetting.tool} color=${toolSetting.color} width=${toolSetting.width} opacity=${toolSetting.opacity.toFixed(2)}`
       );
-      viewModel.beginStroke(point);
+      const activeStroke = viewModel.beginStroke(point);
       this.syncEditorSnapshot();
 
       if (activeTool === 'eraser') {
         this.redrawOverlayLayer();
+      } else if (activeStroke !== null) {
+        this.resetActivePreviewSession();
+        this.renderActiveStrokePreview(activeStroke);
       } else {
         this.redrawOverlayLayer();
       }
@@ -139,7 +164,7 @@ export struct CanvasBoard {
       if (activeTool === 'eraser') {
         this.redrawOverlayLayer();
       } else if (activeStroke !== null) {
-        this.redrawOverlayLayer();
+        this.renderActiveStrokePreview(activeStroke);
       }
       return;
     }
@@ -169,7 +194,8 @@ export struct CanvasBoard {
       this.drawStroke(this.committedContext2D, completedStroke);
       this.appendRenderedStroke(completedStroke);
     }
-    this.clearOverlayLayer();
+    this.clearPreviewLayers();
+    this.resetActivePreviewSession();
     this.onContentChanged(true);
     viewModel.appendDebugEvent('CanvasBoard', 'finishStroke done');
   }
@@ -193,7 +219,7 @@ export struct CanvasBoard {
     this.clearRenderedStrokeState();
     const size = this.getCanvasSize(this.committedContext2D);
     this.committedContext2D.clearRect(0, 0, size.width, size.height);
-    this.committedContext2D.fillStyle = '#FFFFFF';
+    this.committedContext2D.fillStyle = this.paperBackgroundColor;
     this.committedContext2D.fillRect(0, 0, size.width, size.height);
 
     const viewModel = this.getViewModel();
@@ -209,11 +235,12 @@ export struct CanvasBoard {
   }
 
   private redrawOverlayLayer(): void {
-    if (!this.isOverlayLayerReady) {
+    if (!this.isOverlayLayerReady || !this.isStablePreviewLayerReady) {
       return;
     }
 
-    this.clearOverlayLayer();
+    this.clearPreviewLayers();
+    this.resetActivePreviewSession();
 
     const viewModel = this.getViewModel();
     if (!viewModel) {
@@ -225,9 +252,9 @@ export struct CanvasBoard {
       return;
     }
 
-    const activeStroke = viewModel.getActiveStroke();
+    const activeStroke = viewModel.getActiveStrokeForRendering();
     if (activeStroke) {
-      this.drawPreviewStroke(this.overlayContext2D, activeStroke);
+      this.rebuildActivePreviewLayers(activeStroke);
     }
   }
 
@@ -238,6 +265,40 @@ export struct CanvasBoard {
 
     const size = this.getCanvasSize(this.overlayContext2D);
     this.overlayContext2D.clearRect(0, 0, size.width, size.height);
+  }
+
+  private clearStablePreviewLayer(): void {
+    if (!this.isStablePreviewLayerReady) {
+      return;
+    }
+
+    const size = this.getCanvasSize(this.stablePreviewContext2D);
+    this.stablePreviewContext2D.clearRect(0, 0, size.width, size.height);
+  }
+
+  private clearPreviewLayers(): void {
+    this.clearStablePreviewLayer();
+    this.clearOverlayLayer();
+  }
+
+  private clearStablePreviewRegion(region: BoundingBox): void {
+    const width = region.maxX - region.minX;
+    const height = region.maxY - region.minY;
+    if (width <= 0 || height <= 0) {
+      return;
+    }
+
+    this.stablePreviewContext2D.clearRect(region.minX, region.minY, width, height);
+  }
+
+  private clearOverlayRegion(region: BoundingBox): void {
+    const width = region.maxX - region.minX;
+    const height = region.maxY - region.minY;
+    if (width <= 0 || height <= 0) {
+      return;
+    }
+
+    this.overlayContext2D.clearRect(region.minX, region.minY, width, height);
   }
 
   private syncEditorSnapshot(): void {
@@ -267,6 +328,67 @@ export struct CanvasBoard {
 
   private drawPreviewStroke(context: CanvasRenderingContext2D, stroke: Stroke): void {
     StrokeRenderer.drawStroke(context, stroke);
+  }
+
+  private drawClippedPreviewStroke(
+    context: CanvasRenderingContext2D,
+    clipRect: BoundingBox,
+    stroke: Stroke
+  ): void {
+    const width = clipRect.maxX - clipRect.minX;
+    const height = clipRect.maxY - clipRect.minY;
+    if (width <= 0 || height <= 0) {
+      return;
+    }
+
+    context.save();
+    context.beginPath();
+    context.rect(clipRect.minX, clipRect.minY, width, height);
+    context.clip();
+    this.drawPreviewStroke(context, stroke);
+    context.restore();
+  }
+
+  private renderActiveStrokePreview(stroke: Stroke): void {
+    if (!this.isOverlayLayerReady || !this.isStablePreviewLayerReady) {
+      return;
+    }
+
+    const update = StrokeRenderer.buildIncrementalPreviewUpdate(stroke, this.activePreviewSession);
+    if (!update.shouldDraw) {
+      return;
+    }
+
+    if (update.requiresFullRedraw || update.dirtyRect === null) {
+      this.rebuildActivePreviewLayers(stroke);
+      return;
+    }
+
+    if (update.promoteStroke !== null && update.promoteDirtyRect !== null) {
+      this.clearStablePreviewRegion(update.promoteDirtyRect);
+      this.drawClippedPreviewStroke(this.stablePreviewContext2D, update.promoteDirtyRect, update.promoteStroke);
+    }
+
+    this.clearOverlayRegion(update.dirtyRect);
+    this.drawClippedPreviewStroke(this.overlayContext2D, update.dirtyRect, update.renderStroke);
+    this.activePreviewSession = update.nextSession;
+  }
+
+  private rebuildActivePreviewLayers(stroke: Stroke): void {
+    this.clearPreviewLayers();
+
+    const stableStroke = StrokeRenderer.buildStablePreviewStroke(stroke);
+    if (stableStroke !== null && stableStroke.points.length > 0) {
+      this.drawPreviewStroke(this.stablePreviewContext2D, stableStroke);
+    }
+
+    const renderUpdate = StrokeRenderer.buildIncrementalPreviewUpdate(stroke, null);
+    this.drawPreviewStroke(this.overlayContext2D, renderUpdate.renderStroke);
+    this.activePreviewSession = renderUpdate.nextSession;
+  }
+
+  private resetActivePreviewSession(): void {
+    this.activePreviewSession = null;
   }
 
   private tryApplyLatestRenderInvalidation(): boolean {
@@ -299,26 +421,13 @@ export struct CanvasBoard {
 
   private applyPartialRenderInvalidation(invalidation: RenderInvalidation): boolean {
     this.applyRenderedStrokeMutation(invalidation);
-    const dirtyRect = this.clipDirtyRectToCanvas(invalidation.dirtyRect);
-    if (dirtyRect === null) {
+    const dirtyRects = this.clipDirtyRectsToCanvas(invalidation.dirtyRects);
+    if (dirtyRects.length === 0) {
       return true;
     }
 
-    this.clearCommittedRegion(dirtyRect);
-
-    const candidateStrokeIds = this.strokeSpatialIndex.queryStrokeIds(dirtyRect)
-      .sort((left: string, right: string) => this.getRenderedStrokeIndex(left) - this.getRenderedStrokeIndex(right));
-
-    for (const strokeId of candidateStrokeIds) {
-      const stroke = this.renderedStrokesById.get(strokeId);
-      if (stroke === undefined) {
-        continue;
-      }
-
-      const strokeBounds = this.strokeSpatialIndex.getBounds(strokeId);
-      if (strokeBounds !== null && doBoundingBoxesIntersect(strokeBounds, dirtyRect)) {
-        this.drawStroke(this.committedContext2D, stroke);
-      }
+    for (const tileBounds of this.buildCommittedTileBoundsForDirtyRects(dirtyRects)) {
+      this.redrawCommittedTile(tileBounds);
     }
 
     return true;
@@ -384,13 +493,18 @@ export struct CanvasBoard {
     return index === undefined ? Number.MAX_SAFE_INTEGER : index;
   }
 
-  private clipDirtyRectToCanvas(dirtyRect: BoundingBox | null): BoundingBox | null {
-    if (dirtyRect === null) {
-      return null;
+  private clipDirtyRectsToCanvas(dirtyRects: BoundingBox[]): BoundingBox[] {
+    const size = this.getCanvasSize(this.committedContext2D);
+    const clippedDirtyRects: BoundingBox[] = [];
+
+    for (const dirtyRect of dirtyRects) {
+      const clippedDirtyRect = clampBoundingBox(dirtyRect, size.width, size.height);
+      if (clippedDirtyRect !== null) {
+        clippedDirtyRects.push(clippedDirtyRect);
+      }
     }
 
-    const size = this.getCanvasSize(this.committedContext2D);
-    return clampBoundingBox(dirtyRect, size.width, size.height);
+    return clippedDirtyRects;
   }
 
   private clearCommittedRegion(region: BoundingBox): void {
@@ -401,8 +515,77 @@ export struct CanvasBoard {
     }
 
     this.committedContext2D.clearRect(region.minX, region.minY, width, height);
-    this.committedContext2D.fillStyle = '#FFFFFF';
+    this.committedContext2D.fillStyle = this.paperBackgroundColor;
     this.committedContext2D.fillRect(region.minX, region.minY, width, height);
+  }
+
+  private redrawCommittedTile(tileBounds: BoundingBox): void {
+    this.clearCommittedRegion(tileBounds);
+
+    const candidateStrokeIds = this.strokeSpatialIndex.queryStrokeIds(tileBounds)
+      .sort((left: string, right: string) => this.getRenderedStrokeIndex(left) - this.getRenderedStrokeIndex(right));
+
+    this.committedContext2D.save();
+    this.committedContext2D.beginPath();
+    this.committedContext2D.rect(
+      tileBounds.minX,
+      tileBounds.minY,
+      tileBounds.maxX - tileBounds.minX,
+      tileBounds.maxY - tileBounds.minY
+    );
+    this.committedContext2D.clip();
+
+    for (const strokeId of candidateStrokeIds) {
+      const stroke = this.renderedStrokesById.get(strokeId);
+      if (stroke === undefined) {
+        continue;
+      }
+
+      const strokeBounds = this.strokeSpatialIndex.getBounds(strokeId);
+      if (strokeBounds !== null && doBoundingBoxesIntersect(strokeBounds, tileBounds)) {
+        this.drawStroke(this.committedContext2D, stroke);
+      }
+    }
+
+    this.committedContext2D.restore();
+  }
+
+  private buildCommittedTileBoundsForDirtyRects(dirtyRects: BoundingBox[]): BoundingBox[] {
+    const tileBoundsList: BoundingBox[] = [];
+    const tileKeySet = new Set<string>();
+    const canvasSize = this.getCanvasSize(this.committedContext2D);
+
+    for (const dirtyRect of dirtyRects) {
+      const safeMaxX = Math.max(dirtyRect.minX, dirtyRect.maxX - 0.001);
+      const safeMaxY = Math.max(dirtyRect.minY, dirtyRect.maxY - 0.001);
+      const startTileX = Math.floor(dirtyRect.minX / COMMITTED_TILE_SIZE);
+      const endTileX = Math.floor(safeMaxX / COMMITTED_TILE_SIZE);
+      const startTileY = Math.floor(dirtyRect.minY / COMMITTED_TILE_SIZE);
+      const endTileY = Math.floor(safeMaxY / COMMITTED_TILE_SIZE);
+
+      for (let tileX = startTileX; tileX <= endTileX; tileX += 1) {
+        for (let tileY = startTileY; tileY <= endTileY; tileY += 1) {
+          const tileKey = `${tileX}:${tileY}`;
+          if (tileKeySet.has(tileKey)) {
+            continue;
+          }
+
+          const tileBounds = clampBoundingBox({
+            minX: tileX * COMMITTED_TILE_SIZE,
+            minY: tileY * COMMITTED_TILE_SIZE,
+            maxX: (tileX + 1) * COMMITTED_TILE_SIZE,
+            maxY: (tileY + 1) * COMMITTED_TILE_SIZE
+          }, canvasSize.width, canvasSize.height);
+
+          if (tileBounds !== null) {
+            tileKeySet.add(tileKey);
+            tileBoundsList.push(tileBounds);
+          }
+        }
+      }
+    }
+
+    return tileBoundsList;
   }
 
   private drawErasePreview(context: CanvasRenderingContext2D, path: StrokePoint[], width: number): void {
@@ -475,6 +658,8 @@ export struct CanvasBoard {
   private onPageIdChanged(): void {
     this.clearRenderedStrokeState();
     this.lastAppliedRenderInvalidationSequence = 0;
+    this.clearPreviewLayers();
+    this.resetActivePreviewSession();
     this.resolveViewModel();
   }
 
@@ -491,6 +676,8 @@ export struct CanvasBoard {
       this.viewModel = null;
       this.clearRenderedStrokeState();
       this.lastAppliedRenderInvalidationSequence = 0;
+      this.clearPreviewLayers();
+      this.resetActivePreviewSession();
       return;
     }
 

@@ -740,6 +740,7 @@ struct EditorPage {
           pageId: this.activePageId,
           canvasVersion: this.canvasVersion,
           editorSnapshot: $editorSnapshot,
+          paperBackgroundColor: this.getActiveCanvasBackgroundColor(),
           onContentChanged: (immediate: boolean): void => {
             this.requestThumbnailRefresh(immediate);
           },

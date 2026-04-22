@@ -8,7 +8,7 @@ export interface RenderInvalidation {
   sequence: number;
   mode: RenderInvalidationMode;
   reason: RenderInvalidationReason;
-  dirtyRect: BoundingBox | null;
+  dirtyRects: BoundingBox[];
   removedStrokeIds: string[];
   addedRecords: IndexedStrokeRecord[];
 }
