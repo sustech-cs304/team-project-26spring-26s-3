@@ -2,7 +2,8 @@ import { NotebookSortType } from '../../../domain/repositories/NotebookRepositor
 
 @Component
 export struct SortMenu {
-  @Link selectedSortType: NotebookSortType;
+  @Prop selectedSortType: NotebookSortType = NotebookSortType.UPDATED_DESC;
+  onSortTypeChange: (sortType: NotebookSortType) => void = (_sortType: NotebookSortType): void => {};
 
   build() {
     Column({ space: 12 }) {
@@ -30,7 +31,7 @@ export struct SortMenu {
             color: this.selectedSortType === NotebookSortType.UPDATED_DESC ? $r('app.color.primary_text') : $r('app.color.card_border')
           })
           .onClick(() => {
-            this.selectedSortType = NotebookSortType.UPDATED_DESC;
+            this.onSortTypeChange(NotebookSortType.UPDATED_DESC);
           })
 
         Button($r('app.string.notebook_sort_created'))
@@ -43,7 +44,7 @@ export struct SortMenu {
             color: this.selectedSortType === NotebookSortType.CREATED_DESC ? $r('app.color.primary_text') : $r('app.color.card_border')
           })
           .onClick(() => {
-            this.selectedSortType = NotebookSortType.CREATED_DESC;
+            this.onSortTypeChange(NotebookSortType.CREATED_DESC);
           })
 
         Button($r('app.string.notebook_sort_title_asc'))
@@ -56,7 +57,7 @@ export struct SortMenu {
             color: this.selectedSortType === NotebookSortType.TITLE_ASC ? $r('app.color.primary_text') : $r('app.color.card_border')
           })
           .onClick(() => {
-            this.selectedSortType = NotebookSortType.TITLE_ASC;
+            this.onSortTypeChange(NotebookSortType.TITLE_ASC);
           })
       }
       .width('100%')

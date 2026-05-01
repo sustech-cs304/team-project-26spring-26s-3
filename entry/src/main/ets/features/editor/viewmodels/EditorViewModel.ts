@@ -89,6 +89,7 @@ export class EditorViewModel {
     return {
       id: this.notebook.id,
       title: this.notebook.title,
+      folderId: this.notebook.folderId,
       createdAt: this.notebook.createdAt,
       updatedAt: this.notebook.updatedAt
     };

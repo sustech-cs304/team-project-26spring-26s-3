@@ -19,6 +19,10 @@ export class IdUtil {
     return IdUtil.createId('notebook');
   }
 
+  static createNotebookFolderId(): string {
+    return IdUtil.createId('folder');
+  }
+
   static createNotebookPageId(): string {
     return IdUtil.createId('page');
   }

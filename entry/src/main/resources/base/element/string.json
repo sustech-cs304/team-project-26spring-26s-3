@@ -85,6 +85,38 @@
       "value": "我的笔记本"
     },
     {
+      "name": "folder_section_title",
+      "value": "文件夹"
+    },
+    {
+      "name": "folder_section_desc",
+      "value": "先创建文件夹，再把笔记本移动进去统一归类。"
+    },
+    {
+      "name": "folder_create_button",
+      "value": "新建文件夹"
+    },
+    {
+      "name": "folder_create_first",
+      "value": "先建一个文件夹"
+    },
+    {
+      "name": "folder_empty_desc",
+      "value": "还没有文件夹，新建后就可以把笔记本整理到不同分类里。"
+    },
+    {
+      "name": "folder_card_count_suffix",
+      "value": "个笔记本"
+    },
+    {
+      "name": "folder_card_empty_desc",
+      "value": "这个文件夹里还没有笔记本，可以在下方把笔记移动进来。"
+    },
+    {
+      "name": "folder_uncategorized_title",
+      "value": "未归类笔记本"
+    },
+    {
       "name": "notebook_list_count_suffix",
       "value": "个笔记本"
     },
@@ -153,6 +185,30 @@
       "value": "保存中..."
     },
     {
+      "name": "folder_create_dialog_title",
+      "value": "新建文件夹"
+    },
+    {
+      "name": "folder_create_dialog_desc",
+      "value": "创建后可以把不同课程或主题的笔记本放进对应文件夹。"
+    },
+    {
+      "name": "folder_create_placeholder",
+      "value": "例如：高等数学"
+    },
+    {
+      "name": "folder_create_tip",
+      "value": "留空时会自动回退到默认名称。"
+    },
+    {
+      "name": "folder_create_confirm",
+      "value": "确认创建"
+    },
+    {
+      "name": "folder_creating",
+      "value": "创建中..."
+    },
+    {
       "name": "dialog_cancel",
       "value": "取消"
     },
@@ -163,6 +219,10 @@
     {
       "name": "notebook_card_rename",
       "value": "重命名"
+    },
+    {
+      "name": "notebook_card_move",
+      "value": "移动"
     },
     {
       "name": "notebook_card_delete",
@@ -207,6 +267,26 @@
     {
       "name": "notebook_sort_title_asc",
       "value": "标题 A-Z"
+    },
+    {
+      "name": "folder_move_dialog_title",
+      "value": "移动到文件夹"
+    },
+    {
+      "name": "folder_move_empty_desc",
+      "value": "当前还没有可选文件夹，你可以先关闭弹窗并创建一个。"
+    },
+    {
+      "name": "folder_move_confirm",
+      "value": "确认移动"
+    },
+    {
+      "name": "folder_moving",
+      "value": "移动中..."
+    },
+    {
+      "name": "folder_option_uncategorized",
+      "value": "未归类"
     },
     {
       "name": "notebook_updated_prefix",

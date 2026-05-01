@@ -3,13 +3,16 @@ import { StorageKeys } from '../../common/constants/StorageKeys';
 import { IdUtil } from '../../common/utils/IdUtil';
 import { TimeUtil } from '../../common/utils/TimeUtil';
 import { Notebook, NotebookEntity } from '../../domain/entities/Notebook';
+import { NotebookFolder, NotebookFolderEntity } from '../../domain/entities/NotebookFolder';
 import { NotebookPage, NotebookPageEntity } from '../../domain/entities/NotebookPage';
 import { NotebookPageCanvas, NotebookPageCanvasEntity } from '../../domain/entities/NotebookPageCanvas';
 import {
+  CreateNotebookFolderRequest,
   CreateNotebookPageRequest,
   CreateNotebookRequest,
   DeleteNotebookPageRequest,
   GetNotebookPageCanvasRequest,
+  MoveNotebookToFolderRequest,
   NotebookRepository,
   NotebookSortType,
   ReorderNotebookPagesRequest,
@@ -20,6 +23,7 @@ import { PreferencesDataSource } from '../sources/local/PreferencesDataSource';
 
 export class NotebookRepositoryImpl implements NotebookRepository {
   private static readonly NOTEBOOK_LIST_FILE_PATH: string = 'notebooks/notebook-list.json';
+  private static readonly NOTEBOOK_FOLDER_LIST_FILE_PATH: string = 'notebooks/folder-list.json';
   private static readonly NOTEBOOK_PAGE_FILE_MISSING: string = '__notebook_page_file_missing__';
   private static readonly NOTEBOOK_PAGE_CANVAS_FILE_MISSING: string = '__notebook_page_canvas_file_missing__';
 
@@ -41,6 +45,11 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     return this.sortNotebookList(notebookList, sortType);
   }
 
+  async getFolderList(): Promise<NotebookFolder[]> {
+    const folderList: NotebookFolder[] = await this.loadFolderList();
+    return this.sortFolderList(folderList);
+  }
+
   async getNotebookById(notebookId: string): Promise<Notebook | null> {
     const notebookList: Notebook[] = await this.loadNotebookList();
     for (const notebook of notebookList) {
@@ -57,6 +66,7 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     const notebook: Notebook = {
       id: IdUtil.createNotebookId(),
       title: NotebookEntity.normalizeTitle(request.title),
+      folderId: '',
       createdAt: currentTime,
       updatedAt: currentTime
     };
@@ -69,6 +79,21 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     return notebook;
   }
 
+  async createFolder(request: CreateNotebookFolderRequest): Promise<NotebookFolder> {
+    const folderList: NotebookFolder[] = await this.loadFolderList();
+    const currentTime: number = TimeUtil.now();
+    const folder: NotebookFolder = {
+      id: IdUtil.createNotebookFolderId(),
+      title: NotebookFolderEntity.normalizeTitle(request.title),
+      createdAt: currentTime,
+      updatedAt: currentTime
+    };
+
+    folderList.push(folder);
+    await this.persistFolderList(folderList);
+    return folder;
+  }
+
   async renameNotebook(request: RenameNotebookRequest): Promise<Notebook | null> {
     const notebookList: Notebook[] = await this.loadNotebookList();
 
@@ -78,6 +103,7 @@ export class NotebookRepositoryImpl implements NotebookRepository {
         const renamedNotebook: Notebook = {
           id: currentNotebook.id,
           title: NotebookEntity.normalizeTitle(request.title),
+          folderId: currentNotebook.folderId,
           createdAt: currentNotebook.createdAt,
           updatedAt: TimeUtil.now()
         };
@@ -89,6 +115,50 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     }
 
     return null;
+  }
+
+  async moveNotebookToFolder(request: MoveNotebookToFolderRequest): Promise<Notebook | null> {
+    const targetFolderId: string = NotebookEntity.normalizeFolderId(request.folderId);
+    const notebookList: Notebook[] = await this.loadNotebookList();
+    const notebookIndex: number = this.findNotebookIndexById(notebookList, request.notebookId);
+    if (notebookIndex < 0) {
+      return null;
+    }
+
+    const folderList: NotebookFolder[] = await this.loadFolderList();
+    const targetFolderIndex: number = targetFolderId.length === 0 ? -1 : this.findFolderIndexById(folderList, targetFolderId);
+    if (targetFolderId.length > 0 && targetFolderIndex < 0) {
+      return null;
+    }
+
+    const currentNotebook: Notebook = notebookList[notebookIndex];
+    if (currentNotebook.folderId === targetFolderId) {
+      return currentNotebook;
+    }
+
+    const currentTime: number = TimeUtil.now();
+    const movedNotebook: Notebook = {
+      id: currentNotebook.id,
+      title: currentNotebook.title,
+      folderId: targetFolderId,
+      createdAt: currentNotebook.createdAt,
+      updatedAt: currentTime
+    };
+    notebookList[notebookIndex] = movedNotebook;
+    await this.persistNotebookList(notebookList);
+
+    if (targetFolderIndex >= 0) {
+      const targetFolder: NotebookFolder = folderList[targetFolderIndex];
+      folderList[targetFolderIndex] = {
+        id: targetFolder.id,
+        title: targetFolder.title,
+        createdAt: targetFolder.createdAt,
+        updatedAt: currentTime
+      };
+      await this.persistFolderList(folderList);
+    }
+
+    return movedNotebook;
   }
 
   async deleteNotebook(notebookId: string): Promise<boolean> {
@@ -165,6 +235,7 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     notebookList[notebookIndex] = {
       id: notebook.id,
       title: notebook.title,
+      folderId: notebook.folderId,
       createdAt: notebook.createdAt,
       updatedAt: currentTime
     };
@@ -215,6 +286,7 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     notebookList[notebookIndex] = {
       id: notebook.id,
       title: notebook.title,
+      folderId: notebook.folderId,
       createdAt: notebook.createdAt,
       updatedAt: currentTime
     };
@@ -247,11 +319,66 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     notebookList[notebookIndex] = {
       id: notebook.id,
       title: notebook.title,
+      folderId: notebook.folderId,
       createdAt: notebook.createdAt,
       updatedAt: currentTime
     };
     await this.persistNotebookList(notebookList);
     return true;
+  }
+
+  async touchNotebookPageUpdatedAt(pageId: string): Promise<boolean> {
+    const notebookList: Notebook[] = await this.loadNotebookList();
+    if (notebookList.length === 0) {
+      return false;
+    }
+
+    const currentTime: number = TimeUtil.now();
+    for (let notebookIndex: number = 0; notebookIndex < notebookList.length; notebookIndex += 1) {
+      const notebook: Notebook = notebookList[notebookIndex];
+      const notebookPageList: NotebookPage[] = await this.loadNotebookPageList(notebook.id);
+
+      for (let pageIndex: number = 0; pageIndex < notebookPageList.length; pageIndex += 1) {
+        const notebookPage: NotebookPage = notebookPageList[pageIndex];
+        if (notebookPage.id !== pageId) {
+          continue;
+        }
+
+        const updatedNotebookPage: NotebookPage = {
+          id: notebookPage.id,
+          notebookId: notebookPage.notebookId,
+          order: notebookPage.order,
+          createdAt: notebookPage.createdAt,
+          updatedAt: currentTime,
+          templateType: notebookPage.templateType
+        };
+        notebookPageList[pageIndex] = updatedNotebookPage;
+        await this.persistNotebookPageList(notebook.id, notebookPageList);
+
+        const notebookPageCanvas: NotebookPageCanvas = await this.loadOrBootstrapNotebookPageCanvas(updatedNotebookPage);
+        await this.persistNotebookPageCanvas({
+          pageId: notebookPageCanvas.pageId,
+          notebookId: notebookPageCanvas.notebookId,
+          width: notebookPageCanvas.width,
+          height: notebookPageCanvas.height,
+          backgroundColor: notebookPageCanvas.backgroundColor,
+          createdAt: notebookPageCanvas.createdAt,
+          updatedAt: currentTime
+        });
+
+        notebookList[notebookIndex] = {
+          id: notebook.id,
+          title: notebook.title,
+          folderId: notebook.folderId,
+          createdAt: notebook.createdAt,
+          updatedAt: currentTime
+        };
+        await this.persistNotebookList(notebookList);
+        return true;
+      }
+    }
+
+    return false;
   }
 
   async getSortType(): Promise<NotebookSortType> {
@@ -292,10 +419,33 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     return notebookListFromFile;
   }
 
+  private async loadFolderList(): Promise<NotebookFolder[]> {
+    const preferenceContent: string = await this.preferencesDataSource.getString(StorageKeys.NOTEBOOK_FOLDER_LIST, '');
+    const folderListFromPreferences: NotebookFolder[] = this.parseFolderList(preferenceContent);
+    if (folderListFromPreferences.length > 0 || preferenceContent.length > 0) {
+      return folderListFromPreferences;
+    }
+
+    const fileContent: string = await this.fileDataSource.readText(NotebookRepositoryImpl.NOTEBOOK_FOLDER_LIST_FILE_PATH, '');
+    const folderListFromFile: NotebookFolder[] = this.parseFolderList(fileContent);
+
+    if (fileContent.length > 0) {
+      await this.preferencesDataSource.putString(StorageKeys.NOTEBOOK_FOLDER_LIST, fileContent);
+    }
+
+    return folderListFromFile;
+  }
+
   private async persistNotebookList(notebookList: Notebook[]): Promise<void> {
     const content: string = JSON.stringify(notebookList);
     await this.preferencesDataSource.putString(StorageKeys.NOTEBOOK_LIST, content);
     await this.fileDataSource.writeText(NotebookRepositoryImpl.NOTEBOOK_LIST_FILE_PATH, content);
+  }
+
+  private async persistFolderList(folderList: NotebookFolder[]): Promise<void> {
+    const content: string = JSON.stringify(folderList);
+    await this.preferencesDataSource.putString(StorageKeys.NOTEBOOK_FOLDER_LIST, content);
+    await this.fileDataSource.writeText(NotebookRepositoryImpl.NOTEBOOK_FOLDER_LIST_FILE_PATH, content);
   }
 
   private async loadNotebookPageList(notebookId: string): Promise<NotebookPage[]> {
@@ -363,12 +513,41 @@ export class NotebookRepositoryImpl implements NotebookRepository {
         const notebook: Notebook = {
           id: item.id,
           title: NotebookEntity.normalizeTitle(item.title),
+          folderId: NotebookEntity.normalizeFolderId(item.folderId),
           createdAt: TimeUtil.isValidTimestamp(item.createdAt) ? item.createdAt : TimeUtil.now(),
           updatedAt: TimeUtil.isValidTimestamp(item.updatedAt) ? item.updatedAt : TimeUtil.now()
         };
         normalizedNotebookList.push(notebook);
       }
       return normalizedNotebookList;
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  private parseFolderList(content: string): NotebookFolder[] {
+    if (content.length === 0) {
+      return [];
+    }
+
+    try {
+      const parsedFolderList: NotebookFolder[] = JSON.parse(content) as NotebookFolder[];
+      if (!Array.isArray(parsedFolderList)) {
+        return [];
+      }
+
+      const normalizedFolderList: NotebookFolder[] = [];
+      for (const item of parsedFolderList) {
+        const folder: NotebookFolder = {
+          id: typeof item.id === 'string' ? item.id : IdUtil.createNotebookFolderId(),
+          title: NotebookFolderEntity.normalizeTitle(item.title),
+          createdAt: TimeUtil.isValidTimestamp(item.createdAt) ? item.createdAt : TimeUtil.now(),
+          updatedAt: TimeUtil.isValidTimestamp(item.updatedAt) ? item.updatedAt : TimeUtil.now()
+        };
+        normalizedFolderList.push(folder);
+      }
+
+      return normalizedFolderList;
     } catch (_error) {
       return [];
     }
@@ -463,6 +642,14 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     return sortedNotebookList;
   }
 
+  private sortFolderList(folderList: NotebookFolder[]): NotebookFolder[] {
+    const sortedFolderList: NotebookFolder[] = folderList.slice();
+    sortedFolderList.sort((left: NotebookFolder, right: NotebookFolder): number => {
+      return left.title.localeCompare(right.title);
+    });
+    return sortedFolderList;
+  }
+
   private buildReorderedNotebookPageList(
     notebookPageList: NotebookPage[],
     fromIndex: number,
@@ -529,6 +716,16 @@ export class NotebookRepositoryImpl implements NotebookRepository {
         return index;
       }
     }
+    return -1;
+  }
+
+  private findFolderIndexById(folderList: NotebookFolder[], folderId: string): number {
+    for (let index: number = 0; index < folderList.length; index += 1) {
+      if (folderList[index].id === folderId) {
+        return index;
+      }
+    }
+
     return -1;
   }
 }
