@@ -22,6 +22,7 @@ interface PageCanvasRenderSize {
 const THUMBNAIL_REFRESH_INTERVAL_MS = 320;
 const SIDEBAR_EXPANDED_WIDTH = 232;
 const SIDEBAR_COLLAPSED_WIDTH = 56;
+const PAGE_THUMBNAIL_HEIGHT = 164;
 const WORKSPACE_MENU_BUTTON_FONT_SIZE = 26;
 const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser'];
 
@@ -343,17 +344,21 @@ struct EditorPage {
             color: $r('app.color.editor_sidebar_border')
           })
         } else {
-          Scroll() {
-            Column({ space: 12 }) {
-              ForEach(this.notebookPageList, (page: NotebookPage) => {
-                this.buildPageThumbnail(page);
-              }, (page: NotebookPage): string => this.getPageRenderKey(page))
-            }
-            .width('100%')
-            .alignItems(HorizontalAlign.Start)
+          List({ space: 12 }) {
+            ForEach(this.notebookPageList, (page: NotebookPage, index: number) => {
+              ListItem() {
+                this.buildPageThumbnail(page, index);
+              }
+              .width('100%')
+              .height(PAGE_THUMBNAIL_HEIGHT)
+            }, (page: NotebookPage): string => this.getPageRenderKey(page))
+              .onMove((from: number, to: number): void => {
+                this.handlePageListItemMove(from, to);
+              })
           }
           .layoutWeight(1)
           .width('100%')
+          .scrollBar(BarState.Off)
         }
 
       }
@@ -373,7 +378,7 @@ struct EditorPage {
   }
 
   @Builder
-  private buildPageThumbnail(page: NotebookPage): void {
+  private buildPageThumbnail(page: NotebookPage, pageIndex: number): void {
     Column() {
       Stack({ alignContent: Alignment.BottomEnd }) {
         PageThumbnailPreview({
@@ -394,7 +399,7 @@ struct EditorPage {
             $r('app.color.editor_paper_border')
         })
 
-        Text(`${page.order + 1}`)
+        Text(this.getPageOrderText(page.id, pageIndex))
           .fontSize(12)
           .fontWeight(FontWeight.Medium)
           .fontColor(page.id === this.activePageId ? '#FFFFFF' : $r('app.color.primary_text'))
@@ -407,6 +412,17 @@ struct EditorPage {
             right: 8,
             bottom: 8
           })
+
+        Text('⋮⋮')
+          .fontSize(14)
+          .fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.secondary_text'))
+          .opacity(this.canDragReorderPages() ? 0.72 : 0.28)
+          .margin({
+            left: 10,
+            top: 8
+          })
+          .align(Alignment.TopStart)
       }
       .width('100%')
       .layoutWeight(1)
@@ -416,7 +432,7 @@ struct EditorPage {
       })
     }
     .width('100%')
-    .height(164)
+    .height(PAGE_THUMBNAIL_HEIGHT)
     .alignItems(HorizontalAlign.Start)
     // .padding(12)
     .backgroundColor(page.id === this.activePageId ? $r('app.color.editor_thumbnail_active') :
@@ -1395,21 +1411,46 @@ struct EditorPage {
     return activePage !== null && this.canMovePageDown(activePage);
   }
 
-  private moveNotebookPageByOffset(page: NotebookPage, offset: number): void {
-    if (this.isLoading || this.isCreatingPage || this.isDeletingPage || this.isReorderingPages) {
-      return;
-    }
-
-    const targetIndex: number = page.order + offset;
-    if (targetIndex < 0 || targetIndex >= this.notebookPageList.length) {
-      return;
-    }
-
-    this.closePageActionMenu();
-    void this.persistNotebookPageMove(page.order, targetIndex);
+  private canDragReorderPages(): boolean {
+    return !this.isLoading && !this.isCreatingPage && !this.isDeletingPage && !this.isReorderingPages &&
+      this.notebookId.length > 0 && this.notebookPageList.length > 1;
   }
 
-  private async persistNotebookPageMove(fromIndex: number, toIndex: number): Promise<void> {
+  private moveNotebookPageByOffset(page: NotebookPage, offset: number): void {
+    const targetIndex: number = page.order + offset;
+    this.closePageActionMenu();
+    this.moveNotebookPageByIndex(page.order, targetIndex);
+  }
+
+  private handlePageListItemMove(fromIndex: number, toIndex: number): void {
+    this.moveNotebookPageByIndex(fromIndex, toIndex);
+  }
+
+  private moveNotebookPageByIndex(fromIndex: number, toIndex: number): void {
+    if (!this.canDragReorderPages() || fromIndex === toIndex) {
+      return;
+    }
+
+    if (fromIndex < 0 || fromIndex >= this.notebookPageList.length ||
+      toIndex < 0 || toIndex >= this.notebookPageList.length) {
+      return;
+    }
+
+    const rollbackPageList: NotebookPage[] = this.cloneNotebookPageList(this.notebookPageList);
+    const rollbackActivePageId: string = this.activePageId;
+    if (!this.applyNotebookPageMoveLocally(fromIndex, toIndex)) {
+      return;
+    }
+
+    void this.persistNotebookPageMove(fromIndex, toIndex, rollbackPageList, rollbackActivePageId);
+  }
+
+  private async persistNotebookPageMove(
+    fromIndex: number,
+    toIndex: number,
+    rollbackPageList: NotebookPage[],
+    rollbackActivePageId: string
+  ): Promise<void> {
     if (fromIndex === toIndex || this.notebookId.length === 0) {
       return;
     }
@@ -1418,6 +1459,7 @@ struct EditorPage {
     try {
       const hasReordered: boolean = await this.ensureViewModel().reorderNotebookPages(this.notebookId, fromIndex, toIndex);
       if (!hasReordered) {
+        this.restoreNotebookPageListAfterFailedMove(rollbackPageList, rollbackActivePageId);
         return;
       }
 
@@ -1428,11 +1470,84 @@ struct EditorPage {
 
       this.notebookPageList = this.ensureViewModel().getCachedNotebookPages();
       this.syncActivePageId(this.activePageId);
-      await this.loadActivePageCanvas();
     } catch (_error) {
+      this.restoreNotebookPageListAfterFailedMove(rollbackPageList, rollbackActivePageId);
     } finally {
       this.isReorderingPages = false;
     }
+  }
+
+  private applyNotebookPageMoveLocally(fromIndex: number, toIndex: number): boolean {
+    if (fromIndex === toIndex) {
+      return false;
+    }
+
+    const reorderedNotebookPageList: NotebookPage[] = this.buildReorderedNotebookPageList(
+      this.notebookPageList,
+      fromIndex,
+      toIndex
+    );
+    if (reorderedNotebookPageList.length === 0) {
+      return false;
+    }
+
+    this.notebookPageList = reorderedNotebookPageList;
+    this.syncActivePageId(this.activePageId);
+    return true;
+  }
+
+  private buildReorderedNotebookPageList(
+    notebookPageList: NotebookPage[],
+    fromIndex: number,
+    toIndex: number
+  ): NotebookPage[] {
+    if (fromIndex < 0 || fromIndex >= notebookPageList.length || toIndex < 0 || notebookPageList.length === 0) {
+      return [];
+    }
+
+    const normalizedToIndex: number = this.normalizePageIndexForLength(toIndex, notebookPageList.length);
+    const reorderedNotebookPageList: NotebookPage[] = this.cloneNotebookPageList(notebookPageList);
+    const movedNotebookPageList: NotebookPage[] = reorderedNotebookPageList.splice(fromIndex, 1);
+    if (movedNotebookPageList.length === 0) {
+      return [];
+    }
+
+    reorderedNotebookPageList.splice(normalizedToIndex, 0, movedNotebookPageList[0]);
+    return reorderedNotebookPageList.map((notebookPage: NotebookPage, index: number): NotebookPage => {
+      return {
+        id: notebookPage.id,
+        notebookId: notebookPage.notebookId,
+        order: index,
+        createdAt: notebookPage.createdAt,
+        updatedAt: notebookPage.updatedAt,
+        templateType: notebookPage.templateType
+      };
+    });
+  }
+
+  private normalizePageIndexForLength(index: number, pageCount: number): number {
+    if (pageCount === 0) {
+      return -1;
+    }
+
+    if (index < 0) {
+      return 0;
+    }
+
+    return Math.min(index, pageCount - 1);
+  }
+
+  private restoreNotebookPageListAfterFailedMove(
+    rollbackPageList: NotebookPage[],
+    rollbackActivePageId: string
+  ): void {
+    if (rollbackPageList.length === 0) {
+      return;
+    }
+
+    this.notebookPageList = this.cloneNotebookPageList(rollbackPageList);
+    this.activePageId = rollbackActivePageId;
+    this.syncActivePageId(rollbackActivePageId);
   }
 
   private getActivePage(): NotebookPage | null {
@@ -1445,7 +1560,43 @@ struct EditorPage {
   }
 
   private getPageRenderKey(page: NotebookPage): string {
-    return `${page.id}_${page.order.toString()}`;
+    return page.id;
+  }
+
+  private getPageOrderText(pageId: string, fallbackIndex: number): string {
+    const pageIndex: number = this.getPageIndexById(pageId);
+    if (pageIndex >= 0) {
+      return `${pageIndex + 1}`;
+    }
+
+    if (fallbackIndex >= 0) {
+      return `${fallbackIndex + 1}`;
+    }
+
+    return '1';
+  }
+
+  private getPageIndexById(pageId: string): number {
+    for (let index: number = 0; index < this.notebookPageList.length; index += 1) {
+      if (this.notebookPageList[index].id === pageId) {
+        return index;
+      }
+    }
+
+    return -1;
+  }
+
+  private cloneNotebookPageList(notebookPageList: NotebookPage[]): NotebookPage[] {
+    return notebookPageList.map((page: NotebookPage): NotebookPage => {
+      return {
+        id: page.id,
+        notebookId: page.notebookId,
+        order: page.order,
+        createdAt: page.createdAt,
+        updatedAt: page.updatedAt,
+        templateType: page.templateType
+      };
+    });
   }
 
   private getPageLabel(pageOrder: number): string {
