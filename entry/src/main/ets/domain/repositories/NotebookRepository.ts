@@ -1,6 +1,6 @@
 import { Notebook } from '../entities/Notebook';
 import { NotebookFolder } from '../entities/NotebookFolder';
-import { NotebookPage } from '../entities/NotebookPage';
+import { NotebookPage, NotebookPageTemplateType } from '../entities/NotebookPage';
 import { NotebookPageCanvas } from '../entities/NotebookPageCanvas';
 
 export enum NotebookSortType {
@@ -42,6 +42,12 @@ export interface ReorderNotebookPagesRequest {
   toIndex: number;
 }
 
+export interface UpdateNotebookPageTemplateRequest {
+  notebookId: string;
+  pageId: string;
+  templateType: NotebookPageTemplateType;
+}
+
 export interface GetNotebookPageCanvasRequest {
   notebookId: string;
   pageId: string;
@@ -61,6 +67,7 @@ export interface NotebookRepository {
   createNotebookPage(request: CreateNotebookPageRequest): Promise<NotebookPage | null>;
   deleteNotebookPage(request: DeleteNotebookPageRequest): Promise<boolean>;
   reorderNotebookPages(request: ReorderNotebookPagesRequest): Promise<boolean>;
+  updateNotebookPageTemplate(request: UpdateNotebookPageTemplateRequest): Promise<NotebookPage | null>;
   touchNotebookPageUpdatedAt(pageId: string): Promise<boolean>;
   getSortType(): Promise<NotebookSortType>;
   saveSortType(sortType: NotebookSortType): Promise<void>;

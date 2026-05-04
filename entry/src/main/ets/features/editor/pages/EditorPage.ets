@@ -3,7 +3,7 @@ import router from '@ohos.router';
 
 import { AppRouter, RouterParams } from '../../../app/AppRouter';
 import { Notebook } from '../../../domain/entities/Notebook';
-import { NotebookPage } from '../../../domain/entities/NotebookPage';
+import { NotebookPage, NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { NotebookPageCanvas } from '../../../domain/entities/NotebookPageCanvas';
 import { ToolSetting, ToolType } from '../../../domain/entities/ToolSetting';
 import { CanvasBoard } from '../components/CanvasBoard';
@@ -24,7 +24,14 @@ const SIDEBAR_EXPANDED_WIDTH = 232;
 const SIDEBAR_COLLAPSED_WIDTH = 56;
 const PAGE_THUMBNAIL_HEIGHT = 164;
 const WORKSPACE_MENU_BUTTON_FONT_SIZE = 26;
+const PAGE_TEMPLATE_DROPDOWN_LEFT = 384;
 const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser'];
+const PAGE_TEMPLATE_OPTIONS: NotebookPageTemplateType[] = [
+  NotebookPageTemplateType.BLANK,
+  NotebookPageTemplateType.LINED,
+  NotebookPageTemplateType.GRID,
+  NotebookPageTemplateType.DOTTED
+];
 
 @Entry
 @Component
@@ -38,6 +45,7 @@ struct EditorPage {
   @State private isCanvasLoading: boolean = false;
   @State private isCreatingPage: boolean = false;
   @State private isReorderingPages: boolean = false;
+  @State private isUpdatingPageTemplate: boolean = false;
   @State private pageActionMenuPageId: string = '';
   @State private isDeletePageDialogVisible: boolean = false;
   @State private isDeletingPage: boolean = false;
@@ -52,6 +60,7 @@ struct EditorPage {
   @State private thumbnailRefreshVersion: number = 0;
   @State private isPagePreviewCollapsed: boolean = false;
   @State private isToolDropdownVisible: boolean = false;
+  @State private isPageTemplateDropdownVisible: boolean = false;
   private readonly pageCanvasRenderSizeMap: Map<string, PageCanvasRenderSize> = new Map<string, PageCanvasRenderSize>();
   private thumbnailRefreshTimerId: number = -1;
   private lastThumbnailRefreshTime: number = 0;
@@ -70,6 +79,7 @@ struct EditorPage {
     this.drawingViewModel = null;
     this.currentDrawingPageId = '';
     this.isToolDropdownVisible = false;
+    this.isPageTemplateDropdownVisible = false;
   }
 
   build() {
@@ -292,7 +302,8 @@ struct EditorPage {
           .padding(0)
           .backgroundColor('#fff2f2f2')
           .borderRadius(10)
-          .enabled(!this.isCreatingPage && !this.isDeletingPage && !this.isReorderingPages)
+          .enabled(!this.isCreatingPage && !this.isDeletingPage && !this.isReorderingPages &&
+            !this.isUpdatingPageTemplate)
           .onClick(() => {
             this.closeTransientDropdowns();
             void this.createNotebookPage();
@@ -385,6 +396,7 @@ struct EditorPage {
           pageId: page.id,
           isActive: page.id === this.activePageId,
           refreshVersion: this.thumbnailRefreshVersion,
+          templateType: this.resolvePageTemplateType(page.templateType),
           paperBackgroundColor: page.id === this.activePageId ? this.getActiveCanvasBackgroundColor() : '#FFFFFF',
           canvasWidth: this.getThumbnailCanvasWidth(page.id),
           canvasHeight: this.getThumbnailCanvasHeight(page.id)
@@ -435,13 +447,11 @@ struct EditorPage {
     .height(PAGE_THUMBNAIL_HEIGHT)
     .alignItems(HorizontalAlign.Start)
     // .padding(12)
-    .backgroundColor(page.id === this.activePageId ? $r('app.color.editor_thumbnail_active') :
-      $r('app.color.editor_thumbnail_background'))
+    .backgroundColor(this.getPageThumbnailBackgroundColor(page))
     .borderRadius(22)
     .border({
       width: page.id === this.activePageId ? 2 : 1,
-      color: page.id === this.activePageId ? $r('app.color.editor_accent') :
-        $r('app.color.editor_sidebar_border')
+      color: this.getPageThumbnailBorderColor(page)
     })
   }
 
@@ -473,6 +483,8 @@ struct EditorPage {
                     this.handleWorkspaceToolButtonClick(tool);
                   })
               }, (tool: ToolType): string => tool)
+
+              this.buildPageTemplateToolbarButton()
             }
             .alignItems(VerticalAlign.Center)
 
@@ -557,10 +569,12 @@ struct EditorPage {
                 .width(40)
                 .height(40)
                 .backgroundColor('#fff3f3f3')
-                .enabled(!this.isCreatingPage && !this.isDeletingPage && !this.isReorderingPages)
+                .enabled(!this.isCreatingPage && !this.isDeletingPage && !this.isReorderingPages &&
+                  !this.isUpdatingPageTemplate)
                 .borderRadius(12)
                 .onClick(() => {
-                  this.closeTransientDropdowns();
+                  this.closeToolDropdown();
+                  this.closePageTemplateDropdown();
                   this.togglePageActionMenu(this.activePageId);
                 })
 
@@ -596,6 +610,10 @@ struct EditorPage {
 
       if (this.isToolDropdownVisible) {
         this.buildToolDropdown()
+      }
+
+      if (this.isPageTemplateDropdownVisible) {
+        this.buildPageTemplateDropdown()
       }
     }
     .layoutWeight(1)
@@ -718,6 +736,38 @@ struct EditorPage {
   }
 
   @Builder
+  private buildPageTemplateDropdown(): void {
+    Row() {
+      Column({ space: 7 }) {
+        Text('页面模板')
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#111827')
+          .width('100%')
+
+        ForEach(PAGE_TEMPLATE_OPTIONS, (templateType: NotebookPageTemplateType) => {
+          this.buildPageTemplateOption(templateType)
+        }, (templateType: NotebookPageTemplateType): string => templateType)
+      }
+      .width(204)
+      .padding(7)
+      .backgroundColor('#F8FAFC')
+      .borderRadius(12)
+      .border({
+        width: 1,
+        color: '#E2E8F0'
+      })
+    }
+    .width('100%')
+    .margin({
+      top: 52,
+      left: PAGE_TEMPLATE_DROPDOWN_LEFT
+    })
+    .justifyContent(FlexAlign.Start)
+    .alignItems(VerticalAlign.Top)
+  }
+
+  @Builder
   private buildPaperSurface(): void {
     Column({ space: 14 }) {
       // Row({ space: 12 }) {
@@ -755,6 +805,8 @@ struct EditorPage {
         CanvasBoard({
           pageId: this.activePageId,
           canvasVersion: this.canvasVersion,
+          templateType: this.getActivePageTemplateType(),
+          paperBackgroundColor: this.getActiveCanvasBackgroundColor(),
           editorSnapshot: $editorSnapshot,
           onContentChanged: (immediate: boolean): void => {
             this.requestThumbnailRefresh(immediate);
@@ -782,11 +834,11 @@ struct EditorPage {
   private buildPageActionMenu(): void {
     Column({ space: 6 }) {
       Button($r('app.string.editor_page_move_up'))
-        .width(132)
-        .height(36)
+        .width('100%')
+        .height(34)
         .backgroundColor($r('app.color.app_background'))
         .fontColor($r('app.color.primary_text'))
-        .enabled(this.canMoveActivePageUp() && !this.isReorderingPages)
+        .enabled(this.canMoveActivePageUp() && !this.isReorderingPages && !this.isUpdatingPageTemplate)
         .onClick(() => {
           this.closeToolDropdown();
           const activePage: NotebookPage | null = this.getActivePage();
@@ -796,11 +848,11 @@ struct EditorPage {
         })
 
       Button($r('app.string.editor_page_move_down'))
-        .width(132)
-        .height(36)
+        .width('100%')
+        .height(34)
         .backgroundColor($r('app.color.app_background'))
         .fontColor($r('app.color.primary_text'))
-        .enabled(this.canMoveActivePageDown() && !this.isReorderingPages)
+        .enabled(this.canMoveActivePageDown() && !this.isReorderingPages && !this.isUpdatingPageTemplate)
         .onClick(() => {
           this.closeToolDropdown();
           const activePage: NotebookPage | null = this.getActivePage();
@@ -810,11 +862,11 @@ struct EditorPage {
         })
 
       Button($r('app.string.editor_page_delete_menu'))
-        .width(132)
-        .height(36)
+        .width('100%')
+        .height(34)
         .backgroundColor($r('app.color.danger_surface'))
         .fontColor($r('app.color.danger_text'))
-        .enabled(!this.isDeletingPage)
+        .enabled(!this.isDeletingPage && !this.isUpdatingPageTemplate)
         .onClick(() => {
           this.closeToolDropdown();
           const activePage: NotebookPage | null = this.getActivePage();
@@ -823,6 +875,7 @@ struct EditorPage {
           }
         })
     }
+    .width(156)
     .padding(12)
     .margin({
       top: 48,
@@ -834,6 +887,178 @@ struct EditorPage {
       width: 1,
       color: $r('app.color.editor_sidebar_border')
     })
+  }
+
+  @Builder
+  private buildPageTemplateToolbarButton(): void {
+    Button('Template')
+    .height(32)
+    .padding({
+      left: 10,
+      right: 10
+    })
+    .fontSize(12)
+    .backgroundColor(this.isPageTemplateDropdownVisible ? '#0F172A' : '#FFFFFF')
+    .fontColor(this.isPageTemplateDropdownVisible ? '#FFFFFF' : '#475569')
+    .borderRadius(10)
+    .border({
+      width: 1,
+      color: this.isPageTemplateDropdownVisible ? '#0F172A' : '#CBD5E1'
+    })
+    .enabled(!this.isUpdatingPageTemplate && !this.isCanvasLoading)
+    .onClick(() => {
+      this.togglePageTemplateDropdown();
+    })
+  }
+
+  @Builder
+  private buildPageTemplateOption(templateType: NotebookPageTemplateType): void {
+    Button() {
+      Row({ space: 8 }) {
+        this.buildPageTemplateGlyph(templateType, this.isActivePageTemplate(templateType))
+
+        Text(this.getPageTemplateLabel(templateType))
+          .fontSize(13)
+          .fontWeight(this.isActivePageTemplate(templateType) ? FontWeight.Medium : FontWeight.Regular)
+          .fontColor(this.isActivePageTemplate(templateType) ? '#FFFFFF' : '#334155')
+          .layoutWeight(1)
+          .textAlign(TextAlign.Start)
+
+        Text(this.isActivePageTemplate(templateType) ? '✓' : '')
+          .fontSize(13)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#FFFFFF')
+          .width(14)
+          .textAlign(TextAlign.Center)
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+    }
+    .width('100%')
+    .height(38)
+    .padding({
+      left: 8,
+      right: 8
+    })
+    .backgroundColor(this.isActivePageTemplate(templateType) ? '#0F172A' : '#FFFFFF')
+    .borderRadius(10)
+    .border({
+      width: 1,
+      color: this.isActivePageTemplate(templateType) ? '#0F172A' : '#CBD5E1'
+    })
+    .enabled(!this.isUpdatingPageTemplate && !this.isCanvasLoading)
+    .onClick(() => {
+      void this.updateActivePageTemplate(templateType);
+    })
+  }
+
+  @Builder
+  private buildPageTemplateGlyph(templateType: NotebookPageTemplateType, isSelected: boolean): void {
+    Stack({ alignContent: Alignment.Center }) {
+      Column() {}
+        .width(30)
+        .height(22)
+        .backgroundColor(isSelected ? '#FFFFFF' : '#F8FAFC')
+        .borderRadius(6)
+        .border({
+          width: 1,
+          color: isSelected ? '#E2E8F0' : '#CBD5E1'
+        })
+
+      if (templateType === NotebookPageTemplateType.LINED) {
+        this.buildPageTemplateLinesGlyph(isSelected ? '#2563EB' : '#94A3B8')
+      } else if (templateType === NotebookPageTemplateType.GRID) {
+        this.buildPageTemplateGridGlyph(isSelected ? '#2563EB' : '#94A3B8')
+      } else if (templateType === NotebookPageTemplateType.DOTTED) {
+        this.buildPageTemplateDotsGlyph(isSelected ? '#2563EB' : '#94A3B8')
+      }
+    }
+    .width(30)
+    .height(22)
+  }
+
+  @Builder
+  private buildPageTemplateLinesGlyph(color: string): void {
+    Column({ space: 4 }) {
+      ForEach([0, 1, 2], (item: number) => {
+        Column() {}
+          .width(20)
+          .height(1)
+          .backgroundColor(color)
+      }, (item: number): string => `${item}`)
+    }
+    .width(22)
+    .height(14)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+  }
+
+  @Builder
+  private buildPageTemplateGridGlyph(color: string): void {
+    Stack({ alignContent: Alignment.Center }) {
+      Column() {}
+        .width(20)
+        .height(1)
+        .backgroundColor(color)
+        .offset({ y: -5 })
+
+      Column() {}
+        .width(20)
+        .height(1)
+        .backgroundColor(color)
+
+      Column() {}
+        .width(20)
+        .height(1)
+        .backgroundColor(color)
+        .offset({ y: 5 })
+
+      Column() {}
+        .width(1)
+        .height(16)
+        .backgroundColor(color)
+        .offset({ x: -6 })
+
+      Column() {}
+        .width(1)
+        .height(16)
+        .backgroundColor(color)
+
+      Column() {}
+        .width(1)
+        .height(16)
+        .backgroundColor(color)
+        .offset({ x: 6 })
+    }
+    .width(22)
+    .height(16)
+  }
+
+  @Builder
+  private buildPageTemplateDotsGlyph(color: string): void {
+    Stack({ alignContent: Alignment.Center }) {
+      this.buildPageTemplateDot(-7, -5, color)
+      this.buildPageTemplateDot(0, -5, color)
+      this.buildPageTemplateDot(7, -5, color)
+      this.buildPageTemplateDot(-7, 0, color)
+      this.buildPageTemplateDot(0, 0, color)
+      this.buildPageTemplateDot(7, 0, color)
+      this.buildPageTemplateDot(-7, 5, color)
+      this.buildPageTemplateDot(0, 5, color)
+      this.buildPageTemplateDot(7, 5, color)
+    }
+    .width(22)
+    .height(16)
+  }
+
+  @Builder
+  private buildPageTemplateDot(offsetX: number, offsetY: number, color: string): void {
+    Column() {}
+      .width(3)
+      .height(3)
+      .backgroundColor(color)
+      .borderRadius(2)
+      .offset({ x: offsetX, y: offsetY })
   }
 
   @Builder
@@ -944,7 +1169,9 @@ struct EditorPage {
     this.activePageId = '';
     this.activePageCanvas = null;
     this.isCanvasLoading = false;
+    this.isUpdatingPageTemplate = false;
     this.pageActionMenuPageId = '';
+    this.isPageTemplateDropdownVisible = false;
     this.resetDeletePageDialogState();
     this.resetDrawingState('');
   }
@@ -974,7 +1201,7 @@ struct EditorPage {
   }
 
   private async createNotebookPage(): Promise<void> {
-    if (this.isCreatingPage || this.isReorderingPages || this.notebookId.length === 0) {
+    if (this.isCreatingPage || this.isReorderingPages || this.isUpdatingPageTemplate || this.notebookId.length === 0) {
       return;
     }
 
@@ -1006,7 +1233,8 @@ struct EditorPage {
   }
 
   private async selectNotebookPage(page: NotebookPage): Promise<void> {
-    if (this.isDeletingPage || this.isCreatingPage || this.isReorderingPages || this.isLoading) {
+    if (this.isDeletingPage || this.isCreatingPage || this.isReorderingPages || this.isUpdatingPageTemplate ||
+      this.isLoading) {
       return;
     }
 
@@ -1021,7 +1249,7 @@ struct EditorPage {
   }
 
   private openDeletePageDialog(page: NotebookPage): void {
-    if (this.isDeletingPage || this.isCreatingPage || this.isReorderingPages) {
+    if (this.isDeletingPage || this.isCreatingPage || this.isReorderingPages || this.isUpdatingPageTemplate) {
       return;
     }
 
@@ -1049,7 +1277,7 @@ struct EditorPage {
 
   private async confirmDeleteSelectedPage(): Promise<void> {
     if (this.isDeletingPage || this.isReorderingPages || this.notebookId.length === 0 ||
-      this.deleteTargetPageId.length === 0) {
+      this.isUpdatingPageTemplate || this.deleteTargetPageId.length === 0) {
       return;
     }
 
@@ -1318,6 +1546,7 @@ struct EditorPage {
     const isCurrentTool = this.toolSetting.tool === tool;
     this.handleWorkspaceToolChange(tool);
     this.closePageActionMenu();
+    this.closePageTemplateDropdown();
 
     if (isCurrentTool) {
       this.isToolDropdownVisible = !this.isToolDropdownVisible;
@@ -1371,13 +1600,19 @@ struct EditorPage {
     this.isToolDropdownVisible = false;
   }
 
+  private closePageTemplateDropdown(): void {
+    this.isPageTemplateDropdownVisible = false;
+  }
+
   private closeTransientDropdowns(): void {
     this.closePageActionMenu();
     this.closeToolDropdown();
+    this.closePageTemplateDropdown();
   }
 
   private togglePageActionMenu(pageId: string): void {
-    if (this.isLoading || this.isCreatingPage || this.isDeletingPage || this.isReorderingPages) {
+    if (this.isLoading || this.isCreatingPage || this.isDeletingPage || this.isReorderingPages ||
+      this.isUpdatingPageTemplate) {
       return;
     }
 
@@ -1387,6 +1622,17 @@ struct EditorPage {
     }
 
     this.pageActionMenuPageId = pageId;
+  }
+
+  private togglePageTemplateDropdown(): void {
+    if (this.isLoading || this.isCreatingPage || this.isDeletingPage || this.isReorderingPages ||
+      this.isUpdatingPageTemplate || this.isCanvasLoading || this.activePageId.length === 0) {
+      return;
+    }
+
+    this.closeToolDropdown();
+    this.closePageActionMenu();
+    this.isPageTemplateDropdownVisible = !this.isPageTemplateDropdownVisible;
   }
 
   private isPageActionMenuVisible(pageId: string): boolean {
@@ -1413,7 +1659,7 @@ struct EditorPage {
 
   private canDragReorderPages(): boolean {
     return !this.isLoading && !this.isCreatingPage && !this.isDeletingPage && !this.isReorderingPages &&
-      this.notebookId.length > 0 && this.notebookPageList.length > 1;
+      !this.isUpdatingPageTemplate && this.notebookId.length > 0 && this.notebookPageList.length > 1;
   }
 
   private moveNotebookPageByOffset(page: NotebookPage, offset: number): void {
@@ -1520,7 +1766,7 @@ struct EditorPage {
         order: index,
         createdAt: notebookPage.createdAt,
         updatedAt: notebookPage.updatedAt,
-        templateType: notebookPage.templateType
+        templateType: this.resolvePageTemplateType(notebookPage.templateType)
       };
     });
   }
@@ -1559,8 +1805,141 @@ struct EditorPage {
     return null;
   }
 
+  private getActivePageTemplateType(): NotebookPageTemplateType {
+    const activePage: NotebookPage | null = this.getActivePage();
+    return activePage === null ? NotebookPageTemplateType.BLANK : this.resolvePageTemplateType(activePage.templateType);
+  }
+
+  private isActivePageTemplate(templateType: NotebookPageTemplateType): boolean {
+    return this.getActivePageTemplateType() === templateType;
+  }
+
+  private getPageTemplateLabel(templateType: NotebookPageTemplateType): string {
+    switch (templateType) {
+      case NotebookPageTemplateType.LINED:
+        return '横线';
+      case NotebookPageTemplateType.GRID:
+        return '方格';
+      case NotebookPageTemplateType.DOTTED:
+        return '点阵';
+      case NotebookPageTemplateType.BLANK:
+      default:
+        return '空白';
+    }
+  }
+
+  private async updateActivePageTemplate(templateType: NotebookPageTemplateType): Promise<void> {
+    if (this.isUpdatingPageTemplate || this.isLoading || this.isCreatingPage || this.isDeletingPage ||
+      this.isReorderingPages || this.isCanvasLoading || this.notebookId.length === 0 || this.activePageId.length === 0) {
+      return;
+    }
+
+    const activePage: NotebookPage | null = this.getActivePage();
+    if (activePage === null) {
+      return;
+    }
+
+    if (this.resolvePageTemplateType(activePage.templateType) === templateType) {
+      this.closePageTemplateDropdown();
+      return;
+    }
+
+    const pageId: string = activePage.id;
+    const rollbackPageList: NotebookPage[] = this.cloneNotebookPageList(this.notebookPageList);
+    const rollbackActivePageId: string = this.activePageId;
+
+    this.isUpdatingPageTemplate = true;
+    this.closeToolDropdown();
+    this.closePageActionMenu();
+
+    if (!this.applyNotebookPageTemplateLocally(pageId, templateType)) {
+      this.isUpdatingPageTemplate = false;
+      return;
+    }
+
+    this.canvasVersion += 1;
+    this.requestThumbnailRefresh(true);
+    this.closePageTemplateDropdown();
+
+    try {
+      const updatedNotebookPage: NotebookPage | null = await this.ensureViewModel().updateNotebookPageTemplate(
+        this.notebookId,
+        pageId,
+        templateType
+      );
+
+      if (updatedNotebookPage === null) {
+        this.restoreNotebookPageListAfterFailedTemplateUpdate(rollbackPageList, rollbackActivePageId);
+        return;
+      }
+
+      const cachedNotebook: Notebook | null = this.ensureViewModel().getCachedNotebook();
+      if (cachedNotebook !== null) {
+        this.notebookTitle = cachedNotebook.title;
+      }
+
+      this.notebookPageList = this.ensureViewModel().getCachedNotebookPages();
+      this.syncActivePageId(pageId);
+      this.canvasVersion += 1;
+      this.requestThumbnailRefresh(true);
+    } catch (_error) {
+      this.restoreNotebookPageListAfterFailedTemplateUpdate(rollbackPageList, rollbackActivePageId);
+    } finally {
+      this.isUpdatingPageTemplate = false;
+    }
+  }
+
+  private applyNotebookPageTemplateLocally(
+    pageId: string,
+    templateType: NotebookPageTemplateType
+  ): boolean {
+    let hasUpdated: boolean = false;
+    const currentTime: number = Date.now();
+    const nextNotebookPageList: NotebookPage[] = this.notebookPageList.map((page: NotebookPage): NotebookPage => {
+      if (page.id !== pageId) {
+        return {
+          id: page.id,
+          notebookId: page.notebookId,
+          order: page.order,
+          createdAt: page.createdAt,
+          updatedAt: page.updatedAt,
+          templateType: this.resolvePageTemplateType(page.templateType)
+        };
+      }
+
+      hasUpdated = true;
+      return {
+        id: page.id,
+        notebookId: page.notebookId,
+        order: page.order,
+        createdAt: page.createdAt,
+        updatedAt: currentTime,
+        templateType: templateType
+      };
+    });
+
+    if (!hasUpdated) {
+      return false;
+    }
+
+    this.notebookPageList = nextNotebookPageList;
+    this.syncActivePageId(pageId);
+    return true;
+  }
+
+  private restoreNotebookPageListAfterFailedTemplateUpdate(
+    rollbackPageList: NotebookPage[],
+    rollbackActivePageId: string
+  ): void {
+    this.notebookPageList = this.cloneNotebookPageList(rollbackPageList);
+    this.activePageId = rollbackActivePageId;
+    this.syncActivePageId(rollbackActivePageId);
+    this.canvasVersion += 1;
+    this.requestThumbnailRefresh(true);
+  }
+
   private getPageRenderKey(page: NotebookPage): string {
-    return page.id;
+    return `${page.id}_${this.resolvePageTemplateType(page.templateType)}`;
   }
 
   private getPageOrderText(pageId: string, fallbackIndex: number): string {
@@ -1594,9 +1973,39 @@ struct EditorPage {
         order: page.order,
         createdAt: page.createdAt,
         updatedAt: page.updatedAt,
-        templateType: page.templateType
+        templateType: this.resolvePageTemplateType(page.templateType)
       };
     });
+  }
+
+  private resolvePageTemplateType(templateType?: NotebookPageTemplateType): NotebookPageTemplateType {
+    switch (templateType) {
+      case NotebookPageTemplateType.LINED:
+        return NotebookPageTemplateType.LINED;
+      case NotebookPageTemplateType.GRID:
+        return NotebookPageTemplateType.GRID;
+      case NotebookPageTemplateType.DOTTED:
+        return NotebookPageTemplateType.DOTTED;
+      case NotebookPageTemplateType.BLANK:
+      default:
+        return NotebookPageTemplateType.BLANK;
+    }
+  }
+
+  private getPageThumbnailBackgroundColor(page: NotebookPage): ResourceColor {
+    if (page.id === this.activePageId) {
+      return $r('app.color.editor_thumbnail_active');
+    }
+
+    return $r('app.color.editor_thumbnail_background');
+  }
+
+  private getPageThumbnailBorderColor(page: NotebookPage): ResourceColor {
+    if (page.id === this.activePageId) {
+      return $r('app.color.editor_accent');
+    }
+
+    return $r('app.color.editor_sidebar_border');
   }
 
   private getPageLabel(pageOrder: number): string {

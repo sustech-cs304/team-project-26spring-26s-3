@@ -4,7 +4,7 @@ import { IdUtil } from '../../common/utils/IdUtil';
 import { TimeUtil } from '../../common/utils/TimeUtil';
 import { Notebook, NotebookEntity } from '../../domain/entities/Notebook';
 import { NotebookFolder, NotebookFolderEntity } from '../../domain/entities/NotebookFolder';
-import { NotebookPage, NotebookPageEntity } from '../../domain/entities/NotebookPage';
+import { NotebookPage, NotebookPageEntity, NotebookPageTemplateType } from '../../domain/entities/NotebookPage';
 import { NotebookPageCanvas, NotebookPageCanvasEntity } from '../../domain/entities/NotebookPageCanvas';
 import {
   CreateNotebookFolderRequest,
@@ -16,7 +16,8 @@ import {
   NotebookRepository,
   NotebookSortType,
   ReorderNotebookPagesRequest,
-  RenameNotebookRequest
+  RenameNotebookRequest,
+  UpdateNotebookPageTemplateRequest
 } from '../../domain/repositories/NotebookRepository';
 import { FileDataSource } from '../sources/local/FileDataSource';
 import { PreferencesDataSource } from '../sources/local/PreferencesDataSource';
@@ -325,6 +326,49 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     };
     await this.persistNotebookList(notebookList);
     return true;
+  }
+
+  async updateNotebookPageTemplate(request: UpdateNotebookPageTemplateRequest): Promise<NotebookPage | null> {
+    const notebookList: Notebook[] = await this.loadNotebookList();
+    const notebookIndex: number = this.findNotebookIndexById(notebookList, request.notebookId);
+    if (notebookIndex < 0) {
+      return null;
+    }
+
+    const notebook: Notebook = notebookList[notebookIndex];
+    const notebookPageList: NotebookPage[] = await this.loadOrBootstrapNotebookPageList(notebook);
+    const pageIndex: number = this.findNotebookPageIndexById(notebookPageList, request.pageId);
+    if (pageIndex < 0) {
+      return null;
+    }
+
+    const targetTemplateType: NotebookPageTemplateType = NotebookPageEntity.normalizeTemplateType(request.templateType);
+    const currentNotebookPage: NotebookPage = notebookPageList[pageIndex];
+    if (currentNotebookPage.templateType === targetTemplateType) {
+      return currentNotebookPage;
+    }
+
+    const currentTime: number = TimeUtil.now();
+    const updatedNotebookPage: NotebookPage = {
+      id: currentNotebookPage.id,
+      notebookId: currentNotebookPage.notebookId,
+      order: currentNotebookPage.order,
+      createdAt: currentNotebookPage.createdAt,
+      updatedAt: currentTime,
+      templateType: targetTemplateType
+    };
+    notebookPageList[pageIndex] = updatedNotebookPage;
+    await this.persistNotebookPageList(request.notebookId, notebookPageList);
+
+    notebookList[notebookIndex] = {
+      id: notebook.id,
+      title: notebook.title,
+      folderId: notebook.folderId,
+      createdAt: notebook.createdAt,
+      updatedAt: currentTime
+    };
+    await this.persistNotebookList(notebookList);
+    return updatedNotebookPage;
   }
 
   async touchNotebookPageUpdatedAt(pageId: string): Promise<boolean> {
@@ -713,6 +757,15 @@ export class NotebookRepositoryImpl implements NotebookRepository {
   private findNotebookIndexById(notebookList: Notebook[], notebookId: string): number {
     for (let index: number = 0; index < notebookList.length; index += 1) {
       if (notebookList[index].id === notebookId) {
+        return index;
+      }
+    }
+    return -1;
+  }
+
+  private findNotebookPageIndexById(notebookPageList: NotebookPage[], pageId: string): number {
+    for (let index: number = 0; index < notebookPageList.length; index += 1) {
+      if (notebookPageList[index].id === pageId) {
         return index;
       }
     }

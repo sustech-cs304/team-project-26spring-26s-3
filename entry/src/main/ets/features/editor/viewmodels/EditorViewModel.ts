@@ -1,12 +1,13 @@
 import common from '@ohos.app.ability.common';
 import { Notebook } from '../../../domain/entities/Notebook';
-import { NotebookPage } from '../../../domain/entities/NotebookPage';
+import { NotebookPage, NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { NotebookPageCanvas } from '../../../domain/entities/NotebookPageCanvas';
 import { CreateNotebookPage } from '../../../domain/usecases/CreateNotebookPage';
 import { DeleteNotebookPage } from '../../../domain/usecases/DeleteNotebookPage';
 import { GetNotebookPageCanvas } from '../../../domain/usecases/GetNotebookPageCanvas';
 import { GetNotebookPages } from '../../../domain/usecases/GetNotebookPages';
 import { ReorderNotebookPages } from '../../../domain/usecases/ReorderNotebookPages';
+import { UpdateNotebookPageTemplate } from '../../../domain/usecases/UpdateNotebookPageTemplate';
 import { NotebookRepository } from '../../../domain/repositories/NotebookRepository';
 import { NotebookRepositoryImpl } from '../../../data/repositories/NotebookRepositoryImpl';
 
@@ -17,6 +18,7 @@ export class EditorViewModel {
   private readonly getNotebookPageCanvasUseCase: GetNotebookPageCanvas;
   private readonly getNotebookPagesUseCase: GetNotebookPages;
   private readonly reorderNotebookPagesUseCase: ReorderNotebookPages;
+  private readonly updateNotebookPageTemplateUseCase: UpdateNotebookPageTemplate;
   private notebook: Notebook | null = null;
   private notebookPageList: NotebookPage[] = [];
   private activeNotebookPageCanvas: NotebookPageCanvas | null = null;
@@ -28,6 +30,7 @@ export class EditorViewModel {
     this.getNotebookPageCanvasUseCase = new GetNotebookPageCanvas(this.notebookRepository);
     this.getNotebookPagesUseCase = new GetNotebookPages(this.notebookRepository);
     this.reorderNotebookPagesUseCase = new ReorderNotebookPages(this.notebookRepository);
+    this.updateNotebookPageTemplateUseCase = new UpdateNotebookPageTemplate(this.notebookRepository);
   }
 
   async loadNotebook(notebookId: string): Promise<Notebook | null> {
@@ -79,6 +82,22 @@ export class EditorViewModel {
     this.notebook = await this.notebookRepository.getNotebookById(notebookId);
     this.notebookPageList = await this.getNotebookPagesUseCase.execute(notebookId);
     return hasReordered;
+  }
+
+  async updateNotebookPageTemplate(
+    notebookId: string,
+    pageId: string,
+    templateType: NotebookPageTemplateType
+  ): Promise<NotebookPage | null> {
+    const updatedNotebookPage: NotebookPage | null = await this.updateNotebookPageTemplateUseCase.execute({
+      notebookId: notebookId,
+      pageId: pageId,
+      templateType: templateType
+    });
+
+    this.notebook = await this.notebookRepository.getNotebookById(notebookId);
+    this.notebookPageList = await this.getNotebookPagesUseCase.execute(notebookId);
+    return updatedNotebookPage;
   }
 
   getCachedNotebook(): Notebook | null {

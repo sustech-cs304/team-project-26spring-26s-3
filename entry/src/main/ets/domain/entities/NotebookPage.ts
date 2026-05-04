@@ -1,5 +1,8 @@
 export enum NotebookPageTemplateType {
-  BLANK = 'blank'
+  BLANK = 'blank',
+  LINED = 'lined',
+  GRID = 'grid',
+  DOTTED = 'dotted'
 }
 
 export interface NotebookPage {
@@ -24,6 +27,15 @@ export class NotebookPageEntity {
   static normalizeTemplateType(templateType?: string): NotebookPageTemplateType {
     if (templateType === NotebookPageTemplateType.BLANK) {
       return NotebookPageTemplateType.BLANK;
+    }
+    if (templateType === NotebookPageTemplateType.LINED) {
+      return NotebookPageTemplateType.LINED;
+    }
+    if (templateType === NotebookPageTemplateType.GRID) {
+      return NotebookPageTemplateType.GRID;
+    }
+    if (templateType === NotebookPageTemplateType.DOTTED) {
+      return NotebookPageTemplateType.DOTTED;
     }
     return NotebookPageEntity.DEFAULT_TEMPLATE_TYPE;
   }

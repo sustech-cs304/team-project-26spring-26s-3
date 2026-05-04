@@ -1,7 +1,9 @@
 import common from '@ohos.app.ability.common';
 
 import { EditorRepositoryImpl } from '../../../data/repositories/EditorRepositoryImpl';
+import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
+import { PageTemplateRenderer } from '../controllers/PageTemplateRenderer';
 import { StrokeRenderer } from '../controllers/StrokeRenderer';
 import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
@@ -23,6 +25,8 @@ export struct PageThumbnailPreview {
   @Prop isActive: boolean = false;
   @Watch('onRefreshVersionChanged')
   @Prop refreshVersion: number = 0;
+  @Watch('onCanvasStyleChanged')
+  @Prop templateType: NotebookPageTemplateType = NotebookPageTemplateType.BLANK;
   @Watch('onCanvasStyleChanged')
   @Prop paperBackgroundColor: string = '#FFFFFF';
   @Watch('onCanvasStyleChanged')
@@ -57,9 +61,7 @@ export struct PageThumbnailPreview {
   }
 
   private onRefreshVersionChanged(): void {
-    if (this.isActive) {
-      this.redrawThumbnail();
-    }
+    this.redrawThumbnail();
   }
 
   private onCanvasStyleChanged(): void {
@@ -98,19 +100,8 @@ export struct PageThumbnailPreview {
     }
 
     const size: ThumbnailCanvasSize = this.getThumbnailCanvasSize();
-    this.thumbnailContext.clearRect(0, 0, size.width, size.height);
-    this.thumbnailContext.fillStyle = this.paperBackgroundColor;
-    this.thumbnailContext.fillRect(0, 0, size.width, size.height);
-    this.drawPageStrokes(size);
-  }
-
-  private drawPageStrokes(size: ThumbnailCanvasSize): void {
     const strokes: Stroke[] = this.getRenderableStrokes();
     const activeStroke = this.getActiveStroke();
-    if (strokes.length === 0 && activeStroke === null) {
-      return;
-    }
-
     const sourceCanvasSize: ThumbnailCanvasSize = this.getSourceCanvasSize(size, strokes, activeStroke);
     const scale = Math.min(size.width / sourceCanvasSize.width, size.height / sourceCanvasSize.height);
     const scaledWidth = sourceCanvasSize.width * scale;
@@ -118,10 +109,25 @@ export struct PageThumbnailPreview {
     const offsetX = (size.width - scaledWidth) / 2;
     const offsetY = (size.height - scaledHeight) / 2;
 
+    this.thumbnailContext.clearRect(0, 0, size.width, size.height);
+    this.thumbnailContext.fillStyle = this.paperBackgroundColor;
+    this.thumbnailContext.fillRect(0, 0, size.width, size.height);
+
     this.thumbnailContext.save();
     this.thumbnailContext.translate(offsetX, offsetY);
     this.thumbnailContext.scale(scale, scale);
+    PageTemplateRenderer.drawTemplateBackground(
+      this.thumbnailContext,
+      this.getTemplateType(),
+      sourceCanvasSize.width,
+      sourceCanvasSize.height,
+      this.paperBackgroundColor
+    );
+    this.drawPageStrokes(strokes, activeStroke);
+    this.thumbnailContext.restore();
+  }
 
+  private drawPageStrokes(strokes: Stroke[], activeStroke: Stroke | null): void {
     for (const stroke of strokes) {
       StrokeRenderer.drawStroke(this.thumbnailContext, stroke);
     }
@@ -129,8 +135,6 @@ export struct PageThumbnailPreview {
     if (activeStroke !== null) {
       StrokeRenderer.drawPreviewStroke(this.thumbnailContext, activeStroke);
     }
-
-    this.thumbnailContext.restore();
   }
 
   private getSourceCanvasSize(
@@ -229,6 +233,20 @@ export struct PageThumbnailPreview {
       width: this.thumbnailContext.width > 0 ? this.thumbnailContext.width : THUMBNAIL_FALLBACK_WIDTH,
       height: this.thumbnailContext.height > 0 ? this.thumbnailContext.height : THUMBNAIL_FALLBACK_HEIGHT
     };
+  }
+
+  private getTemplateType(): NotebookPageTemplateType {
+    switch (this.templateType) {
+      case NotebookPageTemplateType.LINED:
+        return NotebookPageTemplateType.LINED;
+      case NotebookPageTemplateType.GRID:
+        return NotebookPageTemplateType.GRID;
+      case NotebookPageTemplateType.DOTTED:
+        return NotebookPageTemplateType.DOTTED;
+      case NotebookPageTemplateType.BLANK:
+      default:
+        return NotebookPageTemplateType.BLANK;
+    }
   }
 
   private cloneStroke(stroke: Stroke): Stroke {
