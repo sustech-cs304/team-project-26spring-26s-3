@@ -2,7 +2,7 @@ import common from '@ohos.app.ability.common';
 
 import { EditorRepositoryImpl } from '../../../data/repositories/EditorRepositoryImpl';
 import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
-import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
+import { Stroke } from '../../../domain/entities/Stroke';
 import { PageTemplateRenderer } from '../controllers/PageTemplateRenderer';
 import { StrokeRenderer } from '../controllers/StrokeRenderer';
 import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
@@ -13,8 +13,8 @@ interface ThumbnailCanvasSize {
   height: number;
 }
 
-const THUMBNAIL_FALLBACK_WIDTH = 184;
-const THUMBNAIL_FALLBACK_HEIGHT = 132;
+const THUMBNAIL_FALLBACK_WIDTH = 200;
+const THUMBNAIL_FALLBACK_HEIGHT = 145;
 const THUMBNAIL_INFERRED_CANVAS_MARGIN = 48;
 
 @Component
@@ -50,17 +50,19 @@ export struct PageThumbnailPreview {
       .backgroundColor(this.paperBackgroundColor)
       .onReady(() => {
         this.isCanvasReady = true;
-        void this.loadStoredStrokes();
         this.redrawThumbnail();
       })
   }
 
   private onPageSourceChanged(): void {
     void this.loadStoredStrokes();
-    this.redrawThumbnail();
   }
 
   private onRefreshVersionChanged(): void {
+    if (!this.isActive) {
+      return;
+    }
+
     this.redrawThumbnail();
   }
 
@@ -69,13 +71,16 @@ export struct PageThumbnailPreview {
   }
 
   private async loadStoredStrokes(): Promise<void> {
-    if (this.pageId.length === 0) {
+    const targetPageId = this.pageId;
+    if (targetPageId.length === 0) {
       this.storedStrokes = [];
       this.redrawThumbnail();
       return;
     }
 
-    if (this.isActive && EditorSessionRegistry.get(this.pageId) !== null) {
+    const activeSession: DrawingEditorViewModel | null = EditorSessionRegistry.get(targetPageId);
+    if (activeSession !== null) {
+      this.storedStrokes = activeSession.getStrokes();
       this.redrawThumbnail();
       return;
     }
@@ -86,9 +91,18 @@ export struct PageThumbnailPreview {
         return;
       }
 
-      this.storedStrokes = await new EditorRepositoryImpl(hostContext).getStrokes(this.pageId);
+      const strokes = await new EditorRepositoryImpl(hostContext).getStrokes(targetPageId);
+      if (this.pageId !== targetPageId) {
+        return;
+      }
+
+      this.storedStrokes = strokes;
       this.redrawThumbnail();
     } catch (_error) {
+      if (this.pageId !== targetPageId) {
+        return;
+      }
+
       this.storedStrokes = [];
       this.redrawThumbnail();
     }
@@ -129,11 +143,11 @@ export struct PageThumbnailPreview {
 
   private drawPageStrokes(strokes: Stroke[], activeStroke: Stroke | null): void {
     for (const stroke of strokes) {
-      StrokeRenderer.drawStroke(this.thumbnailContext, stroke);
+      StrokeRenderer.drawStrokeFast(this.thumbnailContext, stroke);
     }
 
     if (activeStroke !== null) {
-      StrokeRenderer.drawPreviewStroke(this.thumbnailContext, activeStroke);
+      StrokeRenderer.drawPreviewStrokeFast(this.thumbnailContext, activeStroke);
     }
   }
 
@@ -212,7 +226,7 @@ export struct PageThumbnailPreview {
       return activeSession.getStrokesForRendering();
     }
 
-    return this.storedStrokes.map((stroke: Stroke): Stroke => this.cloneStroke(stroke));
+    return this.storedStrokes;
   }
 
   private getActiveStroke(): Stroke | null {
@@ -247,28 +261,5 @@ export struct PageThumbnailPreview {
       default:
         return NotebookPageTemplateType.BLANK;
     }
-  }
-
-  private cloneStroke(stroke: Stroke): Stroke {
-    return {
-      id: stroke.id,
-      pageId: stroke.pageId,
-      points: stroke.points.map((point: StrokePoint): StrokePoint => {
-        return {
-          x: point.x,
-          y: point.y,
-          t: point.t,
-          pressure: point.pressure
-        };
-      }),
-      style: {
-        tool: stroke.style.tool,
-        color: stroke.style.color,
-        width: stroke.style.width,
-        opacity: stroke.style.opacity
-      },
-      createdAt: stroke.createdAt,
-      updatedAt: stroke.updatedAt
-    };
   }
 }
