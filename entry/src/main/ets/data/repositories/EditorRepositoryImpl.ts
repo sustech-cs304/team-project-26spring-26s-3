@@ -2,6 +2,7 @@ import common from '@ohos.app.ability.common';
 import preferences from '@ohos.data.preferences';
 import fileIo from '@ohos.file.fs';
 
+import { NotebookRepositoryImpl } from './NotebookRepositoryImpl';
 import { Stroke, StrokePoint, StrokeStyle } from '../../domain/entities/Stroke';
 import { DrawableToolType, isDrawableToolType } from '../../domain/entities/ToolSetting';
 import { EditorRepository } from '../../domain/repositories/EditorRepository';
@@ -74,6 +75,7 @@ export class EditorRepositoryImpl implements EditorRepository {
 
     try {
       await this.writeRawValue(pageId, serialized);
+      await this.syncNotebookUpdatedAt(pageId);
       this.logDebug(`saveStrokes pageId=${pageId} count=${strokes.length}`);
     } catch (error) {
       throw new Error(`Failed to save strokes: ${this.stringifyError(error)}`);
@@ -207,6 +209,13 @@ export class EditorRepositoryImpl implements EditorRepository {
     }
 
     return `${filesDir}/${LEGACY_STORAGE_DIR_NAME}/${encodeURIComponent(pageId)}${LEGACY_FILE_SUFFIX}`;
+  }
+
+  private async syncNotebookUpdatedAt(pageId: string): Promise<void> {
+    const hasUpdatedNotebook = await new NotebookRepositoryImpl(this.context).touchNotebookPageUpdatedAt(pageId);
+    if (!hasUpdatedNotebook) {
+      this.logDebug(`syncNotebookUpdatedAt skipped pageId=${pageId} reason=pageNotFound`);
+    }
   }
 
   private getFilesDir(): string {

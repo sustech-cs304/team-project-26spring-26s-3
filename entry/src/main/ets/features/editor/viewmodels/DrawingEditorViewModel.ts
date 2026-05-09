@@ -69,6 +69,8 @@ export class DrawingEditorViewModel {
   private isPersisting: boolean = false;
   private hasQueuedPersistence: boolean = false;
   private queuedPersistenceReason: string = 'update';
+  private changeSequence: number = 0;
+  private lastPersistedChangeSequence: number = 0;
   private renderInvalidationSequence: number = 0;
   private lastRenderInvalidation: RenderInvalidation | null = null;
   private readonly instanceId: number = nextEditorViewModelInstanceId++;
@@ -91,6 +93,8 @@ export class DrawingEditorViewModel {
       this.resetTransientState();
       this.undoRedoController.seedLoadedStrokes(this.strokes);
       this.markFullRenderInvalidation('load');
+      this.changeSequence = 0;
+      this.lastPersistedChangeSequence = 0;
       this.persistenceStatus = `loaded count=${this.strokes.length}`;
       this.appendDebugEvent('loadPage', `loaded strokes=${this.strokes.length}`);
     } catch (error) {
@@ -99,6 +103,8 @@ export class DrawingEditorViewModel {
       this.strokeSpatialIndex.clear();
       this.resetTransientState();
       this.markFullRenderInvalidation('load');
+      this.changeSequence = 0;
+      this.lastPersistedChangeSequence = 0;
       this.persistenceStatus = `loadFailed error=${this.errorMessage}`;
       this.appendDebugEvent('loadPage', `failed error=${this.errorMessage}`);
     } finally {
@@ -153,6 +159,7 @@ export class DrawingEditorViewModel {
     this.strokes = nextStrokes;
     this.strokeSpatialIndex.upsertStroke(completedStroke);
     this.undoRedoController.recordAppendStroke(completedStroke);
+    this.changeSequence += 1;
     this.persistenceStatus = 'pending stroke save';
     this.appendDebugEvent('finishStroke', `queuedSave count=${nextStrokes.length} stroke=${this.describeStroke(completedStroke)}`);
     this.schedulePersistCurrentStrokes('stroke');
@@ -178,9 +185,15 @@ export class DrawingEditorViewModel {
     this.cancelStroke();
     this.appendDebugEvent('undo', `requested count=${this.strokes.length} history=${this.describeHistoryState()}`);
     const undoResult: UndoRedoApplyResult = this.undoRedoController.undo(this.strokes);
+    if (undoResult.removed.length === 0 && undoResult.added.length === 0) {
+      this.appendDebugEvent('undo', 'skipped noChange');
+      return;
+    }
+
     this.strokes = undoResult.strokes;
     this.applyStrokeSpatialIndexMutation(undoResult.removed, undoResult.added);
     this.markPartialRenderInvalidation('undo', undoResult.removed, undoResult.added);
+    this.changeSequence += 1;
     this.persistenceStatus = 'pending undo save';
     this.schedulePersistCurrentStrokes('undo', 0);
     this.errorMessage = '';
@@ -196,9 +209,15 @@ export class DrawingEditorViewModel {
     this.cancelStroke();
     this.appendDebugEvent('redo', `requested count=${this.strokes.length} history=${this.describeHistoryState()}`);
     const redoResult: UndoRedoApplyResult = this.undoRedoController.redo(this.strokes);
+    if (redoResult.removed.length === 0 && redoResult.added.length === 0) {
+      this.appendDebugEvent('redo', 'skipped noChange');
+      return;
+    }
+
     this.strokes = redoResult.strokes;
     this.applyStrokeSpatialIndexMutation(redoResult.removed, redoResult.added);
     this.markPartialRenderInvalidation('redo', redoResult.removed, redoResult.added);
+    this.changeSequence += 1;
     this.persistenceStatus = 'pending redo save';
     this.schedulePersistCurrentStrokes('redo', 0);
     this.errorMessage = '';
@@ -213,6 +232,11 @@ export class DrawingEditorViewModel {
 
     this.cancelStroke();
     const sourceSnapshot = this.cloneStrokes(this.strokes);
+    if (sourceSnapshot.length === 0) {
+      this.appendDebugEvent('clear', 'skipped empty');
+      return;
+    }
+
     this.appendDebugEvent('clear', `requested count=${sourceSnapshot.length} history=${this.describeHistoryState()}`);
     this.strokes = [];
     this.strokeSpatialIndex.clear();
@@ -232,6 +256,7 @@ export class DrawingEditorViewModel {
       })),
       []
     );
+    this.changeSequence += 1;
     this.persistenceStatus = 'pending clear save';
     this.schedulePersistCurrentStrokes('clear', 0);
     this.errorMessage = '';
@@ -338,7 +363,14 @@ export class DrawingEditorViewModel {
   }
 
   async flushPendingSave(): Promise<void> {
+    const hadScheduledSave: boolean = this.saveTimerId >= 0;
     this.clearScheduledSave();
+    if (!hadScheduledSave &&
+      !this.isPersisting &&
+      !this.hasQueuedPersistence &&
+      this.changeSequence === this.lastPersistedChangeSequence) {
+      return;
+    }
     await this.persistCurrentStrokes('flush');
   }
 
@@ -382,6 +414,7 @@ export class DrawingEditorViewModel {
     this.applyStrokeSpatialIndexMutation(eraseResult.removed, eraseResult.added);
     this.undoRedoController.recordDelta(eraseResult.removed, eraseResult.added, 'erase');
     this.markPartialRenderInvalidation('erase', eraseResult.removed, eraseResult.added);
+    this.changeSequence += 1;
     this.persistenceStatus = 'pending erase save';
     this.schedulePersistCurrentStrokes('erase');
     this.errorMessage = '';
@@ -438,12 +471,18 @@ export class DrawingEditorViewModel {
       return;
     }
 
+    if (this.changeSequence === this.lastPersistedChangeSequence) {
+      return;
+    }
+
     this.isPersisting = true;
     const snapshot = this.cloneStrokes(this.strokes);
+    const snapshotChangeSequence: number = this.changeSequence;
     this.persistenceStatus = `saving ${reason}`;
 
     try {
       await this.createSaveStrokeUseCase().execute(this.pageId, snapshot);
+      this.lastPersistedChangeSequence = Math.max(this.lastPersistedChangeSequence, snapshotChangeSequence);
       this.errorMessage = '';
       this.persistenceStatus = `saved ${reason} count=${snapshot.length}`;
       this.appendDebugEvent('persist', `saved reason=${reason} count=${snapshot.length}`);

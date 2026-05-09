@@ -5,8 +5,10 @@ import {
   clampBoundingBox,
   doBoundingBoxesIntersect
 } from '../../../common/utils/GeometryUtil';
+import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
 import { ToolSetting } from '../../../domain/entities/ToolSetting';
+import { PageTemplateRenderer } from '../controllers/PageTemplateRenderer';
 import { IncrementalPreviewSession, StrokeRenderer } from '../controllers/StrokeRenderer';
 import { IndexedStrokeRecord } from '../controllers/UndoRedoController';
 import { StrokeSpatialHashIndex } from '../controllers/StrokeSpatialHashIndex';
@@ -36,7 +38,9 @@ export struct CanvasBoard {
   @Prop pageId: string = '';
   @Watch('onCanvasVersionChanged')
   @Prop canvasVersion: number = 0;
-  @Watch('onPaperBackgroundColorChanged')
+  @Watch('onCanvasStyleChanged')
+  @Prop templateType: NotebookPageTemplateType = NotebookPageTemplateType.BLANK;
+  @Watch('onCanvasStyleChanged')
   @Prop paperBackgroundColor: string = '#FFFFFF';
   @Link editorSnapshot: EditorDebugSnapshot;
   onContentChanged: (immediate: boolean) => void = (_immediate: boolean): void => {};
@@ -114,10 +118,6 @@ export struct CanvasBoard {
       this.redrawCommittedLayer();
     }
     this.redrawOverlayLayer();
-  }
-
-  private onPaperBackgroundColorChanged(): void {
-    this.redrawCommittedLayer();
   }
 
   private handleTouch(event: TouchEvent): void {
@@ -219,8 +219,13 @@ export struct CanvasBoard {
     this.clearRenderedStrokeState();
     const size = this.getCanvasSize(this.committedContext2D);
     this.committedContext2D.clearRect(0, 0, size.width, size.height);
-    this.committedContext2D.fillStyle = this.paperBackgroundColor;
-    this.committedContext2D.fillRect(0, 0, size.width, size.height);
+    PageTemplateRenderer.drawTemplateBackground(
+      this.committedContext2D,
+      this.templateType,
+      size.width,
+      size.height,
+      this.paperBackgroundColor
+    );
 
     const viewModel = this.getViewModel();
     if (!viewModel) {
@@ -515,8 +520,20 @@ export struct CanvasBoard {
     }
 
     this.committedContext2D.clearRect(region.minX, region.minY, width, height);
-    this.committedContext2D.fillStyle = this.paperBackgroundColor;
-    this.committedContext2D.fillRect(region.minX, region.minY, width, height);
+    const size = this.getCanvasSize(this.committedContext2D);
+    PageTemplateRenderer.drawTemplateBackground(
+      this.committedContext2D,
+      this.templateType,
+      size.width,
+      size.height,
+      this.paperBackgroundColor,
+      {
+        x: region.minX,
+        y: region.minY,
+        width: width,
+        height: height
+      }
+    );
   }
 
   private redrawCommittedTile(tileBounds: BoundingBox): void {
@@ -661,6 +678,11 @@ export struct CanvasBoard {
     this.clearPreviewLayers();
     this.resetActivePreviewSession();
     this.resolveViewModel();
+  }
+
+  private onCanvasStyleChanged(): void {
+    this.redrawCommittedLayer();
+    this.redrawOverlayLayer();
   }
 
   private getViewModel(): DrawingEditorViewModel | null {
