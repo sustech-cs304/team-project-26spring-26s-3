@@ -1,5 +1,10 @@
 import { CanvasElement, TextCanvasElement } from '../../../domain/entities/CanvasElement';
 
+interface CanvasResolvedColor {
+  fillStyle: string;
+  alpha: number;
+}
+
 export class CanvasElementRenderer {
   static drawElements(context: CanvasRenderingContext2D, elements: CanvasElement[]): void {
     const sortedElements = elements
@@ -26,8 +31,9 @@ export class CanvasElementRenderer {
 
     context.save();
     CanvasElementRenderer.drawTextBackground(context, element);
-    context.fillStyle = element.color;
-    context.globalAlpha = 1;
+    const textColor = CanvasElementRenderer.resolveCanvasColor(element.color, '#111827');
+    context.fillStyle = textColor.fillStyle;
+    context.globalAlpha = textColor.alpha;
     context.font = `${fontSize}px sans-serif`;
     context.textBaseline = 'top';
 
@@ -39,12 +45,13 @@ export class CanvasElementRenderer {
   }
 
   private static drawTextBackground(context: CanvasRenderingContext2D, element: TextCanvasElement): void {
-    if (CanvasElementRenderer.isTransparentColor(element.backgroundColor)) {
+    const backgroundColor = CanvasElementRenderer.resolveCanvasColor(element.backgroundColor, '#FFFFFF');
+    if (backgroundColor.alpha <= 0) {
       return;
     }
 
-    context.fillStyle = element.backgroundColor;
-    context.globalAlpha = 1;
+    context.fillStyle = backgroundColor.fillStyle;
+    context.globalAlpha = backgroundColor.alpha;
     context.fillRect(element.x, element.y, element.width, element.height);
   }
 
@@ -60,11 +67,26 @@ export class CanvasElementRenderer {
     return result.length === 0 ? ['Text'] : result;
   }
 
-  private static isTransparentColor(color: string): boolean {
+  private static resolveCanvasColor(color: string, fallbackFillStyle: string): CanvasResolvedColor {
     const normalizedColor = color.trim().toUpperCase();
-    return normalizedColor.length === 0 ||
-      normalizedColor === 'TRANSPARENT' ||
-      normalizedColor === '#00000000' ||
-      normalizedColor === '#FFFFFF00';
+    if (normalizedColor.length === 0 ||
+      normalizedColor === 'TRANSPARENT') {
+      return {
+        fillStyle: fallbackFillStyle,
+        alpha: 0
+      };
+    }
+
+    if (/^#[0-9A-F]{8}$/.test(normalizedColor)) {
+      return {
+        fillStyle: `#${normalizedColor.substring(3)}`,
+        alpha: Number.parseInt(normalizedColor.substring(1, 3), 16) / 255
+      };
+    }
+
+    return {
+      fillStyle: color.length === 0 ? fallbackFillStyle : color,
+      alpha: 1
+    };
   }
 }

@@ -1,6 +1,7 @@
 import { Stroke } from './Stroke';
 
 export const PAGE_CANVAS_CONTENT_VERSION = 2;
+export const TRANSPARENT_ELEMENT_BACKGROUND_COLOR = '#00FFFFFF';
 export const CANVAS_ELEMENT_TYPES = ['text', 'shape', 'image'] as const;
 export type CanvasElementType = typeof CANVAS_ELEMENT_TYPES[number];
 

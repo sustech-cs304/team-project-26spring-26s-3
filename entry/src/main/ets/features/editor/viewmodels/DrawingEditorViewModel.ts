@@ -22,7 +22,8 @@ import {
   CanvasElement,
   PAGE_CANVAS_CONTENT_VERSION,
   PageCanvasContent,
-  TextCanvasElement
+  TextCanvasElement,
+  TRANSPARENT_ELEMENT_BACKGROUND_COLOR
 } from '../../../domain/entities/CanvasElement';
 import { Stroke, StrokePoint, StrokeStyle } from '../../../domain/entities/Stroke';
 import { DrawableToolType, ToolSetting } from '../../../domain/entities/ToolSetting';
@@ -345,7 +346,7 @@ export class DrawingEditorViewModel {
       content: 'Text',
       color: this.toolSetting.color,
       fontSize: 18,
-      backgroundColor: '#FFFFFF00'
+      backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR
     };
 
     this.elements = [...this.elements, nextElement];

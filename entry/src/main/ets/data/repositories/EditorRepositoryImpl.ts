@@ -7,7 +7,8 @@ import {
   CanvasElement,
   PAGE_CANVAS_CONTENT_VERSION,
   PageCanvasContent,
-  TextCanvasElement
+  TextCanvasElement,
+  TRANSPARENT_ELEMENT_BACKGROUND_COLOR
 } from '../../domain/entities/CanvasElement';
 import { Stroke, StrokePoint, StrokeStyle } from '../../domain/entities/Stroke';
 import { DrawableToolType, isDrawableToolType } from '../../domain/entities/ToolSetting';
@@ -365,7 +366,7 @@ export class EditorRepositoryImpl implements EditorRepository {
     const color = typeof candidate.color === 'string' && candidate.color.length > 0 ? candidate.color : '#111827';
     const fontSize = Math.max(8, this.parseFiniteNumber(candidate.fontSize, 18));
     const backgroundColor = typeof candidate.backgroundColor === 'string' && candidate.backgroundColor.length > 0 ?
-      candidate.backgroundColor : '#FFFFFF00';
+      candidate.backgroundColor : TRANSPARENT_ELEMENT_BACKGROUND_COLOR;
 
     return {
       id,
