@@ -263,6 +263,8 @@ export struct ToolPropertyPanel {
         return 'Eraser';
       case 'text':
         return 'Text';
+      case 'shape':
+        return 'Shape';
       default:
         return tool;
     }

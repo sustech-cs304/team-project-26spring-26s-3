@@ -5,8 +5,10 @@ import fileIo from '@ohos.file.fs';
 import { NotebookRepositoryImpl } from './NotebookRepositoryImpl';
 import {
   CanvasElement,
+  isShapeType,
   PAGE_CANVAS_CONTENT_VERSION,
   PageCanvasContent,
+  ShapeCanvasElement,
   TextCanvasElement,
   TRANSPARENT_ELEMENT_BACKGROUND_COLOR
 } from '../../domain/entities/CanvasElement';
@@ -345,6 +347,10 @@ export class EditorRepositoryImpl implements EditorRepository {
       return this.parseTextElement(candidate, pageId);
     }
 
+    if (type === 'shape') {
+      return this.parseShapeElement(candidate, pageId);
+    }
+
     return null;
   }
 
@@ -384,6 +390,49 @@ export class EditorRepositoryImpl implements EditorRepository {
       color,
       fontSize,
       backgroundColor
+    };
+  }
+
+  private parseShapeElement(candidate: Record<string, Object>, pageId: string): ShapeCanvasElement | null {
+    const id = typeof candidate.id === 'string' ? candidate.id : '';
+    if (id.length === 0) {
+      return null;
+    }
+
+    const x = this.parseFiniteNumber(candidate.x, 80);
+    const y = this.parseFiniteNumber(candidate.y, 80);
+    const width = Math.max(1, this.parseFiniteNumber(candidate.width, 160));
+    const height = Math.max(1, this.parseFiniteNumber(candidate.height, 100));
+    const rotation = this.parseFiniteNumber(candidate.rotation, 0);
+    const zIndex = Math.max(0, Math.floor(this.parseFiniteNumber(candidate.zIndex, 0)));
+    const createdAt = this.parseFiniteNumber(candidate.createdAt, Date.now());
+    const updatedAt = this.parseFiniteNumber(candidate.updatedAt, createdAt);
+    const shapeTypeValue = typeof candidate.shapeType === 'string' ? candidate.shapeType : '';
+    const shapeType = isShapeType(shapeTypeValue) ? shapeTypeValue : 'rectangle';
+    const strokeColor = typeof candidate.strokeColor === 'string' && candidate.strokeColor.length > 0 ?
+      candidate.strokeColor : '#111827';
+    const fillColor = typeof candidate.fillColor === 'string' && candidate.fillColor.length > 0 ?
+      candidate.fillColor : TRANSPARENT_ELEMENT_BACKGROUND_COLOR;
+    const strokeWidth = Math.max(1, this.parseFiniteNumber(candidate.strokeWidth, 2));
+    const opacity = Math.max(0, Math.min(1, this.parseFiniteNumber(candidate.opacity, 1)));
+
+    return {
+      id,
+      pageId,
+      type: 'shape',
+      x,
+      y,
+      width,
+      height,
+      rotation,
+      zIndex,
+      createdAt,
+      updatedAt,
+      shapeType,
+      strokeColor,
+      fillColor,
+      strokeWidth,
+      opacity
     };
   }
 

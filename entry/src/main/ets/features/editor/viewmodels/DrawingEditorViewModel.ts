@@ -22,6 +22,8 @@ import {
   CanvasElement,
   PAGE_CANVAS_CONTENT_VERSION,
   PageCanvasContent,
+  ShapeCanvasElement,
+  ShapeType,
   TextCanvasElement,
   TRANSPARENT_ELEMENT_BACKGROUND_COLOR
 } from '../../../domain/entities/CanvasElement';
@@ -58,6 +60,13 @@ const EDITOR_BUILD_MARKER = 'editor-build-2026-04-20-state-link-sync-v1';
 const DEFAULT_TEXT_ELEMENT_WIDTH = 220;
 const DEFAULT_TEXT_ELEMENT_HEIGHT = 88;
 const DEFAULT_TEXT_ELEMENT_TOP_OFFSET = 24;
+const DEFAULT_SHAPE_STROKE_COLOR = '#111827';
+const DEFAULT_SHAPE_STROKE_WIDTH = 2;
+const DEFAULT_RECTANGLE_SHAPE_WIDTH = 160;
+const DEFAULT_RECTANGLE_SHAPE_HEIGHT = 100;
+const DEFAULT_CIRCLE_SHAPE_SIZE = 120;
+const DEFAULT_LINE_SHAPE_WIDTH = 180;
+const DEFAULT_LINE_SHAPE_HEIGHT = 2;
 let nextEditorViewModelInstanceId = 1;
 
 export class DrawingEditorViewModel {
@@ -356,6 +365,47 @@ export class DrawingEditorViewModel {
     this.errorMessage = '';
     this.appendDebugEvent('insertText', `element=${nextElement.id} x=${Math.round(nextElement.x)} y=${Math.round(nextElement.y)}`);
     return this.cloneTextElement(nextElement);
+  }
+
+  insertShapeElement(point: StrokePoint, bounds: ElementBounds, shapeType: ShapeType): ShapeCanvasElement | null {
+    if (this.pageId.length === 0) {
+      this.errorMessage = 'Page is not loaded.';
+      return null;
+    }
+
+    this.cancelStroke();
+    const timestamp = now();
+    const defaultFrame = this.buildDefaultShapeFrame(point, shapeType);
+    const frame: ElementFrame = clampElementFrameToBounds(defaultFrame, bounds);
+    const nextElement: ShapeCanvasElement = {
+      id: createId('shape'),
+      pageId: this.pageId,
+      type: 'shape',
+      x: frame.x,
+      y: frame.y,
+      width: frame.width,
+      height: frame.height,
+      rotation: 0,
+      zIndex: this.getNextElementZIndex(),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      shapeType,
+      strokeColor: DEFAULT_SHAPE_STROKE_COLOR,
+      fillColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR,
+      strokeWidth: DEFAULT_SHAPE_STROKE_WIDTH,
+      opacity: 1
+    };
+
+    this.elements = [...this.elements, nextElement];
+    this.changeSequence += 1;
+    this.persistenceStatus = 'pending shape save';
+    this.schedulePersistCurrentStrokes('shape', 0);
+    this.errorMessage = '';
+    this.appendDebugEvent(
+      'insertShape',
+      `element=${nextElement.id} shape=${shapeType} x=${Math.round(nextElement.x)} y=${Math.round(nextElement.y)}`
+    );
+    return this.cloneShapeElement(nextElement);
   }
 
   updateTextElementContent(elementId: string, content: string): void {
@@ -761,6 +811,8 @@ export class DrawingEditorViewModel {
     switch (element.type) {
       case 'text':
         return this.cloneTextElement(element);
+      case 'shape':
+        return this.cloneShapeElement(element);
       default:
         return this.cloneTextElement(element as TextCanvasElement);
     }
@@ -783,6 +835,27 @@ export class DrawingEditorViewModel {
       color: element.color,
       fontSize: element.fontSize,
       backgroundColor: element.backgroundColor
+    };
+  }
+
+  private cloneShapeElement(element: ShapeCanvasElement): ShapeCanvasElement {
+    return {
+      id: element.id,
+      pageId: element.pageId,
+      type: 'shape',
+      x: element.x,
+      y: element.y,
+      width: element.width,
+      height: element.height,
+      rotation: element.rotation,
+      zIndex: element.zIndex,
+      createdAt: element.createdAt,
+      updatedAt: element.updatedAt,
+      shapeType: element.shapeType,
+      strokeColor: element.strokeColor,
+      fillColor: element.fillColor,
+      strokeWidth: element.strokeWidth,
+      opacity: element.opacity
     };
   }
 
@@ -822,6 +895,37 @@ export class DrawingEditorViewModel {
     }
 
     return maxZIndex + 1;
+  }
+
+  private buildDefaultShapeFrame(point: StrokePoint, shapeType: ShapeType): ElementFrame {
+    const size = this.getDefaultShapeSize(shapeType);
+    return {
+      x: point.x - size.width / 2,
+      y: point.y - size.height / 2,
+      width: size.width,
+      height: size.height
+    };
+  }
+
+  private getDefaultShapeSize(shapeType: ShapeType): ElementBounds {
+    switch (shapeType) {
+      case 'circle':
+        return {
+          width: DEFAULT_CIRCLE_SHAPE_SIZE,
+          height: DEFAULT_CIRCLE_SHAPE_SIZE
+        };
+      case 'line':
+        return {
+          width: DEFAULT_LINE_SHAPE_WIDTH,
+          height: DEFAULT_LINE_SHAPE_HEIGHT
+        };
+      case 'rectangle':
+      default:
+        return {
+          width: DEFAULT_RECTANGLE_SHAPE_WIDTH,
+          height: DEFAULT_RECTANGLE_SHAPE_HEIGHT
+        };
+    }
   }
 
   private isEraseGestureActive(): boolean {

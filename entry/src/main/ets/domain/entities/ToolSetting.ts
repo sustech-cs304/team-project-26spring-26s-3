@@ -1,4 +1,4 @@
-export const TOOL_TYPES = ['pen', 'pencil', 'highlighter', 'eraser', 'text'] as const;
+export const TOOL_TYPES = ['pen', 'pencil', 'highlighter', 'eraser', 'text', 'shape'] as const;
 export const DRAWABLE_TOOL_TYPES = ['pen', 'pencil', 'highlighter'] as const;
 
 export type ToolType = typeof TOOL_TYPES[number];

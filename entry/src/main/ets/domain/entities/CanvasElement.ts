@@ -3,7 +3,9 @@ import { Stroke } from './Stroke';
 export const PAGE_CANVAS_CONTENT_VERSION = 2;
 export const TRANSPARENT_ELEMENT_BACKGROUND_COLOR = '#00FFFFFF';
 export const CANVAS_ELEMENT_TYPES = ['text', 'shape', 'image'] as const;
+export const SHAPE_TYPES = ['rectangle', 'circle', 'line'] as const;
 export type CanvasElementType = typeof CANVAS_ELEMENT_TYPES[number];
+export type ShapeType = typeof SHAPE_TYPES[number];
 
 export interface CanvasElementBase {
   id: string;
@@ -27,7 +29,16 @@ export interface TextCanvasElement extends CanvasElementBase {
   backgroundColor: string;
 }
 
-export type CanvasElement = TextCanvasElement;
+export interface ShapeCanvasElement extends CanvasElementBase {
+  type: 'shape';
+  shapeType: ShapeType;
+  strokeColor: string;
+  fillColor: string;
+  strokeWidth: number;
+  opacity: number;
+}
+
+export type CanvasElement = TextCanvasElement | ShapeCanvasElement;
 
 export interface PageCanvasContent {
   version: number;
@@ -37,4 +48,8 @@ export interface PageCanvasContent {
 
 export function isCanvasElementType(value: string): value is CanvasElementType {
   return CANVAS_ELEMENT_TYPES.includes(value as CanvasElementType);
+}
+
+export function isShapeType(value: string): value is ShapeType {
+  return SHAPE_TYPES.includes(value as ShapeType);
 }

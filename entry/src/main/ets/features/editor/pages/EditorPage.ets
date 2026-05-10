@@ -4,6 +4,7 @@ import router from '@ohos.router';
 import { AppRouter, RouterParams } from '../../../app/AppRouter';
 import { Notebook } from '../../../domain/entities/Notebook';
 import { NotebookPage, NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
+import { ShapeType } from '../../../domain/entities/CanvasElement';
 import { NotebookPageCanvas, NotebookPageCanvasEntity } from '../../../domain/entities/NotebookPageCanvas';
 import { ToolSetting, ToolType } from '../../../domain/entities/ToolSetting';
 import { CanvasBoard, CanvasBoardContentChangeKind } from '../components/CanvasBoard';
@@ -26,7 +27,8 @@ const SIDEBAR_COLLAPSED_WIDTH = 56;
 const PAGE_THUMBNAIL_WIDTH = SIDEBAR_EXPANDED_WIDTH - SIDEBAR_EXPANDED_PADDING * 2;
 const WORKSPACE_MENU_BUTTON_FONT_SIZE = 26;
 const PAGE_TEMPLATE_DROPDOWN_LEFT = 384;
-const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser', 'text'];
+const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser', 'text', 'shape'];
+const SHAPE_TOOL_OPTIONS: ShapeType[] = ['rectangle', 'circle', 'line'];
 const PAGE_TEMPLATE_OPTIONS: NotebookPageTemplateType[] = [
   NotebookPageTemplateType.BLANK,
   NotebookPageTemplateType.LINED,
@@ -57,12 +59,14 @@ struct EditorPage {
   @State private isNotebookMissing: boolean = false;
   @State private toolSetting: ToolSetting = this.buildDefaultToolSetting();
   private lastWritingTool: ToolType = 'pen';
+  @State private selectedShapeType: ShapeType = 'rectangle';
   @State private editorSnapshot: EditorDebugSnapshot = this.buildEmptySnapshot('');
   @State private canvasVersion: number = 0;
   @State private elementLayerRefreshVersion: number = 0;
   @State private thumbnailRefreshVersion: number = 0;
   @State private isPagePreviewCollapsed: boolean = false;
   @State private isToolDropdownVisible: boolean = false;
+  @State private isShapeDropdownVisible: boolean = false;
   @State private isPageTemplateDropdownVisible: boolean = false;
   @State private isCanvasPanModeEnabled: boolean = false;
   private readonly pageCanvasRenderSizeMap: Map<string, PageCanvasRenderSize> = new Map<string, PageCanvasRenderSize>();
@@ -83,6 +87,7 @@ struct EditorPage {
     this.drawingViewModel = null;
     this.currentDrawingPageId = '';
     this.isToolDropdownVisible = false;
+    this.isShapeDropdownVisible = false;
     this.isPageTemplateDropdownVisible = false;
     this.isCanvasPanModeEnabled = false;
   }
@@ -261,6 +266,7 @@ struct EditorPage {
     })
     .onClick(() => {
       this.closeToolDropdown();
+      this.closeShapeDropdown();
     })
   }
 
@@ -390,6 +396,7 @@ struct EditorPage {
     })
     .onClick(() => {
       this.closeToolDropdown();
+      this.closeShapeDropdown();
     })
   }
 
@@ -580,6 +587,7 @@ struct EditorPage {
                 .borderRadius(12)
                 .onClick(() => {
                   this.closeToolDropdown();
+                  this.closeShapeDropdown();
                   this.closePageTemplateDropdown();
                   this.togglePageActionMenu(this.activePageId);
                 })
@@ -608,6 +616,7 @@ struct EditorPage {
       .height('100%')
       .onClick(() => {
         this.closeToolDropdown();
+        this.closeShapeDropdown();
       })
 
       if (this.activePageId.length > 0 && this.isPageActionMenuVisible(this.activePageId)) {
@@ -616,6 +625,10 @@ struct EditorPage {
 
       if (this.isToolDropdownVisible) {
         this.buildToolDropdown()
+      }
+
+      if (this.isShapeDropdownVisible) {
+        this.buildShapeDropdown()
       }
 
       if (this.isPageTemplateDropdownVisible) {
@@ -737,6 +750,106 @@ struct EditorPage {
   }
 
   @Builder
+  private buildShapeDropdown(): void {
+    Row() {
+      Column({ space: 7 }) {
+        Text('Shape')
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#111827')
+          .width('100%')
+
+        ForEach(SHAPE_TOOL_OPTIONS, (shapeType: ShapeType) => {
+          this.buildShapeOption(shapeType)
+        }, (shapeType: ShapeType): string => shapeType)
+      }
+      .width(204)
+      .padding(7)
+      .backgroundColor('#F8FAFC')
+      .borderRadius(12)
+      .border({
+        width: 1,
+        color: '#E2E8F0'
+      })
+    }
+    .width('100%')
+    .margin({
+      top: 52
+    })
+    .justifyContent(FlexAlign.Start)
+    .alignItems(VerticalAlign.Top)
+  }
+
+  @Builder
+  private buildShapeOption(shapeType: ShapeType): void {
+    Button() {
+      Row({ space: 8 }) {
+        this.buildShapeGlyph(shapeType, this.selectedShapeType === shapeType)
+
+        Text(this.getShapeLabel(shapeType))
+          .fontSize(13)
+          .fontWeight(this.selectedShapeType === shapeType ? FontWeight.Medium : FontWeight.Regular)
+          .fontColor(this.selectedShapeType === shapeType ? '#FFFFFF' : '#334155')
+          .layoutWeight(1)
+          .textAlign(TextAlign.Start)
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+    }
+    .width('100%')
+    .height(38)
+    .padding({
+      left: 8,
+      right: 8
+    })
+    .backgroundColor(this.selectedShapeType === shapeType ? '#0F172A' : '#FFFFFF')
+    .borderRadius(10)
+    .border({
+      width: 1,
+      color: this.selectedShapeType === shapeType ? '#0F172A' : '#CBD5E1'
+    })
+    .enabled(!this.isCanvasLoading)
+    .onClick(() => {
+      this.selectedShapeType = shapeType;
+      this.handleWorkspaceToolChange('shape');
+      this.closeShapeDropdown();
+    })
+  }
+
+  @Builder
+  private buildShapeGlyph(shapeType: ShapeType, isSelected: boolean): void {
+    Stack({ alignContent: Alignment.Center }) {
+      if (shapeType === 'rectangle') {
+        Column() {}
+          .width(24)
+          .height(16)
+          .backgroundColor('#00FFFFFF')
+          .border({
+            width: 2,
+            color: isSelected ? '#FFFFFF' : '#111827'
+          })
+      } else if (shapeType === 'circle') {
+        Column() {}
+          .width(20)
+          .height(20)
+          .backgroundColor('#00FFFFFF')
+          .borderRadius('50%')
+          .border({
+            width: 2,
+            color: isSelected ? '#FFFFFF' : '#111827'
+          })
+      } else if (shapeType === 'line') {
+        Column() {}
+          .width(24)
+          .height(2)
+          .backgroundColor(isSelected ? '#FFFFFF' : '#111827')
+      }
+    }
+    .width(28)
+    .height(20)
+  }
+
+  @Builder
   private buildPageTemplateDropdown(): void {
     Row() {
       Column({ space: 7 }) {
@@ -807,6 +920,7 @@ struct EditorPage {
           pageId: this.activePageId,
           canvasVersion: this.canvasVersion,
           elementVersion: this.elementLayerRefreshVersion,
+          selectedShapeType: this.selectedShapeType,
           templateType: this.getActivePageTemplateType(),
           paperBackgroundColor: this.getActiveCanvasBackgroundColor(),
           pageWidth: this.getActiveCanvasWidth(),
@@ -817,7 +931,7 @@ struct EditorPage {
             if (kind === 'element') {
               this.refreshElementLayer();
             }
-            this.restoreWritingToolAfterTextInsertion();
+            this.restoreWritingToolAfterOneShotElementInsertion();
             this.requestThumbnailRefresh(immediate);
           },
           onCanvasMetricsChanged: (width: number, height: number): void => {
@@ -1604,9 +1718,19 @@ struct EditorPage {
       return;
     }
 
+    if (tool === 'shape') {
+      this.handleWorkspaceToolChange(tool);
+      this.closePageActionMenu();
+      this.closeToolDropdown();
+      this.closePageTemplateDropdown();
+      this.isShapeDropdownVisible = isCurrentTool ? !this.isShapeDropdownVisible : true;
+      return;
+    }
+
     this.handleWorkspaceToolChange(tool);
     this.closePageActionMenu();
     this.closePageTemplateDropdown();
+    this.closeShapeDropdown();
 
     if (isCurrentTool) {
       this.isToolDropdownVisible = !this.isToolDropdownVisible;
@@ -1656,8 +1780,8 @@ struct EditorPage {
     }
   }
 
-  private restoreWritingToolAfterTextInsertion(): void {
-    if (this.toolSetting.tool !== 'text') {
+  private restoreWritingToolAfterOneShotElementInsertion(): void {
+    if (this.toolSetting.tool !== 'text' && this.toolSetting.tool !== 'shape') {
       return;
     }
 
@@ -1676,6 +1800,7 @@ struct EditorPage {
       opacity: nextSetting.opacity
     };
     this.isToolDropdownVisible = false;
+    this.isShapeDropdownVisible = false;
 
     if (this.drawingViewModel !== null) {
       this.drawingViewModel.updateToolSetting(nextSetting);
@@ -1699,8 +1824,23 @@ struct EditorPage {
         return 'Eraser';
       case 'text':
         return 'Text';
+      case 'shape':
+        return 'Shape';
       default:
         return tool;
+    }
+  }
+
+  private getShapeLabel(shapeType: ShapeType): string {
+    switch (shapeType) {
+      case 'rectangle':
+        return 'Rectangle';
+      case 'circle':
+        return 'Circle';
+      case 'line':
+        return 'Line';
+      default:
+        return shapeType;
     }
   }
 
@@ -1712,6 +1852,10 @@ struct EditorPage {
     this.isToolDropdownVisible = false;
   }
 
+  private closeShapeDropdown(): void {
+    this.isShapeDropdownVisible = false;
+  }
+
   private closePageTemplateDropdown(): void {
     this.isPageTemplateDropdownVisible = false;
   }
@@ -1719,6 +1863,7 @@ struct EditorPage {
   private closeTransientDropdowns(): void {
     this.closePageActionMenu();
     this.closeToolDropdown();
+    this.closeShapeDropdown();
     this.closePageTemplateDropdown();
   }
 
@@ -1743,6 +1888,7 @@ struct EditorPage {
     }
 
     this.closeToolDropdown();
+    this.closeShapeDropdown();
     this.closePageActionMenu();
     this.isPageTemplateDropdownVisible = !this.isPageTemplateDropdownVisible;
   }

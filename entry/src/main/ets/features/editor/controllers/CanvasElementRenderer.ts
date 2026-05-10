@@ -1,4 +1,4 @@
-import { CanvasElement, TextCanvasElement } from '../../../domain/entities/CanvasElement';
+import { CanvasElement, ShapeCanvasElement, TextCanvasElement } from '../../../domain/entities/CanvasElement';
 
 interface CanvasResolvedColor {
   fillStyle: string;
@@ -19,6 +19,8 @@ export class CanvasElementRenderer {
   private static drawElement(context: CanvasRenderingContext2D, element: CanvasElement): void {
     if (element.type === 'text') {
       CanvasElementRenderer.drawTextElement(context, element);
+    } else if (element.type === 'shape') {
+      CanvasElementRenderer.drawShapeElement(context, element);
     }
   }
 
@@ -53,6 +55,81 @@ export class CanvasElementRenderer {
     context.fillStyle = backgroundColor.fillStyle;
     context.globalAlpha = backgroundColor.alpha;
     context.fillRect(element.x, element.y, element.width, element.height);
+  }
+
+  private static drawShapeElement(context: CanvasRenderingContext2D, element: ShapeCanvasElement): void {
+    context.save();
+    context.globalAlpha = element.opacity;
+
+    if (element.shapeType === 'rectangle') {
+      CanvasElementRenderer.drawRectangleShape(context, element);
+    } else if (element.shapeType === 'circle') {
+      CanvasElementRenderer.drawCircleShape(context, element);
+    } else if (element.shapeType === 'line') {
+      CanvasElementRenderer.drawLineShape(context, element);
+    }
+
+    context.restore();
+  }
+
+  private static drawRectangleShape(context: CanvasRenderingContext2D, element: ShapeCanvasElement): void {
+    CanvasElementRenderer.fillShapeRect(context, element);
+    context.strokeStyle = CanvasElementRenderer.resolveCanvasColor(element.strokeColor, '#111827').fillStyle;
+    context.lineWidth = Math.max(1, element.strokeWidth);
+    context.strokeRect(element.x, element.y, element.width, element.height);
+  }
+
+  private static drawCircleShape(context: CanvasRenderingContext2D, element: ShapeCanvasElement): void {
+    const radiusX = Math.max(1, element.width / 2);
+    const radiusY = Math.max(1, element.height / 2);
+
+    context.save();
+    context.translate(element.x + radiusX, element.y + radiusY);
+    context.scale(radiusX, radiusY);
+    context.beginPath();
+    context.arc(0, 0, 1, 0, Math.PI * 2);
+    CanvasElementRenderer.fillCurrentShapePath(context, element.fillColor);
+    context.strokeStyle = CanvasElementRenderer.resolveCanvasColor(element.strokeColor, '#111827').fillStyle;
+    context.lineWidth = Math.max(1, element.strokeWidth) / Math.max(radiusX, radiusY);
+    context.stroke();
+    context.restore();
+  }
+
+  private static drawLineShape(context: CanvasRenderingContext2D, element: ShapeCanvasElement): void {
+    const y = element.y + element.height / 2;
+    context.strokeStyle = CanvasElementRenderer.resolveCanvasColor(element.strokeColor, '#111827').fillStyle;
+    context.lineWidth = Math.max(1, element.strokeWidth);
+    context.lineCap = 'round';
+    context.beginPath();
+    context.moveTo(element.x, y);
+    context.lineTo(element.x + element.width, y);
+    context.stroke();
+  }
+
+  private static fillShapeRect(context: CanvasRenderingContext2D, element: ShapeCanvasElement): void {
+    const fillColor = CanvasElementRenderer.resolveCanvasColor(element.fillColor, '#FFFFFF');
+    if (fillColor.alpha <= 0) {
+      return;
+    }
+
+    context.save();
+    context.globalAlpha = context.globalAlpha * fillColor.alpha;
+    context.fillStyle = fillColor.fillStyle;
+    context.fillRect(element.x, element.y, element.width, element.height);
+    context.restore();
+  }
+
+  private static fillCurrentShapePath(context: CanvasRenderingContext2D, fillColorValue: string): void {
+    const fillColor = CanvasElementRenderer.resolveCanvasColor(fillColorValue, '#FFFFFF');
+    if (fillColor.alpha <= 0) {
+      return;
+    }
+
+    context.save();
+    context.globalAlpha = context.globalAlpha * fillColor.alpha;
+    context.fillStyle = fillColor.fillStyle;
+    context.fill();
+    context.restore();
   }
 
   private static buildTextLines(content: string): string[] {

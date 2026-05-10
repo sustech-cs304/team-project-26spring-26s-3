@@ -336,6 +336,23 @@ export struct PageThumbnailPreview {
       };
     }
 
-    return element;
+    return {
+      id: element.id,
+      pageId: element.pageId,
+      type: 'shape',
+      x: element.x,
+      y: element.y,
+      width: element.width,
+      height: element.height,
+      rotation: element.rotation,
+      zIndex: element.zIndex,
+      createdAt: element.createdAt,
+      updatedAt: element.updatedAt,
+      shapeType: element.shapeType,
+      strokeColor: element.strokeColor,
+      fillColor: element.fillColor,
+      strokeWidth: element.strokeWidth,
+      opacity: element.opacity
+    };
   }
 }

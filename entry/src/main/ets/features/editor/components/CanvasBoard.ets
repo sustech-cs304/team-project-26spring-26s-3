@@ -6,6 +6,7 @@ import {
   doBoundingBoxesIntersect,
   getStrokeRenderBoundingBox
 } from '../../../common/utils/GeometryUtil';
+import { ShapeType } from '../../../domain/entities/CanvasElement';
 import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { NotebookPageCanvasEntity } from '../../../domain/entities/NotebookPageCanvas';
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
@@ -83,6 +84,7 @@ export struct CanvasBoard {
   @Watch('onInteractionModeChanged')
   @Prop isPanModeEnabled: boolean = false;
   @Prop elementVersion: number = 0;
+  @Prop selectedShapeType: ShapeType = 'rectangle';
   @Link editorSnapshot: EditorDebugSnapshot;
   onContentChanged: (immediate: boolean, kind: CanvasBoardContentChangeKind) => void =
     (_immediate: boolean, _kind: CanvasBoardContentChangeKind): void => {};
@@ -210,6 +212,19 @@ export struct CanvasBoard {
           width: this.getPageWidth(),
           height: this.getPageHeight()
         });
+        this.syncEditorSnapshot();
+        this.onContentChanged(true, 'element');
+      }
+      return;
+    }
+
+    if (activeTool === 'shape') {
+      if (event.type === TouchType.Down) {
+        viewModel.appendDebugEvent(
+          'CanvasBoard',
+          `insertShape shape=${this.selectedShapeType} x=${Math.round(point.x)} y=${Math.round(point.y)}`
+        );
+        viewModel.insertShapeElement(point, this.getCanvasSize(this.committedContext2D), this.selectedShapeType);
         this.syncEditorSnapshot();
         this.onContentChanged(true, 'element');
       }
