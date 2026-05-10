@@ -1,8 +1,10 @@
 import common from '@ohos.app.ability.common';
 
 import { EditorRepositoryImpl } from '../../../data/repositories/EditorRepositoryImpl';
+import { CanvasElement, PageCanvasContent } from '../../../domain/entities/CanvasElement';
 import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
-import { Stroke } from '../../../domain/entities/Stroke';
+import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
+import { CanvasElementRenderer } from '../controllers/CanvasElementRenderer';
 import { PageTemplateRenderer } from '../controllers/PageTemplateRenderer';
 import { StrokeRenderer } from '../controllers/StrokeRenderer';
 import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
@@ -35,12 +37,13 @@ export struct PageThumbnailPreview {
   @Prop canvasHeight: number = 0;
 
   @State private storedStrokes: Stroke[] = [];
+  @State private storedElements: CanvasElement[] = [];
   @State private isCanvasReady: boolean = false;
   private readonly renderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
   private readonly thumbnailContext: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.renderingSettings);
 
   aboutToAppear(): void {
-    void this.loadStoredStrokes();
+    void this.loadStoredPageContent();
   }
 
   build() {
@@ -50,12 +53,14 @@ export struct PageThumbnailPreview {
       .backgroundColor(this.paperBackgroundColor)
       .onReady(() => {
         this.isCanvasReady = true;
+        void this.loadStoredPageContent();
         this.redrawThumbnail();
       })
   }
 
   private onPageSourceChanged(): void {
-    void this.loadStoredStrokes();
+    void this.loadStoredPageContent();
+    this.redrawThumbnail();
   }
 
   private onRefreshVersionChanged(): void {
@@ -70,10 +75,11 @@ export struct PageThumbnailPreview {
     this.redrawThumbnail();
   }
 
-  private async loadStoredStrokes(): Promise<void> {
+  private async loadStoredPageContent(): Promise<void> {
     const targetPageId = this.pageId;
     if (targetPageId.length === 0) {
       this.storedStrokes = [];
+      this.storedElements = [];
       this.redrawThumbnail();
       return;
     }
@@ -81,6 +87,7 @@ export struct PageThumbnailPreview {
     const activeSession: DrawingEditorViewModel | null = EditorSessionRegistry.get(targetPageId);
     if (activeSession !== null) {
       this.storedStrokes = activeSession.getStrokes();
+      this.storedElements = activeSession.getElements();
       this.redrawThumbnail();
       return;
     }
@@ -91,12 +98,13 @@ export struct PageThumbnailPreview {
         return;
       }
 
-      const strokes = await new EditorRepositoryImpl(hostContext).getStrokes(targetPageId);
+      const pageContent: PageCanvasContent = await new EditorRepositoryImpl(hostContext).getPageContent(targetPageId);
       if (this.pageId !== targetPageId) {
         return;
       }
 
-      this.storedStrokes = strokes;
+      this.storedStrokes = pageContent.strokes;
+      this.storedElements = pageContent.elements;
       this.redrawThumbnail();
     } catch (_error) {
       if (this.pageId !== targetPageId) {
@@ -104,6 +112,7 @@ export struct PageThumbnailPreview {
       }
 
       this.storedStrokes = [];
+      this.storedElements = [];
       this.redrawThumbnail();
     }
   }
@@ -115,8 +124,9 @@ export struct PageThumbnailPreview {
 
     const size: ThumbnailCanvasSize = this.getThumbnailCanvasSize();
     const strokes: Stroke[] = this.getRenderableStrokes();
+    const elements: CanvasElement[] = this.getRenderableElements();
     const activeStroke = this.getActiveStroke();
-    const sourceCanvasSize: ThumbnailCanvasSize = this.getSourceCanvasSize(size, strokes, activeStroke);
+    const sourceCanvasSize: ThumbnailCanvasSize = this.getSourceCanvasSize(size, strokes, elements, activeStroke);
     const scale = Math.min(size.width / sourceCanvasSize.width, size.height / sourceCanvasSize.height);
     const scaledWidth = sourceCanvasSize.width * scale;
     const scaledHeight = sourceCanvasSize.height * scale;
@@ -137,14 +147,16 @@ export struct PageThumbnailPreview {
       sourceCanvasSize.height,
       this.paperBackgroundColor
     );
-    this.drawPageStrokes(strokes, activeStroke);
+    this.drawPageContent(strokes, elements, activeStroke);
     this.thumbnailContext.restore();
   }
 
-  private drawPageStrokes(strokes: Stroke[], activeStroke: Stroke | null): void {
+  private drawPageContent(strokes: Stroke[], elements: CanvasElement[], activeStroke: Stroke | null): void {
     for (const stroke of strokes) {
       StrokeRenderer.drawStrokeFast(this.thumbnailContext, stroke);
     }
+
+    CanvasElementRenderer.drawElements(this.thumbnailContext, elements);
 
     if (activeStroke !== null) {
       StrokeRenderer.drawPreviewStrokeFast(this.thumbnailContext, activeStroke);
@@ -154,6 +166,7 @@ export struct PageThumbnailPreview {
   private getSourceCanvasSize(
     thumbnailSize: ThumbnailCanvasSize,
     strokes: Stroke[],
+    elements: CanvasElement[],
     activeStroke: Stroke | null
   ): ThumbnailCanvasSize {
     if (this.canvasWidth > 0 && this.canvasHeight > 0) {
@@ -163,7 +176,7 @@ export struct PageThumbnailPreview {
       };
     }
 
-    const inferredCanvasSize = this.inferCanvasSizeFromStrokes(thumbnailSize, strokes, activeStroke);
+    const inferredCanvasSize = this.inferCanvasSizeFromContent(thumbnailSize, strokes, elements, activeStroke);
     if (inferredCanvasSize !== null) {
       return inferredCanvasSize;
     }
@@ -174,9 +187,10 @@ export struct PageThumbnailPreview {
     };
   }
 
-  private inferCanvasSizeFromStrokes(
+  private inferCanvasSizeFromContent(
     thumbnailSize: ThumbnailCanvasSize,
     strokes: Stroke[],
+    elements: CanvasElement[],
     activeStroke: Stroke | null
   ): ThumbnailCanvasSize | null {
     let maxX = 0;
@@ -197,6 +211,12 @@ export struct PageThumbnailPreview {
         maxY = Math.max(maxY, point.y);
         hasPoint = true;
       }
+    }
+
+    for (const element of elements) {
+      maxX = Math.max(maxX, element.x + element.width);
+      maxY = Math.max(maxY, element.y + element.height);
+      hasPoint = true;
     }
 
     if (!hasPoint) {
@@ -227,6 +247,15 @@ export struct PageThumbnailPreview {
     }
 
     return this.storedStrokes;
+  }
+
+  private getRenderableElements(): CanvasElement[] {
+    const activeSession: DrawingEditorViewModel | null = this.isActive ? EditorSessionRegistry.get(this.pageId) : null;
+    if (activeSession !== null) {
+      return activeSession.getElements();
+    }
+
+    return this.storedElements.map((element: CanvasElement): CanvasElement => this.cloneElement(element));
   }
 
   private getActiveStroke(): Stroke | null {
@@ -261,5 +290,52 @@ export struct PageThumbnailPreview {
       default:
         return NotebookPageTemplateType.BLANK;
     }
+  }
+
+  private cloneStroke(stroke: Stroke): Stroke {
+    return {
+      id: stroke.id,
+      pageId: stroke.pageId,
+      points: stroke.points.map((point: StrokePoint): StrokePoint => {
+        return {
+          x: point.x,
+          y: point.y,
+          t: point.t,
+          pressure: point.pressure
+        };
+      }),
+      style: {
+        tool: stroke.style.tool,
+        color: stroke.style.color,
+        width: stroke.style.width,
+        opacity: stroke.style.opacity
+      },
+      createdAt: stroke.createdAt,
+      updatedAt: stroke.updatedAt
+    };
+  }
+
+  private cloneElement(element: CanvasElement): CanvasElement {
+    if (element.type === 'text') {
+      return {
+        id: element.id,
+        pageId: element.pageId,
+        type: 'text',
+        x: element.x,
+        y: element.y,
+        width: element.width,
+        height: element.height,
+        rotation: element.rotation,
+        zIndex: element.zIndex,
+        createdAt: element.createdAt,
+        updatedAt: element.updatedAt,
+        content: element.content,
+        color: element.color,
+        fontSize: element.fontSize,
+        backgroundColor: element.backgroundColor
+      };
+    }
+
+    return element;
   }
 }

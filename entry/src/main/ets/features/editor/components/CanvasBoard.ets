@@ -18,6 +18,7 @@ import { EditorDebugSnapshot } from '../viewmodels/EditorDebugSnapshot';
 import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
 import { RenderInvalidation } from '../viewmodels/RenderInvalidation';
+import { ElementLayer } from './ElementLayer';
 
 interface CanvasSize {
   width: number;
@@ -63,6 +64,7 @@ const DEFAULT_VIEWPORT_WIDTH = 1600;
 const DEFAULT_VIEWPORT_HEIGHT = 900;
 const PAGE_BORDER_COLOR = '#C4D2E6';
 const VIEWPORT_REDRAW_INTERVAL_MS = 16;
+export type CanvasBoardContentChangeKind = 'stroke' | 'element';
 
 @Component
 export struct CanvasBoard {
@@ -80,8 +82,10 @@ export struct CanvasBoard {
   @Prop pageHeight: number = NotebookPageCanvasEntity.DEFAULT_HEIGHT;
   @Watch('onInteractionModeChanged')
   @Prop isPanModeEnabled: boolean = false;
+  @Prop elementVersion: number = 0;
   @Link editorSnapshot: EditorDebugSnapshot;
-  onContentChanged: (immediate: boolean) => void = (_immediate: boolean): void => {};
+  onContentChanged: (immediate: boolean, kind: CanvasBoardContentChangeKind) => void =
+    (_immediate: boolean, _kind: CanvasBoardContentChangeKind): void => {};
   onCanvasMetricsChanged: (width: number, height: number) => void = (_width: number, _height: number): void => {};
   private viewModel: DrawingEditorViewModel | null = null;
 
@@ -134,6 +138,13 @@ export struct CanvasBoard {
           this.redrawCommittedLayer();
         })
 
+      ElementLayer({
+        pageId: this.pageId,
+        refreshVersion: this.elementVersion
+      })
+        .width('100%')
+        .height('100%')
+
       Canvas(this.overlayContext2D)
         .width('100%')
         .height('100%')
@@ -183,6 +194,25 @@ export struct CanvasBoard {
     }
 
     if (this.handlePanModeTouch(event, touch)) {
+      return;
+    }
+
+    if (activeTool === 'text') {
+      if (event.type === TouchType.Down) {
+        const point = this.buildPoint(touch, false);
+        if (point === null) {
+          this.beginWorkspacePan(touch);
+          return;
+        }
+
+        viewModel.appendDebugEvent('CanvasBoard', `insertText x=${Math.round(point.x)} y=${Math.round(point.y)}`);
+        viewModel.insertTextElement(point, {
+          width: this.getPageWidth(),
+          height: this.getPageHeight()
+        });
+        this.syncEditorSnapshot();
+        this.onContentChanged(true, 'element');
+      }
       return;
     }
 
@@ -352,7 +382,7 @@ export struct CanvasBoard {
       this.appendRenderedStroke(completedStroke);
     }
     this.clearOverlayLayer();
-    this.onContentChanged(true);
+    this.onContentChanged(true, 'stroke');
     viewModel.appendDebugEvent('CanvasBoard', 'finishStroke done');
   }
 

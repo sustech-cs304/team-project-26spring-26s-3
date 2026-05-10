@@ -6,6 +6,7 @@ export interface EditorDebugSnapshot {
   pageId: string;
   toolSetting: ToolSetting;
   strokeCount: number;
+  elementCount: number;
   activeStrokeStyle: StrokeStyle | null;
   undoDepth: number;
   redoDepth: number;

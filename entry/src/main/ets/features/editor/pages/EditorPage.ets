@@ -6,7 +6,7 @@ import { Notebook } from '../../../domain/entities/Notebook';
 import { NotebookPage, NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { NotebookPageCanvas, NotebookPageCanvasEntity } from '../../../domain/entities/NotebookPageCanvas';
 import { ToolSetting, ToolType } from '../../../domain/entities/ToolSetting';
-import { CanvasBoard } from '../components/CanvasBoard';
+import { CanvasBoard, CanvasBoardContentChangeKind } from '../components/CanvasBoard';
 import { PageThumbnailPreview } from '../components/PageThumbnailPreview';
 import { ToolPropertyPanel } from '../components/ToolPropertyPanel';
 import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
@@ -26,7 +26,7 @@ const SIDEBAR_COLLAPSED_WIDTH = 56;
 const PAGE_THUMBNAIL_WIDTH = SIDEBAR_EXPANDED_WIDTH - SIDEBAR_EXPANDED_PADDING * 2;
 const WORKSPACE_MENU_BUTTON_FONT_SIZE = 26;
 const PAGE_TEMPLATE_DROPDOWN_LEFT = 384;
-const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser'];
+const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser', 'text'];
 const PAGE_TEMPLATE_OPTIONS: NotebookPageTemplateType[] = [
   NotebookPageTemplateType.BLANK,
   NotebookPageTemplateType.LINED,
@@ -56,8 +56,10 @@ struct EditorPage {
   @State private hasMissingNotebookId: boolean = false;
   @State private isNotebookMissing: boolean = false;
   @State private toolSetting: ToolSetting = this.buildDefaultToolSetting();
+  private lastWritingTool: ToolType = 'pen';
   @State private editorSnapshot: EditorDebugSnapshot = this.buildEmptySnapshot('');
   @State private canvasVersion: number = 0;
+  @State private elementLayerRefreshVersion: number = 0;
   @State private thumbnailRefreshVersion: number = 0;
   @State private isPagePreviewCollapsed: boolean = false;
   @State private isToolDropdownVisible: boolean = false;
@@ -660,11 +662,6 @@ struct EditorPage {
     .onClick(() => {
       this.closeTransientDropdowns();
     })
-    .onTouch((event: TouchEvent) => {
-      if (event.type === TouchType.Down) {
-        this.closeTransientDropdowns();
-      }
-    })
   }
 
   @Builder
@@ -809,13 +806,18 @@ struct EditorPage {
         CanvasBoard({
           pageId: this.activePageId,
           canvasVersion: this.canvasVersion,
+          elementVersion: this.elementLayerRefreshVersion,
           templateType: this.getActivePageTemplateType(),
           paperBackgroundColor: this.getActiveCanvasBackgroundColor(),
           pageWidth: this.getActiveCanvasWidth(),
           pageHeight: this.getActiveCanvasHeight(),
           isPanModeEnabled: this.isCanvasPanModeEnabled,
           editorSnapshot: $editorSnapshot,
-          onContentChanged: (immediate: boolean): void => {
+          onContentChanged: (immediate: boolean, kind: CanvasBoardContentChangeKind): void => {
+            if (kind === 'element') {
+              this.refreshElementLayer();
+            }
+            this.restoreWritingToolAfterTextInsertion();
             this.requestThumbnailRefresh(immediate);
           },
           onCanvasMetricsChanged: (width: number, height: number): void => {
@@ -1456,6 +1458,7 @@ struct EditorPage {
       this.editorSnapshot = this.buildEmptySnapshot(targetPageId);
       if (redrawCanvas) {
         this.canvasVersion += 1;
+        this.refreshElementLayer();
         this.requestThumbnailRefresh(true);
       }
       return;
@@ -1469,8 +1472,13 @@ struct EditorPage {
     this.editorSnapshot = targetViewModel.getDebugSnapshot();
     if (redrawCanvas) {
       this.canvasVersion += 1;
+      this.refreshElementLayer();
       this.requestThumbnailRefresh(refreshThumbnailImmediately);
     }
+  }
+
+  private refreshElementLayer(): void {
+    this.elementLayerRefreshVersion += 1;
   }
 
   private requestThumbnailRefresh(immediate: boolean = false): void {
@@ -1590,6 +1598,12 @@ struct EditorPage {
   private handleWorkspaceToolButtonClick(tool: ToolType): void {
     const isCurrentTool = this.toolSetting.tool === tool;
     this.isCanvasPanModeEnabled = false;
+    if (tool === 'text') {
+      this.handleWorkspaceToolChange(tool);
+      this.closeTransientDropdowns();
+      return;
+    }
+
     this.handleWorkspaceToolChange(tool);
     this.closePageActionMenu();
     this.closePageTemplateDropdown();
@@ -1618,6 +1632,10 @@ struct EditorPage {
   }
 
   private handleWorkspaceToolChange(tool: ToolType): void {
+    if (this.isWritingTool(tool)) {
+      this.lastWritingTool = tool;
+    }
+
     const nextSetting: ToolSetting = {
       tool,
       color: this.toolSetting.color,
@@ -1638,6 +1656,37 @@ struct EditorPage {
     }
   }
 
+  private restoreWritingToolAfterTextInsertion(): void {
+    if (this.toolSetting.tool !== 'text') {
+      return;
+    }
+
+    const nextTool: ToolType = this.isWritingTool(this.lastWritingTool) ? this.lastWritingTool : 'pen';
+    const nextSetting: ToolSetting = {
+      tool: nextTool,
+      color: this.toolSetting.color,
+      width: this.toolSetting.width,
+      opacity: this.toolSetting.opacity
+    };
+
+    this.toolSetting = {
+      tool: nextSetting.tool,
+      color: nextSetting.color,
+      width: nextSetting.width,
+      opacity: nextSetting.opacity
+    };
+    this.isToolDropdownVisible = false;
+
+    if (this.drawingViewModel !== null) {
+      this.drawingViewModel.updateToolSetting(nextSetting);
+      this.syncDrawingSnapshot(false, this.drawingViewModel, this.currentDrawingPageId);
+    }
+  }
+
+  private isWritingTool(tool: ToolType): boolean {
+    return tool === 'pen' || tool === 'pencil' || tool === 'highlighter';
+  }
+
   private getWorkspaceToolLabel(tool: ToolType): string {
     switch (tool) {
       case 'pen':
@@ -1648,6 +1697,8 @@ struct EditorPage {
         return 'Highlight';
       case 'eraser':
         return 'Eraser';
+      case 'text':
+        return 'Text';
       default:
         return tool;
     }
@@ -2174,6 +2225,7 @@ struct EditorPage {
       pageId,
       toolSetting: this.buildDefaultToolSetting(),
       strokeCount: 0,
+      elementCount: 0,
       activeStrokeStyle: null,
       undoDepth: 0,
       redoDepth: 0,

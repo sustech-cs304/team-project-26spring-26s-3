@@ -10,11 +10,22 @@ import {
   mergeBoundingBoxes,
   isSamePoint
 } from '../../../common/utils/GeometryUtil';
+import {
+  clampElementFrameToBounds,
+  ElementBounds,
+  ElementFrame
+} from '../../../common/utils/ElementBoundsUtil';
+import { createId } from '../../../common/utils/IdUtil';
 import { now } from '../../../common/utils/TimeUtil';
 import { EditorRepositoryImpl } from '../../../data/repositories/EditorRepositoryImpl';
+import {
+  CanvasElement,
+  PAGE_CANVAS_CONTENT_VERSION,
+  PageCanvasContent,
+  TextCanvasElement
+} from '../../../domain/entities/CanvasElement';
 import { Stroke, StrokePoint, StrokeStyle } from '../../../domain/entities/Stroke';
 import { DrawableToolType, ToolSetting } from '../../../domain/entities/ToolSetting';
-import { SaveStroke } from '../../../domain/usecases/SaveStroke';
 import { StrokeController } from '../controllers/StrokeController';
 import { StrokeSpatialHashIndex } from '../controllers/StrokeSpatialHashIndex';
 import {
@@ -43,6 +54,9 @@ interface EraseResult {
 const MAX_DEBUG_EVENTS = 20;
 const SAVE_DEBOUNCE_MS = 900;
 const EDITOR_BUILD_MARKER = 'editor-build-2026-04-20-state-link-sync-v1';
+const DEFAULT_TEXT_ELEMENT_WIDTH = 220;
+const DEFAULT_TEXT_ELEMENT_HEIGHT = 88;
+const DEFAULT_TEXT_ELEMENT_TOP_OFFSET = 24;
 let nextEditorViewModelInstanceId = 1;
 
 export class DrawingEditorViewModel {
@@ -52,6 +66,7 @@ export class DrawingEditorViewModel {
 
   private pageId: string = '';
   private strokes: Stroke[] = [];
+  private elements: CanvasElement[] = [];
   private toolSetting: ToolSetting = {
     tool: DEFAULT_TOOL_SETTING.tool,
     color: DEFAULT_TOOL_SETTING.color,
@@ -88,18 +103,21 @@ export class DrawingEditorViewModel {
     this.appendDebugEvent('loadPage', `start pageId=${pageId}`);
 
     try {
-      this.strokes = await this.createRepository().getStrokes(pageId);
+      const pageContent: PageCanvasContent = await this.createRepository().getPageContent(pageId);
+      this.strokes = pageContent.strokes;
+      this.elements = pageContent.elements;
       this.rebuildStrokeSpatialIndex();
       this.resetTransientState();
       this.undoRedoController.seedLoadedStrokes(this.strokes);
       this.markFullRenderInvalidation('load');
       this.changeSequence = 0;
       this.lastPersistedChangeSequence = 0;
-      this.persistenceStatus = `loaded count=${this.strokes.length}`;
-      this.appendDebugEvent('loadPage', `loaded strokes=${this.strokes.length}`);
+      this.persistenceStatus = `loaded strokes=${this.strokes.length} elements=${this.elements.length}`;
+      this.appendDebugEvent('loadPage', `loaded strokes=${this.strokes.length} elements=${this.elements.length}`);
     } catch (error) {
       this.errorMessage = this.stringifyError(error);
       this.strokes = [];
+      this.elements = [];
       this.strokeSpatialIndex.clear();
       this.resetTransientState();
       this.markFullRenderInvalidation('load');
@@ -294,6 +312,97 @@ export class DrawingEditorViewModel {
     return this.strokes;
   }
 
+  getElements(): CanvasElement[] {
+    return this.cloneElements(this.elements);
+  }
+
+  insertTextElement(point: StrokePoint, bounds: ElementBounds): TextCanvasElement | null {
+    if (this.pageId.length === 0) {
+      this.errorMessage = 'Page is not loaded.';
+      return null;
+    }
+
+    this.cancelStroke();
+    const timestamp = now();
+    const frame: ElementFrame = clampElementFrameToBounds({
+      x: point.x - DEFAULT_TEXT_ELEMENT_WIDTH / 2,
+      y: point.y - DEFAULT_TEXT_ELEMENT_TOP_OFFSET,
+      width: DEFAULT_TEXT_ELEMENT_WIDTH,
+      height: DEFAULT_TEXT_ELEMENT_HEIGHT
+    }, bounds);
+    const nextElement: TextCanvasElement = {
+      id: createId('text'),
+      pageId: this.pageId,
+      type: 'text',
+      x: frame.x,
+      y: frame.y,
+      width: frame.width,
+      height: frame.height,
+      rotation: 0,
+      zIndex: this.getNextElementZIndex(),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      content: 'Text',
+      color: this.toolSetting.color,
+      fontSize: 18,
+      backgroundColor: '#FFFFFF00'
+    };
+
+    this.elements = [...this.elements, nextElement];
+    this.changeSequence += 1;
+    this.persistenceStatus = 'pending text save';
+    this.schedulePersistCurrentStrokes('text', 0);
+    this.errorMessage = '';
+    this.appendDebugEvent('insertText', `element=${nextElement.id} x=${Math.round(nextElement.x)} y=${Math.round(nextElement.y)}`);
+    return this.cloneTextElement(nextElement);
+  }
+
+  updateTextElementContent(elementId: string, content: string): void {
+    if (this.pageId.length === 0 || elementId.length === 0) {
+      return;
+    }
+
+    let changed = false;
+    const timestamp = now();
+    this.elements = this.elements.map((element: CanvasElement): CanvasElement => {
+      if (element.id !== elementId || element.type !== 'text') {
+        return element;
+      }
+
+      if (element.content === content) {
+        return element;
+      }
+
+      changed = true;
+      return {
+        id: element.id,
+        pageId: element.pageId,
+        type: 'text',
+        x: element.x,
+        y: element.y,
+        width: element.width,
+        height: element.height,
+        rotation: element.rotation,
+        zIndex: element.zIndex,
+        createdAt: element.createdAt,
+        content,
+        color: element.color,
+        fontSize: element.fontSize,
+        backgroundColor: element.backgroundColor,
+        updatedAt: timestamp
+      };
+    });
+
+    if (!changed) {
+      return;
+    }
+
+    this.changeSequence += 1;
+    this.persistenceStatus = 'pending text edit save';
+    this.schedulePersistCurrentStrokes('textEdit');
+    this.errorMessage = '';
+  }
+
   getActiveStroke(): Stroke | null {
     return this.strokeController.getActiveStroke();
   }
@@ -331,6 +440,7 @@ export class DrawingEditorViewModel {
       pageId: this.pageId,
       toolSetting: this.getToolSetting(),
       strokeCount: this.strokes.length,
+      elementCount: this.elements.length,
       activeStrokeStyle: activeStroke ? this.cloneStyle(activeStroke.style) : null,
       undoDepth: historyState.undoDepth,
       redoDepth: historyState.redoDepth,
@@ -472,16 +582,24 @@ export class DrawingEditorViewModel {
     }
 
     this.isPersisting = true;
-    const snapshot = this.cloneStrokes(this.strokes);
+    const strokeSnapshot = this.cloneStrokes(this.strokes);
+    const elementSnapshot = this.cloneElements(this.elements);
     const snapshotChangeSequence: number = this.changeSequence;
     this.persistenceStatus = `saving ${reason}`;
 
     try {
-      await this.createSaveStrokeUseCase().execute(this.pageId, snapshot);
+      await this.createRepository().savePageContent(this.pageId, {
+        version: PAGE_CANVAS_CONTENT_VERSION,
+        strokes: strokeSnapshot,
+        elements: elementSnapshot
+      });
       this.lastPersistedChangeSequence = Math.max(this.lastPersistedChangeSequence, snapshotChangeSequence);
       this.errorMessage = '';
-      this.persistenceStatus = `saved ${reason} count=${snapshot.length}`;
-      this.appendDebugEvent('persist', `saved reason=${reason} count=${snapshot.length}`);
+      this.persistenceStatus = `saved ${reason} strokes=${strokeSnapshot.length} elements=${elementSnapshot.length}`;
+      this.appendDebugEvent(
+        'persist',
+        `saved reason=${reason} strokes=${strokeSnapshot.length} elements=${elementSnapshot.length}`
+      );
     } catch (error) {
       this.errorMessage = this.stringifyError(error);
       this.persistenceStatus = `saveFailed reason=${reason} keepMemory count=${this.strokes.length}`;
@@ -634,6 +752,39 @@ export class DrawingEditorViewModel {
     return strokes.map((stroke: Stroke) => this.cloneStroke(stroke));
   }
 
+  private cloneElements(elements: CanvasElement[]): CanvasElement[] {
+    return elements.map((element: CanvasElement): CanvasElement => this.cloneElement(element));
+  }
+
+  private cloneElement(element: CanvasElement): CanvasElement {
+    switch (element.type) {
+      case 'text':
+        return this.cloneTextElement(element);
+      default:
+        return this.cloneTextElement(element as TextCanvasElement);
+    }
+  }
+
+  private cloneTextElement(element: TextCanvasElement): TextCanvasElement {
+    return {
+      id: element.id,
+      pageId: element.pageId,
+      type: 'text',
+      x: element.x,
+      y: element.y,
+      width: element.width,
+      height: element.height,
+      rotation: element.rotation,
+      zIndex: element.zIndex,
+      createdAt: element.createdAt,
+      updatedAt: element.updatedAt,
+      content: element.content,
+      color: element.color,
+      fontSize: element.fontSize,
+      backgroundColor: element.backgroundColor
+    };
+  }
+
   private cloneStroke(stroke: Stroke): Stroke {
     return {
       id: stroke.id,
@@ -661,6 +812,15 @@ export class DrawingEditorViewModel {
       width: style.width,
       opacity: style.opacity
     };
+  }
+
+  private getNextElementZIndex(): number {
+    let maxZIndex = 0;
+    for (const element of this.elements) {
+      maxZIndex = Math.max(maxZIndex, element.zIndex);
+    }
+
+    return maxZIndex + 1;
   }
 
   private isEraseGestureActive(): boolean {
@@ -763,10 +923,6 @@ export class DrawingEditorViewModel {
 
   private createRepository(): EditorRepositoryImpl {
     return new EditorRepositoryImpl(this.contextProvider());
-  }
-
-  private createSaveStrokeUseCase(): SaveStroke {
-    return new SaveStroke(this.createRepository());
   }
 
   private nextDebugSequence(): number {
