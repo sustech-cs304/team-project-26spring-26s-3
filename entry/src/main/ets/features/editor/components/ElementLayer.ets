@@ -1,8 +1,10 @@
 import common from '@ohos.app.ability.common';
 
-import { CanvasElement, ShapeCanvasElement, TextCanvasElement } from '../../../domain/entities/CanvasElement';
+import { CanvasElement, TextCanvasElement } from '../../../domain/entities/CanvasElement';
 import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
+import { ImageElementView } from './ImageElementView';
+import { ShapeElementView } from './ShapeElementView';
 
 @Component
 export struct ElementLayer {
@@ -35,7 +37,9 @@ export struct ElementLayer {
     if (element.type === 'text') {
       this.buildTextElement(element);
     } else if (element.type === 'shape') {
-      this.buildShapeElement(element);
+      ShapeElementView({ element: element })
+    } else if (element.type === 'image') {
+      ImageElementView({ element: element })
     }
   }
 
@@ -64,71 +68,6 @@ export struct ElementLayer {
 
   private getDisplayText(element: TextCanvasElement): string {
     return element.content.length === 0 ? 'Text' : element.content;
-  }
-
-  @Builder
-  private buildShapeElement(element: ShapeCanvasElement): void {
-    if (element.shapeType === 'rectangle') {
-      this.buildRectangleShapeElement(element);
-    } else if (element.shapeType === 'circle') {
-      this.buildCircleShapeElement(element);
-    } else if (element.shapeType === 'line') {
-      this.buildLineShapeElement(element);
-    }
-  }
-
-  @Builder
-  private buildRectangleShapeElement(element: ShapeCanvasElement): void {
-    Column() {}
-      .width(element.width)
-      .height(element.height)
-      .position({
-        x: element.x,
-        y: element.y
-      })
-      .backgroundColor(element.fillColor)
-      .border({
-        width: element.strokeWidth,
-        color: element.strokeColor
-      })
-      .opacity(element.opacity)
-      .zIndex(element.zIndex)
-      .hitTestBehavior(HitTestMode.None)
-  }
-
-  @Builder
-  private buildCircleShapeElement(element: ShapeCanvasElement): void {
-    Column() {}
-      .width(element.width)
-      .height(element.height)
-      .position({
-        x: element.x,
-        y: element.y
-      })
-      .backgroundColor(element.fillColor)
-      .borderRadius('50%')
-      .border({
-        width: element.strokeWidth,
-        color: element.strokeColor
-      })
-      .opacity(element.opacity)
-      .zIndex(element.zIndex)
-      .hitTestBehavior(HitTestMode.None)
-  }
-
-  @Builder
-  private buildLineShapeElement(element: ShapeCanvasElement): void {
-    Column() {}
-      .width(element.width)
-      .height(Math.max(1, element.strokeWidth))
-      .position({
-        x: element.x,
-        y: element.y + Math.max(0, (element.height - Math.max(1, element.strokeWidth)) / 2)
-      })
-      .backgroundColor(element.strokeColor)
-      .opacity(element.opacity)
-      .zIndex(element.zIndex)
-      .hitTestBehavior(HitTestMode.None)
   }
 
   private onPageIdChanged(): void {

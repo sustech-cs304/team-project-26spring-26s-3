@@ -12,6 +12,7 @@ import { NotebookPageCanvasEntity } from '../../../domain/entities/NotebookPageC
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
 import { ToolSetting } from '../../../domain/entities/ToolSetting';
 import { PageTemplateRenderer } from '../controllers/PageTemplateRenderer';
+import { ShapeRenderer } from '../controllers/ShapeRenderer';
 import { StrokeRenderer } from '../controllers/StrokeRenderer';
 import { IndexedStrokeRecord } from '../controllers/UndoRedoController';
 import { StrokeSpatialHashIndex } from '../controllers/StrokeSpatialHashIndex';
@@ -123,6 +124,11 @@ export struct CanvasBoard {
 
   @State private isCommittedLayerReady: boolean = false;
   @State private isOverlayLayerReady: boolean = false;
+  @State private elementLayerPageWidth: number = NotebookPageCanvasEntity.DEFAULT_WIDTH;
+  @State private elementLayerPageHeight: number = NotebookPageCanvasEntity.DEFAULT_HEIGHT;
+  @State private elementLayerScale: number = 1;
+  @State private elementLayerOffsetX: number = 0;
+  @State private elementLayerOffsetY: number = 0;
 
   aboutToAppear(): void {
     this.resolveViewModel();
@@ -144,8 +150,18 @@ export struct CanvasBoard {
         pageId: this.pageId,
         refreshVersion: this.elementVersion
       })
-        .width('100%')
-        .height('100%')
+        .width(this.elementLayerPageWidth)
+        .height(this.elementLayerPageHeight)
+        .position({
+          x: this.elementLayerOffsetX,
+          y: this.elementLayerOffsetY
+        })
+        .scale({
+          x: this.elementLayerScale,
+          y: this.elementLayerScale,
+          centerX: 0,
+          centerY: 0
+        })
 
       Canvas(this.overlayContext2D)
         .width('100%')
@@ -189,6 +205,13 @@ export struct CanvasBoard {
     const activeTool = toolSetting.tool;
     const touch = event.changedTouches.length > 0 ? event.changedTouches[0] : event.touches[0];
     if (!touch) {
+      if (activeTool === 'shape') {
+        viewModel.cancelShapeDraft();
+        this.syncEditorSnapshot();
+        this.redrawOverlayLayer();
+        return;
+      }
+
       if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
         this.finishDrawingGestureWithoutPoint(viewModel, activeTool, event.type);
       }
@@ -219,14 +242,64 @@ export struct CanvasBoard {
     }
 
     if (activeTool === 'shape') {
+      const point = this.buildPoint(touch, event.type === TouchType.Down ? false : true);
+
       if (event.type === TouchType.Down) {
+        if (point === null) {
+          this.beginWorkspacePan(touch);
+          return;
+        }
+
         viewModel.appendDebugEvent(
           'CanvasBoard',
-          `insertShape shape=${this.selectedShapeType} x=${Math.round(point.x)} y=${Math.round(point.y)}`
+          `beginShape shape=${this.selectedShapeType} x=${Math.round(point.x)} y=${Math.round(point.y)}`
         );
-        viewModel.insertShapeElement(point, this.getCanvasSize(this.committedContext2D), this.selectedShapeType);
+        viewModel.beginShapeDraft(point, {
+          width: this.getPageWidth(),
+          height: this.getPageHeight()
+        }, this.selectedShapeType);
         this.syncEditorSnapshot();
-        this.onContentChanged(true, 'element');
+        this.redrawOverlayLayer();
+        return;
+      }
+
+      if (event.type === TouchType.Move) {
+        if (point === null) {
+          return;
+        }
+
+        viewModel.updateShapeDraft(point, {
+          width: this.getPageWidth(),
+          height: this.getPageHeight()
+        });
+        this.redrawOverlayLayer();
+        return;
+      }
+
+      if (event.type === TouchType.Up) {
+        if (point !== null) {
+          viewModel.updateShapeDraft(point, {
+            width: this.getPageWidth(),
+            height: this.getPageHeight()
+          });
+        }
+
+        const createdElement = viewModel.commitShapeDraft({
+          width: this.getPageWidth(),
+          height: this.getPageHeight()
+        });
+        this.syncEditorSnapshot();
+        this.redrawOverlayLayer();
+        if (createdElement !== null) {
+          this.onContentChanged(true, 'element');
+        }
+        return;
+      }
+
+      if (event.type === TouchType.Cancel) {
+        viewModel.cancelShapeDraft();
+        this.syncEditorSnapshot();
+        this.redrawOverlayLayer();
       }
       return;
     }
@@ -428,6 +501,7 @@ export struct CanvasBoard {
 
     const size = this.getCanvasSize(this.committedContext2D);
     const transform = this.getPageViewportTransform(size);
+    this.syncElementLayerTransform(transform);
     const visibleRegion = this.getVisiblePageRegion(transform);
     this.committedContext2D.clearRect(0, 0, size.width, size.height);
 
@@ -475,6 +549,7 @@ export struct CanvasBoard {
     if (viewModel.hasActiveEraseGesture()) {
       const size = this.getCanvasSize(this.overlayContext2D);
       const transform = this.getPageViewportTransform(size);
+      this.syncElementLayerTransform(transform);
       this.overlayContext2D.save();
       this.applyPageTransformAndClip(this.overlayContext2D, transform);
       this.drawErasePreview(this.overlayContext2D, viewModel.getActiveErasePath(), viewModel.getErasePreviewWidth());
@@ -486,9 +561,22 @@ export struct CanvasBoard {
     if (activeStroke) {
       const size = this.getCanvasSize(this.overlayContext2D);
       const transform = this.getPageViewportTransform(size);
+      this.syncElementLayerTransform(transform);
       this.overlayContext2D.save();
       this.applyPageTransformAndClip(this.overlayContext2D, transform);
       this.drawPreviewStroke(this.overlayContext2D, activeStroke);
+      this.overlayContext2D.restore();
+      return;
+    }
+
+    const shapeDraft = viewModel.getShapeDraftForRendering();
+    if (shapeDraft !== null) {
+      const size = this.getCanvasSize(this.overlayContext2D);
+      const transform = this.getPageViewportTransform(size);
+      this.syncElementLayerTransform(transform);
+      this.overlayContext2D.save();
+      this.applyPageTransformAndClip(this.overlayContext2D, transform);
+      ShapeRenderer.drawShape(this.overlayContext2D, shapeDraft);
       this.overlayContext2D.restore();
     }
   }
@@ -513,6 +601,28 @@ export struct CanvasBoard {
 
   private notifyCanvasMetricsChanged(): void {
     this.onCanvasMetricsChanged(this.getPageWidth(), this.getPageHeight());
+  }
+
+  private syncElementLayerTransform(transform: PageViewportTransform): void {
+    if (this.elementLayerPageWidth !== transform.pageWidth) {
+      this.elementLayerPageWidth = transform.pageWidth;
+    }
+
+    if (this.elementLayerPageHeight !== transform.pageHeight) {
+      this.elementLayerPageHeight = transform.pageHeight;
+    }
+
+    if (this.elementLayerScale !== transform.scale) {
+      this.elementLayerScale = transform.scale;
+    }
+
+    if (this.elementLayerOffsetX !== transform.offsetX) {
+      this.elementLayerOffsetX = transform.offsetX;
+    }
+
+    if (this.elementLayerOffsetY !== transform.offsetY) {
+      this.elementLayerOffsetY = transform.offsetY;
+    }
   }
 
   private getCanvasSize(context: CanvasRenderingContext2D): CanvasSize {

@@ -1,7 +1,9 @@
 import common from '@ohos.app.ability.common';
+import picker from '@ohos.file.picker';
 import router from '@ohos.router';
 
 import { AppRouter, RouterParams } from '../../../app/AppRouter';
+import { ImageAssetDataSource, ImportedImageAsset } from '../../../data/sources/local/ImageAssetDataSource';
 import { Notebook } from '../../../domain/entities/Notebook';
 import { NotebookPage, NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { ShapeType } from '../../../domain/entities/CanvasElement';
@@ -49,6 +51,7 @@ struct EditorPage {
   @State private isCreatingPage: boolean = false;
   @State private isReorderingPages: boolean = false;
   @State private isUpdatingPageTemplate: boolean = false;
+  @State private isImportingImage: boolean = false;
   @State private pageActionMenuPageId: string = '';
   @State private isDeletePageDialogVisible: boolean = false;
   @State private isDeletingPage: boolean = false;
@@ -497,6 +500,26 @@ struct EditorPage {
               }, (tool: ToolType): string => tool)
 
               this.buildCanvasPanToolbarButton()
+
+              Button('Image')
+                .height(32)
+                .padding({
+                  left: 10,
+                  right: 10
+                })
+                .fontSize(12)
+                .backgroundColor('#FFFFFF')
+                .fontColor('#475569')
+                .borderRadius(10)
+                .border({
+                  width: 1,
+                  color: '#CBD5E1'
+                })
+                .enabled(!this.isCanvasLoading && !this.isImportingImage)
+                .onClick(() => {
+                  void this.handleImageInsertRequest();
+                })
+
               this.buildPageTemplateToolbarButton()
             }
             .alignItems(VerticalAlign.Center)
@@ -1679,6 +1702,28 @@ struct EditorPage {
     return Math.round(PAGE_THUMBNAIL_WIDTH * canvasHeight / Math.max(1, canvasWidth));
   }
 
+  private getActiveCanvasBounds(): PageCanvasRenderSize {
+    const cachedSize = this.pageCanvasRenderSizeMap.get(this.activePageId);
+    if (cachedSize !== undefined && cachedSize.width > 0 && cachedSize.height > 0) {
+      return {
+        width: cachedSize.width,
+        height: cachedSize.height
+      };
+    }
+
+    if (this.activePageCanvas !== null) {
+      return {
+        width: this.activePageCanvas.width,
+        height: this.activePageCanvas.height
+      };
+    }
+
+    return {
+      width: 1600,
+      height: 900
+    };
+  }
+
   private async handleUndo(): Promise<void> {
     if (this.drawingViewModel === null || this.isCanvasLoading) {
       return;
@@ -1707,6 +1752,51 @@ struct EditorPage {
     const targetPageId: string = this.currentDrawingPageId;
     await this.drawingViewModel.clear();
     this.syncDrawingSnapshot(true, this.drawingViewModel, targetPageId, false);
+  }
+
+  private async handleImageInsertRequest(): Promise<void> {
+    if (this.isImportingImage || this.isCanvasLoading || this.activePageId.length === 0 ||
+      this.drawingViewModel === null) {
+      return;
+    }
+
+    const hostContext: common.Context | undefined = this.getUIContext().getHostContext() as common.Context | undefined;
+    if (hostContext === undefined) {
+      return;
+    }
+
+    this.closeTransientDropdowns();
+    this.isImportingImage = true;
+    try {
+      const selectOptions = new picker.PhotoSelectOptions();
+      selectOptions.MIMEType = picker.PhotoViewMIMETypes.IMAGE_TYPE;
+      selectOptions.maxSelectNumber = 1;
+
+      const photoPicker = new picker.PhotoViewPicker(hostContext);
+      const selectResult = await photoPicker.select(selectOptions);
+      const selectedUri = selectResult.photoUris.length > 0 ? selectResult.photoUris[0] : '';
+      if (selectedUri.length === 0) {
+        return;
+      }
+
+      const importedAsset: ImportedImageAsset = await new ImageAssetDataSource(hostContext).importImage(selectedUri);
+      const insertedElement = this.drawingViewModel.insertImageElement(importedAsset, this.getActiveCanvasBounds());
+      if (insertedElement === null) {
+        this.syncDrawingSnapshot(false, this.drawingViewModel, this.currentDrawingPageId);
+        return;
+      }
+
+      this.refreshElementLayer();
+      this.syncDrawingSnapshot(false, this.drawingViewModel, this.currentDrawingPageId);
+      this.requestThumbnailRefresh(true);
+    } catch (error) {
+      if (this.drawingViewModel !== null) {
+        this.drawingViewModel.appendDebugEvent('insertImage', `failed error=${this.stringifyError(error)}`);
+        this.syncDrawingSnapshot(false, this.drawingViewModel, this.currentDrawingPageId);
+      }
+    } finally {
+      this.isImportingImage = false;
+    }
   }
 
   private handleWorkspaceToolButtonClick(tool: ToolType): void {
@@ -2387,5 +2477,27 @@ struct EditorPage {
     } catch (_error) {
       return {};
     }
+  }
+
+  private stringifyError(error: Object): string {
+    if (error instanceof Error) {
+      return error.message.length > 0 ? error.message : error.name;
+    }
+
+    const errorRecord = error as Record<string, Object>;
+    const message = typeof errorRecord.message === 'string' ? errorRecord.message : '';
+    if (message.length > 0) {
+      return message;
+    }
+
+    try {
+      const serialized = JSON.stringify(error);
+      if (serialized.length > 0 && serialized !== '{}') {
+        return serialized;
+      }
+    } catch (_jsonError) {
+    }
+
+    return `${error}`;
   }
 }

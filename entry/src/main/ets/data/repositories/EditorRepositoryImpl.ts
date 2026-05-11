@@ -5,10 +5,14 @@ import fileIo from '@ohos.file.fs';
 import { NotebookRepositoryImpl } from './NotebookRepositoryImpl';
 import {
   CanvasElement,
+  ImageCanvasElement,
+  isShapeGeometryKind,
   isShapeType,
   PAGE_CANVAS_CONTENT_VERSION,
   PageCanvasContent,
   ShapeCanvasElement,
+  ShapeGeometry,
+  ShapeGeometryPoint,
   TextCanvasElement,
   TRANSPARENT_ELEMENT_BACKGROUND_COLOR
 } from '../../domain/entities/CanvasElement';
@@ -351,6 +355,10 @@ export class EditorRepositoryImpl implements EditorRepository {
       return this.parseShapeElement(candidate, pageId);
     }
 
+    if (type === 'image') {
+      return this.parseImageElement(candidate, pageId);
+    }
+
     return null;
   }
 
@@ -393,16 +401,59 @@ export class EditorRepositoryImpl implements EditorRepository {
     };
   }
 
+  private parseImageElement(candidate: Record<string, Object>, pageId: string): ImageCanvasElement | null {
+    const id = typeof candidate.id === 'string' ? candidate.id : '';
+    const uri = typeof candidate.uri === 'string' ? candidate.uri : '';
+    if (id.length === 0 || uri.length === 0) {
+      return null;
+    }
+
+    const x = this.parseFiniteNumber(candidate.x, 80);
+    const y = this.parseFiniteNumber(candidate.y, 80);
+    const width = Math.max(1, this.parseFiniteNumber(candidate.width, 240));
+    const height = Math.max(1, this.parseFiniteNumber(candidate.height, 180));
+    const rotation = this.parseFiniteNumber(candidate.rotation, 0);
+    const zIndex = Math.max(0, Math.floor(this.parseFiniteNumber(candidate.zIndex, 0)));
+    const createdAt = this.parseFiniteNumber(candidate.createdAt, Date.now());
+    const updatedAt = this.parseFiniteNumber(candidate.updatedAt, createdAt);
+    const originalWidth = Math.max(1, this.parseFiniteNumber(candidate.originalWidth, width));
+    const originalHeight = Math.max(1, this.parseFiniteNumber(candidate.originalHeight, height));
+    const opacity = Math.max(0, Math.min(1, this.parseFiniteNumber(candidate.opacity, 1)));
+
+    return {
+      id,
+      pageId,
+      type: 'image',
+      x,
+      y,
+      width,
+      height,
+      rotation,
+      zIndex,
+      createdAt,
+      updatedAt,
+      uri,
+      originalWidth,
+      originalHeight,
+      opacity
+    };
+  }
+
   private parseShapeElement(candidate: Record<string, Object>, pageId: string): ShapeCanvasElement | null {
     const id = typeof candidate.id === 'string' ? candidate.id : '';
     if (id.length === 0) {
       return null;
     }
 
+    const geometry = this.parseShapeGeometry(candidate.geometry);
+    if (geometry === null) {
+      return null;
+    }
+
     const x = this.parseFiniteNumber(candidate.x, 80);
     const y = this.parseFiniteNumber(candidate.y, 80);
-    const width = Math.max(1, this.parseFiniteNumber(candidate.width, 160));
-    const height = Math.max(1, this.parseFiniteNumber(candidate.height, 100));
+    const width = Math.max(0, this.parseFiniteNumber(candidate.width, 160));
+    const height = Math.max(0, this.parseFiniteNumber(candidate.height, 100));
     const rotation = this.parseFiniteNumber(candidate.rotation, 0);
     const zIndex = Math.max(0, Math.floor(this.parseFiniteNumber(candidate.zIndex, 0)));
     const createdAt = this.parseFiniteNumber(candidate.createdAt, Date.now());
@@ -429,10 +480,48 @@ export class EditorRepositoryImpl implements EditorRepository {
       createdAt,
       updatedAt,
       shapeType,
+      geometry,
       strokeColor,
       fillColor,
       strokeWidth,
       opacity
+    };
+  }
+
+  private parseShapeGeometry(value: Object): ShapeGeometry | null {
+    if (!value || typeof value !== 'object') {
+      return null;
+    }
+
+    const candidate = value as Record<string, Object>;
+    const kindValue = typeof candidate.kind === 'string' ? candidate.kind : '';
+    if (!isShapeGeometryKind(kindValue) || !Array.isArray(candidate.points)) {
+      return null;
+    }
+
+    const points: ShapeGeometryPoint[] = [];
+    for (const item of candidate.points) {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+
+      const point = item as Record<string, Object>;
+      const x = Number(point.x);
+      const y = Number(point.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return null;
+      }
+
+      points.push({ x, y });
+    }
+
+    if (points.length !== 2) {
+      return null;
+    }
+
+    return {
+      kind: kindValue,
+      points
     };
   }
 

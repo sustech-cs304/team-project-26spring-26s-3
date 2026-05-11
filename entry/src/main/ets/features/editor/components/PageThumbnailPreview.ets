@@ -1,7 +1,7 @@
 import common from '@ohos.app.ability.common';
 
 import { EditorRepositoryImpl } from '../../../data/repositories/EditorRepositoryImpl';
-import { CanvasElement, PageCanvasContent } from '../../../domain/entities/CanvasElement';
+import { CanvasElement, PageCanvasContent, ShapeGeometryPoint } from '../../../domain/entities/CanvasElement';
 import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
 import { CanvasElementRenderer } from '../controllers/CanvasElementRenderer';
@@ -336,10 +336,40 @@ export struct PageThumbnailPreview {
       };
     }
 
+    if (element.type === 'shape') {
+      return {
+        id: element.id,
+        pageId: element.pageId,
+        type: 'shape',
+        x: element.x,
+        y: element.y,
+        width: element.width,
+        height: element.height,
+        rotation: element.rotation,
+        zIndex: element.zIndex,
+        createdAt: element.createdAt,
+        updatedAt: element.updatedAt,
+        shapeType: element.shapeType,
+        geometry: {
+          kind: element.geometry.kind,
+          points: element.geometry.points.map((point: ShapeGeometryPoint): ShapeGeometryPoint => {
+            return {
+              x: point.x,
+              y: point.y
+            };
+          })
+        },
+        strokeColor: element.strokeColor,
+        fillColor: element.fillColor,
+        strokeWidth: element.strokeWidth,
+        opacity: element.opacity
+      };
+    }
+
     return {
       id: element.id,
       pageId: element.pageId,
-      type: 'shape',
+      type: 'image',
       x: element.x,
       y: element.y,
       width: element.width,
@@ -348,10 +378,9 @@ export struct PageThumbnailPreview {
       zIndex: element.zIndex,
       createdAt: element.createdAt,
       updatedAt: element.updatedAt,
-      shapeType: element.shapeType,
-      strokeColor: element.strokeColor,
-      fillColor: element.fillColor,
-      strokeWidth: element.strokeWidth,
+      uri: element.uri,
+      originalWidth: element.originalWidth,
+      originalHeight: element.originalHeight,
       opacity: element.opacity
     };
   }

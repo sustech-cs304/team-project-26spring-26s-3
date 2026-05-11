@@ -20,9 +20,12 @@ import { now } from '../../../common/utils/TimeUtil';
 import { EditorRepositoryImpl } from '../../../data/repositories/EditorRepositoryImpl';
 import {
   CanvasElement,
+  ImageCanvasElement,
   PAGE_CANVAS_CONTENT_VERSION,
   PageCanvasContent,
   ShapeCanvasElement,
+  ShapeGeometry,
+  ShapeGeometryPoint,
   ShapeType,
   TextCanvasElement,
   TRANSPARENT_ELEMENT_BACKGROUND_COLOR
@@ -54,6 +57,18 @@ interface EraseResult {
   added: IndexedStrokeRecord[];
 }
 
+interface ShapeDraft {
+  shapeType: ShapeType;
+  startPoint: StrokePoint;
+  currentPoint: StrokePoint;
+}
+
+export interface ImageInsertAsset {
+  uri: string;
+  originalWidth: number;
+  originalHeight: number;
+}
+
 const MAX_DEBUG_EVENTS = 20;
 const SAVE_DEBOUNCE_MS = 900;
 const EDITOR_BUILD_MARKER = 'editor-build-2026-04-20-state-link-sync-v1';
@@ -62,11 +77,10 @@ const DEFAULT_TEXT_ELEMENT_HEIGHT = 88;
 const DEFAULT_TEXT_ELEMENT_TOP_OFFSET = 24;
 const DEFAULT_SHAPE_STROKE_COLOR = '#111827';
 const DEFAULT_SHAPE_STROKE_WIDTH = 2;
-const DEFAULT_RECTANGLE_SHAPE_WIDTH = 160;
-const DEFAULT_RECTANGLE_SHAPE_HEIGHT = 100;
-const DEFAULT_CIRCLE_SHAPE_SIZE = 120;
-const DEFAULT_LINE_SHAPE_WIDTH = 180;
-const DEFAULT_LINE_SHAPE_HEIGHT = 2;
+const MIN_SHAPE_DRAG_DISTANCE = 8;
+const MAX_IMAGE_INSERT_WIDTH = 420;
+const MAX_IMAGE_INSERT_HEIGHT = 320;
+const IMAGE_CANVAS_FILL_RATIO = 0.6;
 let nextEditorViewModelInstanceId = 1;
 
 export class DrawingEditorViewModel {
@@ -98,6 +112,7 @@ export class DrawingEditorViewModel {
   private lastPersistedChangeSequence: number = 0;
   private renderInvalidationSequence: number = 0;
   private lastRenderInvalidation: RenderInvalidation | null = null;
+  private shapeDraft: ShapeDraft | null = null;
   private readonly instanceId: number = nextEditorViewModelInstanceId++;
 
   constructor(private readonly contextProvider: () => common.Context) {}
@@ -295,6 +310,7 @@ export class DrawingEditorViewModel {
     if (this.isEraseGestureActive() || this.strokeController.hasActiveStroke()) {
       this.cancelStroke();
     }
+    this.cancelShapeDraft();
 
     this.toolSetting = {
       tool: nextSetting.tool,
@@ -367,17 +383,158 @@ export class DrawingEditorViewModel {
     return this.cloneTextElement(nextElement);
   }
 
-  insertShapeElement(point: StrokePoint, bounds: ElementBounds, shapeType: ShapeType): ShapeCanvasElement | null {
+  insertImageElement(asset: ImageInsertAsset, bounds: ElementBounds): ImageCanvasElement | null {
     if (this.pageId.length === 0) {
       this.errorMessage = 'Page is not loaded.';
       return null;
     }
 
+    if (asset.uri.length === 0 || asset.originalWidth <= 0 || asset.originalHeight <= 0) {
+      this.errorMessage = 'Image asset is invalid.';
+      return null;
+    }
+
     this.cancelStroke();
+    this.cancelShapeDraft();
     const timestamp = now();
-    const defaultFrame = this.buildDefaultShapeFrame(point, shapeType);
-    const frame: ElementFrame = clampElementFrameToBounds(defaultFrame, bounds);
-    const nextElement: ShapeCanvasElement = {
+    const displaySize = this.calculateInitialImageDisplaySize(asset, bounds);
+    const frame: ElementFrame = clampElementFrameToBounds({
+      x: (Math.max(1, bounds.width) - displaySize.width) / 2,
+      y: (Math.max(1, bounds.height) - displaySize.height) / 2,
+      width: displaySize.width,
+      height: displaySize.height
+    }, bounds);
+    const nextElement: ImageCanvasElement = {
+      id: createId('image'),
+      pageId: this.pageId,
+      type: 'image',
+      x: frame.x,
+      y: frame.y,
+      width: frame.width,
+      height: frame.height,
+      rotation: 0,
+      zIndex: this.getNextElementZIndex(),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      uri: asset.uri,
+      originalWidth: asset.originalWidth,
+      originalHeight: asset.originalHeight,
+      opacity: 1
+    };
+
+    this.elements = [...this.elements, nextElement];
+    this.changeSequence += 1;
+    this.persistenceStatus = 'pending image save';
+    this.schedulePersistCurrentStrokes('image', 0);
+    this.errorMessage = '';
+    this.appendDebugEvent(
+      'insertImage',
+      `element=${nextElement.id} x=${Math.round(nextElement.x)} y=${Math.round(nextElement.y)}`
+    );
+    return this.cloneImageElement(nextElement);
+  }
+
+  beginShapeDraft(point: StrokePoint, bounds: ElementBounds, shapeType: ShapeType): void {
+    if (this.pageId.length === 0) {
+      this.errorMessage = 'Page is not loaded.';
+      return;
+    }
+
+    this.cancelStroke();
+    const clampedPoint = this.clampPointToBounds(point, bounds);
+    this.shapeDraft = {
+      shapeType,
+      startPoint: clampedPoint,
+      currentPoint: clampedPoint
+    };
+    this.errorMessage = '';
+    this.appendDebugEvent(
+      'beginShapeDraft',
+      `shape=${shapeType} x=${Math.round(clampedPoint.x)} y=${Math.round(clampedPoint.y)}`
+    );
+  }
+
+  updateShapeDraft(point: StrokePoint, bounds: ElementBounds): void {
+    if (this.shapeDraft === null) {
+      return;
+    }
+
+    this.shapeDraft = {
+      shapeType: this.shapeDraft.shapeType,
+      startPoint: this.clonePoint(this.shapeDraft.startPoint),
+      currentPoint: this.clampPointToBounds(point, bounds)
+    };
+  }
+
+  commitShapeDraft(bounds: ElementBounds): ShapeCanvasElement | null {
+    if (this.pageId.length === 0) {
+      this.errorMessage = 'Page is not loaded.';
+      this.shapeDraft = null;
+      return null;
+    }
+
+    if (this.shapeDraft === null) {
+      return null;
+    }
+
+    const draft = this.shapeDraft;
+    this.shapeDraft = null;
+
+    const nextElement = this.buildShapeElementFromDraft(draft, bounds, 1, true);
+    if (nextElement === null) {
+      this.appendDebugEvent('commitShapeDraft', `cancelled shape=${draft.shapeType} reason=tooSmall`);
+      return null;
+    }
+
+    this.elements = [...this.elements, nextElement];
+    this.changeSequence += 1;
+    this.persistenceStatus = 'pending shape save';
+    this.schedulePersistCurrentStrokes('shape', 0);
+    this.errorMessage = '';
+    this.appendDebugEvent(
+      'commitShapeDraft',
+      `element=${nextElement.id} shape=${draft.shapeType} x=${Math.round(nextElement.x)} y=${Math.round(nextElement.y)}`
+    );
+    return this.cloneShapeElement(nextElement);
+  }
+
+  cancelShapeDraft(): void {
+    if (this.shapeDraft !== null) {
+      this.appendDebugEvent('cancelShapeDraft', `shape=${this.shapeDraft.shapeType}`);
+    }
+    this.shapeDraft = null;
+  }
+
+  getShapeDraftForRendering(): ShapeCanvasElement | null {
+    if (this.shapeDraft === null) {
+      return null;
+    }
+
+    return this.buildShapeElementFromDraft(this.shapeDraft, {
+      width: Number.MAX_SAFE_INTEGER,
+      height: Number.MAX_SAFE_INTEGER
+    }, 0.65, false);
+  }
+
+  private buildShapeElementFromDraft(
+    draft: ShapeDraft,
+    bounds: ElementBounds,
+    opacity: number,
+    enforceMinimumSize: boolean
+  ): ShapeCanvasElement | null {
+    const startPoint = this.clampPointToBounds(draft.startPoint, bounds);
+    const currentPoint = this.clampPointToBounds(draft.currentPoint, bounds);
+    const frame = this.buildShapeFrameFromPoints(draft.shapeType, startPoint, currentPoint);
+    if (enforceMinimumSize && !this.isValidShapeFrame(draft.shapeType, frame, startPoint, currentPoint)) {
+      return null;
+    }
+
+    if (!enforceMinimumSize && !this.hasVisibleShapeFrame(draft.shapeType, frame, startPoint, currentPoint)) {
+      return null;
+    }
+
+    const timestamp = now();
+    return {
       id: createId('shape'),
       pageId: this.pageId,
       type: 'shape',
@@ -389,23 +546,13 @@ export class DrawingEditorViewModel {
       zIndex: this.getNextElementZIndex(),
       createdAt: timestamp,
       updatedAt: timestamp,
-      shapeType,
+      shapeType: draft.shapeType,
+      geometry: this.buildShapeGeometry(draft.shapeType, startPoint, currentPoint),
       strokeColor: DEFAULT_SHAPE_STROKE_COLOR,
       fillColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR,
       strokeWidth: DEFAULT_SHAPE_STROKE_WIDTH,
-      opacity: 1
+      opacity
     };
-
-    this.elements = [...this.elements, nextElement];
-    this.changeSequence += 1;
-    this.persistenceStatus = 'pending shape save';
-    this.schedulePersistCurrentStrokes('shape', 0);
-    this.errorMessage = '';
-    this.appendDebugEvent(
-      'insertShape',
-      `element=${nextElement.id} shape=${shapeType} x=${Math.round(nextElement.x)} y=${Math.round(nextElement.y)}`
-    );
-    return this.cloneShapeElement(nextElement);
   }
 
   updateTextElementContent(elementId: string, content: string): void {
@@ -593,6 +740,7 @@ export class DrawingEditorViewModel {
   private resetTransientState(): void {
     this.strokeController.cancelStroke();
     this.clearEraseState();
+    this.shapeDraft = null;
   }
 
   private schedulePersistCurrentStrokes(reason: string, delayMs: number = SAVE_DEBOUNCE_MS): void {
@@ -813,6 +961,8 @@ export class DrawingEditorViewModel {
         return this.cloneTextElement(element);
       case 'shape':
         return this.cloneShapeElement(element);
+      case 'image':
+        return this.cloneImageElement(element);
       default:
         return this.cloneTextElement(element as TextCanvasElement);
     }
@@ -852,9 +1002,42 @@ export class DrawingEditorViewModel {
       createdAt: element.createdAt,
       updatedAt: element.updatedAt,
       shapeType: element.shapeType,
+      geometry: this.cloneShapeGeometry(element.geometry),
       strokeColor: element.strokeColor,
       fillColor: element.fillColor,
       strokeWidth: element.strokeWidth,
+      opacity: element.opacity
+    };
+  }
+
+  private cloneShapeGeometry(geometry: ShapeGeometry): ShapeGeometry {
+    return {
+      kind: geometry.kind,
+      points: geometry.points.map((point: ShapeGeometryPoint): ShapeGeometryPoint => {
+        return {
+          x: point.x,
+          y: point.y
+        };
+      })
+    };
+  }
+
+  private cloneImageElement(element: ImageCanvasElement): ImageCanvasElement {
+    return {
+      id: element.id,
+      pageId: element.pageId,
+      type: 'image',
+      x: element.x,
+      y: element.y,
+      width: element.width,
+      height: element.height,
+      rotation: element.rotation,
+      zIndex: element.zIndex,
+      createdAt: element.createdAt,
+      updatedAt: element.updatedAt,
+      uri: element.uri,
+      originalWidth: element.originalWidth,
+      originalHeight: element.originalHeight,
       opacity: element.opacity
     };
   }
@@ -897,35 +1080,112 @@ export class DrawingEditorViewModel {
     return maxZIndex + 1;
   }
 
-  private buildDefaultShapeFrame(point: StrokePoint, shapeType: ShapeType): ElementFrame {
-    const size = this.getDefaultShapeSize(shapeType);
+  private calculateInitialImageDisplaySize(asset: ImageInsertAsset, bounds: ElementBounds): ElementBounds {
+    const maxWidth = Math.max(1, Math.min(MAX_IMAGE_INSERT_WIDTH, Math.max(1, bounds.width) * IMAGE_CANVAS_FILL_RATIO));
+    const maxHeight = Math.max(1, Math.min(MAX_IMAGE_INSERT_HEIGHT, Math.max(1, bounds.height) * IMAGE_CANVAS_FILL_RATIO));
+    const scale = Math.min(maxWidth / asset.originalWidth, maxHeight / asset.originalHeight, 1);
+
     return {
-      x: point.x - size.width / 2,
-      y: point.y - size.height / 2,
-      width: size.width,
-      height: size.height
+      width: Math.max(1, asset.originalWidth * scale),
+      height: Math.max(1, asset.originalHeight * scale)
     };
   }
 
-  private getDefaultShapeSize(shapeType: ShapeType): ElementBounds {
+  private buildShapeFrameFromPoints(shapeType: ShapeType, startPoint: StrokePoint, currentPoint: StrokePoint): ElementFrame {
+    const minX = Math.min(startPoint.x, currentPoint.x);
+    const minY = Math.min(startPoint.y, currentPoint.y);
+    const maxX = Math.max(startPoint.x, currentPoint.x);
+    const maxY = Math.max(startPoint.y, currentPoint.y);
+
     switch (shapeType) {
-      case 'circle':
-        return {
-          width: DEFAULT_CIRCLE_SHAPE_SIZE,
-          height: DEFAULT_CIRCLE_SHAPE_SIZE
-        };
       case 'line':
         return {
-          width: DEFAULT_LINE_SHAPE_WIDTH,
-          height: DEFAULT_LINE_SHAPE_HEIGHT
+          x: minX,
+          y: minY,
+          width: maxX - minX,
+          height: maxY - minY
         };
+      case 'circle':
       case 'rectangle':
       default:
         return {
-          width: DEFAULT_RECTANGLE_SHAPE_WIDTH,
-          height: DEFAULT_RECTANGLE_SHAPE_HEIGHT
+          x: minX,
+          y: minY,
+          width: maxX - minX,
+          height: maxY - minY
         };
     }
+  }
+
+  private buildShapeGeometry(
+    shapeType: ShapeType,
+    startPoint: StrokePoint,
+    currentPoint: StrokePoint
+  ): ShapeGeometry {
+    if (shapeType === 'line') {
+      return {
+        kind: 'line',
+        points: [
+          { x: startPoint.x, y: startPoint.y },
+          { x: currentPoint.x, y: currentPoint.y }
+        ]
+      };
+    }
+
+    const frame = this.buildShapeFrameFromPoints(shapeType, startPoint, currentPoint);
+    const geometryKind = shapeType === 'circle' ? 'ellipse' : 'rect';
+    return {
+      kind: geometryKind,
+      points: [
+        { x: frame.x, y: frame.y },
+        { x: frame.x + frame.width, y: frame.y + frame.height }
+      ]
+    };
+  }
+
+  private isValidShapeFrame(
+    shapeType: ShapeType,
+    frame: ElementFrame,
+    startPoint: StrokePoint,
+    currentPoint: StrokePoint
+  ): boolean {
+    if (shapeType === 'line') {
+      const deltaX = currentPoint.x - startPoint.x;
+      const deltaY = currentPoint.y - startPoint.y;
+      return Math.sqrt(deltaX * deltaX + deltaY * deltaY) >= MIN_SHAPE_DRAG_DISTANCE;
+    }
+
+    return frame.width >= MIN_SHAPE_DRAG_DISTANCE && frame.height >= MIN_SHAPE_DRAG_DISTANCE;
+  }
+
+  private hasVisibleShapeFrame(
+    shapeType: ShapeType,
+    frame: ElementFrame,
+    startPoint: StrokePoint,
+    currentPoint: StrokePoint
+  ): boolean {
+    if (shapeType === 'line') {
+      return startPoint.x !== currentPoint.x || startPoint.y !== currentPoint.y;
+    }
+
+    return frame.width > 0 && frame.height > 0;
+  }
+
+  private clampPointToBounds(point: StrokePoint, bounds: ElementBounds): StrokePoint {
+    return {
+      x: this.clampNumber(point.x, 0, Math.max(0, bounds.width)),
+      y: this.clampNumber(point.y, 0, Math.max(0, bounds.height)),
+      t: point.t,
+      pressure: point.pressure
+    };
+  }
+
+  private clampNumber(value: number, minValue: number, maxValue: number): number {
+    if (!Number.isFinite(value)) {
+      return minValue;
+    }
+
+    return Math.min(Math.max(value, minValue), maxValue);
   }
 
   private isEraseGestureActive(): boolean {
