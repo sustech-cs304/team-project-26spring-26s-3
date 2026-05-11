@@ -29,7 +29,7 @@ const SIDEBAR_COLLAPSED_WIDTH = 56;
 const PAGE_THUMBNAIL_WIDTH = SIDEBAR_EXPANDED_WIDTH - SIDEBAR_EXPANDED_PADDING * 2;
 const WORKSPACE_MENU_BUTTON_FONT_SIZE = 26;
 const PAGE_TEMPLATE_DROPDOWN_LEFT = 384;
-const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser', 'text', 'shape'];
+const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser', 'text', 'shape', 'select'];
 const SHAPE_TOOL_OPTIONS: ShapeType[] = ['rectangle', 'circle', 'line'];
 const PAGE_TEMPLATE_OPTIONS: NotebookPageTemplateType[] = [
   NotebookPageTemplateType.BLANK,
@@ -1821,6 +1821,12 @@ struct EditorPage {
       return;
     }
 
+    if (tool === 'select') {
+      this.handleWorkspaceToolChange(tool);
+      this.closeTransientDropdowns();
+      return;
+    }
+
     this.handleWorkspaceToolChange(tool);
     this.closePageActionMenu();
     this.closePageTemplateDropdown();
@@ -1920,6 +1926,8 @@ struct EditorPage {
         return 'Text';
       case 'shape':
         return 'Shape';
+      case 'select':
+        return 'Select';
       default:
         return tool;
     }
@@ -2466,6 +2474,7 @@ struct EditorPage {
       toolSetting: this.buildDefaultToolSetting(),
       strokeCount: 0,
       elementCount: 0,
+      selectedElementId: '',
       activeStrokeStyle: null,
       undoDepth: 0,
       redoDepth: 0,

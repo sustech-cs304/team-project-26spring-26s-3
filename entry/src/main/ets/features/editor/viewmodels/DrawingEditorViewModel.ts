@@ -78,6 +78,7 @@ const DEFAULT_TEXT_ELEMENT_TOP_OFFSET = 24;
 const DEFAULT_SHAPE_STROKE_COLOR = '#111827';
 const DEFAULT_SHAPE_STROKE_WIDTH = 2;
 const MIN_SHAPE_DRAG_DISTANCE = 8;
+const ELEMENT_LINE_HIT_TOLERANCE = 8;
 const MAX_IMAGE_INSERT_WIDTH = 420;
 const MAX_IMAGE_INSERT_HEIGHT = 320;
 const IMAGE_CANVAS_FILL_RATIO = 0.6;
@@ -113,6 +114,7 @@ export class DrawingEditorViewModel {
   private renderInvalidationSequence: number = 0;
   private lastRenderInvalidation: RenderInvalidation | null = null;
   private shapeDraft: ShapeDraft | null = null;
+  private selectedElementId: string = '';
   private readonly instanceId: number = nextEditorViewModelInstanceId++;
 
   constructor(private readonly contextProvider: () => common.Context) {}
@@ -311,6 +313,9 @@ export class DrawingEditorViewModel {
       this.cancelStroke();
     }
     this.cancelShapeDraft();
+    if (nextSetting.tool !== 'select') {
+      this.clearElementSelection();
+    }
 
     this.toolSetting = {
       tool: nextSetting.tool,
@@ -340,6 +345,55 @@ export class DrawingEditorViewModel {
 
   getElements(): CanvasElement[] {
     return this.cloneElements(this.elements);
+  }
+
+  getSelectedElementId(): string {
+    return this.selectedElementId;
+  }
+
+  getSelectedElement(): CanvasElement | null {
+    const selectedElement = this.elements.find((element: CanvasElement): boolean => element.id === this.selectedElementId);
+    return selectedElement === undefined ? null : this.cloneElement(selectedElement);
+  }
+
+  selectElement(elementId: string): CanvasElement | null {
+    if (elementId.length === 0) {
+      this.clearElementSelection();
+      return null;
+    }
+
+    const selectedElement = this.elements.find((element: CanvasElement): boolean => element.id === elementId);
+    if (selectedElement === undefined) {
+      this.clearElementSelection();
+      return null;
+    }
+
+    this.selectedElementId = selectedElement.id;
+    this.appendDebugEvent('selectElement', `element=${selectedElement.id} type=${selectedElement.type}`);
+    return this.cloneElement(selectedElement);
+  }
+
+  selectElementAt(point: StrokePoint): CanvasElement | null {
+    const selectedElement = this.hitTestElement(point);
+    if (selectedElement === null) {
+      this.clearElementSelection();
+      this.appendDebugEvent('selectElementAt', `empty x=${Math.round(point.x)} y=${Math.round(point.y)}`);
+      return null;
+    }
+
+    this.selectedElementId = selectedElement.id;
+    this.appendDebugEvent(
+      'selectElementAt',
+      `element=${selectedElement.id} type=${selectedElement.type} x=${Math.round(point.x)} y=${Math.round(point.y)}`
+    );
+    return this.cloneElement(selectedElement);
+  }
+
+  clearElementSelection(): void {
+    if (this.selectedElementId.length > 0) {
+      this.appendDebugEvent('clearElementSelection', `element=${this.selectedElementId}`);
+    }
+    this.selectedElementId = '';
   }
 
   insertTextElement(point: StrokePoint, bounds: ElementBounds): TextCanvasElement | null {
@@ -639,6 +693,7 @@ export class DrawingEditorViewModel {
       toolSetting: this.getToolSetting(),
       strokeCount: this.strokes.length,
       elementCount: this.elements.length,
+      selectedElementId: this.selectedElementId,
       activeStrokeStyle: activeStroke ? this.cloneStyle(activeStroke.style) : null,
       undoDepth: historyState.undoDepth,
       redoDepth: historyState.redoDepth,
@@ -741,6 +796,7 @@ export class DrawingEditorViewModel {
     this.strokeController.cancelStroke();
     this.clearEraseState();
     this.shapeDraft = null;
+    this.selectedElementId = '';
   }
 
   private schedulePersistCurrentStrokes(reason: string, delayMs: number = SAVE_DEBOUNCE_MS): void {
@@ -898,6 +954,70 @@ export class DrawingEditorViewModel {
       removed,
       added
     };
+  }
+
+  private hitTestElement(point: StrokePoint): CanvasElement | null {
+    const sortedElements = this.elements
+      .map((element: CanvasElement): CanvasElement => element)
+      .sort((left: CanvasElement, right: CanvasElement): number => right.zIndex - left.zIndex);
+
+    for (const element of sortedElements) {
+      if (this.isPointInElement(point, element)) {
+        return element;
+      }
+    }
+
+    return null;
+  }
+
+  private isPointInElement(point: StrokePoint, element: CanvasElement): boolean {
+    if (element.type === 'shape' && element.shapeType === 'line') {
+      return this.isPointNearLineElement(point, element);
+    }
+
+    return this.isPointInElementBounds(point, element);
+  }
+
+  private isPointInElementBounds(point: StrokePoint, element: CanvasElement): boolean {
+    return point.x >= element.x &&
+      point.x <= element.x + element.width &&
+      point.y >= element.y &&
+      point.y <= element.y + element.height;
+  }
+
+  private isPointNearLineElement(point: StrokePoint, element: ShapeCanvasElement): boolean {
+    if (element.geometry.points.length < 2) {
+      return this.isPointInElementBounds(point, element);
+    }
+
+    const startPoint = element.geometry.points[0];
+    const endPoint = element.geometry.points[1];
+    return this.getPointToSegmentDistance(point, startPoint, endPoint) <= ELEMENT_LINE_HIT_TOLERANCE;
+  }
+
+  private getPointToSegmentDistance(
+    point: StrokePoint,
+    startPoint: ShapeGeometryPoint,
+    endPoint: ShapeGeometryPoint
+  ): number {
+    const deltaX = endPoint.x - startPoint.x;
+    const deltaY = endPoint.y - startPoint.y;
+    const segmentLengthSquared = deltaX * deltaX + deltaY * deltaY;
+    if (segmentLengthSquared <= 0) {
+      const pointDeltaX = point.x - startPoint.x;
+      const pointDeltaY = point.y - startPoint.y;
+      return Math.sqrt(pointDeltaX * pointDeltaX + pointDeltaY * pointDeltaY);
+    }
+
+    const projectionRatio = Math.max(
+      0,
+      Math.min(1, ((point.x - startPoint.x) * deltaX + (point.y - startPoint.y) * deltaY) / segmentLengthSquared)
+    );
+    const closestX = startPoint.x + projectionRatio * deltaX;
+    const closestY = startPoint.y + projectionRatio * deltaY;
+    const distanceX = point.x - closestX;
+    const distanceY = point.y - closestY;
+    return Math.sqrt(distanceX * distanceX + distanceY * distanceY);
   }
 
   private buildDrawableStrokeStyle(): StrokeStyle {

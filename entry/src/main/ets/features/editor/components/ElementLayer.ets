@@ -3,6 +3,7 @@ import common from '@ohos.app.ability.common';
 import { CanvasElement, TextCanvasElement } from '../../../domain/entities/CanvasElement';
 import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
+import { ElementSelectionOverlay } from './ElementSelectionOverlay';
 import { ImageElementView } from './ImageElementView';
 import { ShapeElementView } from './ShapeElementView';
 
@@ -14,6 +15,7 @@ export struct ElementLayer {
   @Prop refreshVersion: number = 0;
 
   @State private elements: CanvasElement[] = [];
+  @State private selectedElementId: string = '';
   private viewModel: DrawingEditorViewModel | null = null;
 
   aboutToAppear(): void {
@@ -26,6 +28,12 @@ export struct ElementLayer {
       ForEach(this.elements, (element: CanvasElement) => {
         this.buildElement(element);
       }, (element: CanvasElement): string => `${element.id}_${element.updatedAt}`)
+
+      ForEach(this.elements, (element: CanvasElement) => {
+        if (element.id === this.selectedElementId) {
+          ElementSelectionOverlay({ element: element })
+        }
+      }, (element: CanvasElement): string => `selection_${element.id}_${this.selectedElementId}`)
     }
     .width('100%')
     .height('100%')
@@ -82,6 +90,7 @@ export struct ElementLayer {
   private reloadElements(): void {
     const viewModel = this.getViewModel();
     this.elements = viewModel === null ? [] : viewModel.getElements();
+    this.selectedElementId = viewModel === null ? '' : viewModel.getSelectedElementId();
   }
 
   private getViewModel(): DrawingEditorViewModel | null {
@@ -96,6 +105,7 @@ export struct ElementLayer {
     if (this.pageId.length === 0) {
       this.viewModel = null;
       this.elements = [];
+      this.selectedElementId = '';
       return;
     }
 

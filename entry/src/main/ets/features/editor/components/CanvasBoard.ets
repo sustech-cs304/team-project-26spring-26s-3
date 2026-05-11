@@ -229,6 +229,21 @@ export struct CanvasBoard {
       return;
     }
 
+    if (activeTool === 'select') {
+      if (event.type === TouchType.Down) {
+        const point = this.buildPoint(touch, false);
+        if (point === null) {
+          viewModel.clearElementSelection();
+        } else {
+          viewModel.selectElementAt(point);
+        }
+
+        this.syncEditorSnapshot();
+        this.onContentChanged(false, 'element');
+      }
+      return;
+    }
+
     if (activeTool === 'text') {
       if (event.type === TouchType.Down) {
         const point = this.buildPoint(touch, false);
