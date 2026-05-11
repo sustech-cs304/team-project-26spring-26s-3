@@ -146,10 +146,14 @@ export struct CanvasBoard {
           this.redrawCommittedLayer();
         })
 
-      ElementLayer({
-        pageId: this.pageId,
-        refreshVersion: this.elementVersion
-      })
+      Stack() {
+        ElementLayer({
+          pageId: this.pageId,
+          refreshVersion: this.elementVersion
+        })
+          .width('100%')
+          .height('100%')
+      }
         .width(this.elementLayerPageWidth)
         .height(this.elementLayerPageHeight)
         .position({
@@ -162,6 +166,8 @@ export struct CanvasBoard {
           centerX: 0,
           centerY: 0
         })
+        .clip(true)
+        .hitTestBehavior(HitTestMode.None)
 
       Canvas(this.overlayContext2D)
         .width('100%')
@@ -177,6 +183,7 @@ export struct CanvasBoard {
     }
     .width('100%')
     .height('100%')
+    .clip(true)
   }
 
   private onCanvasVersionChanged(): void {

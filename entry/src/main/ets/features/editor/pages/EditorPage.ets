@@ -632,6 +632,7 @@ struct EditorPage {
         }
         .width('100%')
         .alignItems(VerticalAlign.Center)
+        .zIndex(10)
 
         this.buildWorkspaceSurface()
       }
@@ -695,6 +696,8 @@ struct EditorPage {
     }
     .layoutWeight(1)
     .width('100%')
+    .clip(true)
+    .zIndex(0)
     .onClick(() => {
       this.closeTransientDropdowns();
     })
@@ -967,6 +970,7 @@ struct EditorPage {
       .width('100%')
       .layoutWeight(1)
       .borderRadius(30)
+      .clip(true)
       .border({
         width: 1,
         color: $r('app.color.editor_paper_border')
