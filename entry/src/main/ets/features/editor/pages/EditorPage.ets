@@ -4,7 +4,7 @@ import router from '@ohos.router';
 import { AppRouter, RouterParams } from '../../../app/AppRouter';
 import { Notebook } from '../../../domain/entities/Notebook';
 import { NotebookPage, NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
-import { NotebookPageCanvas } from '../../../domain/entities/NotebookPageCanvas';
+import { NotebookPageCanvas, NotebookPageCanvasEntity } from '../../../domain/entities/NotebookPageCanvas';
 import { ToolSetting, ToolType } from '../../../domain/entities/ToolSetting';
 import { CanvasBoard } from '../components/CanvasBoard';
 import { PageThumbnailPreview } from '../components/PageThumbnailPreview';
@@ -19,10 +19,11 @@ interface PageCanvasRenderSize {
   height: number;
 }
 
+const SIDEBAR_EXPANDED_PADDING = 16;
 const THUMBNAIL_REFRESH_INTERVAL_MS = 320;
 const SIDEBAR_EXPANDED_WIDTH = 232;
 const SIDEBAR_COLLAPSED_WIDTH = 56;
-const PAGE_THUMBNAIL_HEIGHT = 164;
+const PAGE_THUMBNAIL_WIDTH = SIDEBAR_EXPANDED_WIDTH - SIDEBAR_EXPANDED_PADDING * 2;
 const WORKSPACE_MENU_BUTTON_FONT_SIZE = 26;
 const PAGE_TEMPLATE_DROPDOWN_LEFT = 384;
 const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser'];
@@ -61,6 +62,7 @@ struct EditorPage {
   @State private isPagePreviewCollapsed: boolean = false;
   @State private isToolDropdownVisible: boolean = false;
   @State private isPageTemplateDropdownVisible: boolean = false;
+  @State private isCanvasPanModeEnabled: boolean = false;
   private readonly pageCanvasRenderSizeMap: Map<string, PageCanvasRenderSize> = new Map<string, PageCanvasRenderSize>();
   private thumbnailRefreshTimerId: number = -1;
   private lastThumbnailRefreshTime: number = 0;
@@ -80,6 +82,7 @@ struct EditorPage {
     this.currentDrawingPageId = '';
     this.isToolDropdownVisible = false;
     this.isPageTemplateDropdownVisible = false;
+    this.isCanvasPanModeEnabled = false;
   }
 
   build() {
@@ -361,7 +364,7 @@ struct EditorPage {
                 this.buildPageThumbnail(page, index);
               }
               .width('100%')
-              .height(PAGE_THUMBNAIL_HEIGHT)
+              .height(this.getPageThumbnailHeight(page.id))
             }, (page: NotebookPage): string => this.getPageRenderKey(page))
               .onMove((from: number, to: number): void => {
                 this.handlePageListItemMove(from, to);
@@ -376,7 +379,7 @@ struct EditorPage {
     }
     .width(this.isPagePreviewCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH)
     .height('100%')
-    .padding(this.isPagePreviewCollapsed ? 10 : 16)
+    .padding(this.isPagePreviewCollapsed ? 10 : SIDEBAR_EXPANDED_PADDING)
     .backgroundColor($r('app.color.editor_sidebar_background'))
     .borderRadius(28)
     .border({
@@ -444,7 +447,7 @@ struct EditorPage {
       })
     }
     .width('100%')
-    .height(PAGE_THUMBNAIL_HEIGHT)
+    .height(this.getPageThumbnailHeight(page.id))
     .alignItems(HorizontalAlign.Start)
     // .padding(12)
     .backgroundColor(this.getPageThumbnailBackgroundColor(page))
@@ -471,12 +474,12 @@ struct EditorPage {
                     right: 10
                   })
                   .fontSize(12)
-                  .backgroundColor(this.toolSetting.tool === tool ? '#0F172A' : '#FFFFFF')
-                  .fontColor(this.toolSetting.tool === tool ? '#FFFFFF' : '#475569')
+                  .backgroundColor(this.isWorkspaceToolActive(tool) ? '#0F172A' : '#FFFFFF')
+                  .fontColor(this.isWorkspaceToolActive(tool) ? '#FFFFFF' : '#475569')
                   .borderRadius(10)
                   .border({
                     width: 1,
-                    color: this.toolSetting.tool === tool ? '#0F172A' : '#CBD5E1'
+                    color: this.isWorkspaceToolActive(tool) ? '#0F172A' : '#CBD5E1'
                   })
                   .enabled(!this.isCanvasLoading)
                   .onClick(() => {
@@ -484,6 +487,7 @@ struct EditorPage {
                   })
               }, (tool: ToolType): string => tool)
 
+              this.buildCanvasPanToolbarButton()
               this.buildPageTemplateToolbarButton()
             }
             .alignItems(VerticalAlign.Center)
@@ -799,7 +803,7 @@ struct EditorPage {
         Column()
           .width('100%')
           .height('100%')
-          .backgroundColor(this.getActiveCanvasBackgroundColor())
+          .backgroundColor($r('app.color.editor_workspace_background'))
           .borderRadius(30)
 
         CanvasBoard({
@@ -807,8 +811,10 @@ struct EditorPage {
           canvasVersion: this.canvasVersion,
           templateType: this.getActivePageTemplateType(),
           paperBackgroundColor: this.getActiveCanvasBackgroundColor(),
+          pageWidth: this.getActiveCanvasWidth(),
+          pageHeight: this.getActiveCanvasHeight(),
+          isPanModeEnabled: this.isCanvasPanModeEnabled,
           editorSnapshot: $editorSnapshot,
-          paperBackgroundColor: this.getActiveCanvasBackgroundColor(),
           onContentChanged: (immediate: boolean): void => {
             this.requestThumbnailRefresh(immediate);
           },
@@ -887,6 +893,28 @@ struct EditorPage {
     .border({
       width: 1,
       color: $r('app.color.editor_sidebar_border')
+    })
+  }
+
+  @Builder
+  private buildCanvasPanToolbarButton(): void {
+    Button('Pan')
+    .height(32)
+    .padding({
+      left: 10,
+      right: 10
+    })
+    .fontSize(12)
+    .backgroundColor(this.isCanvasPanModeEnabled ? '#0F172A' : '#FFFFFF')
+    .fontColor(this.isCanvasPanModeEnabled ? '#FFFFFF' : '#475569')
+    .borderRadius(10)
+    .border({
+      width: 1,
+      color: this.isCanvasPanModeEnabled ? '#0F172A' : '#CBD5E1'
+    })
+    .enabled(!this.isCanvasLoading)
+    .onClick(() => {
+      this.toggleCanvasPanMode();
     })
   }
 
@@ -1173,6 +1201,7 @@ struct EditorPage {
     this.isUpdatingPageTemplate = false;
     this.pageActionMenuPageId = '';
     this.isPageTemplateDropdownVisible = false;
+    this.isCanvasPanModeEnabled = false;
     this.resetDeletePageDialogState();
     this.resetDrawingState('');
   }
@@ -1356,6 +1385,9 @@ struct EditorPage {
       }
 
       this.activePageCanvas = notebookPageCanvas;
+      if (notebookPageCanvas !== null) {
+        this.updatePageCanvasRenderSize(targetPageId, notebookPageCanvas.width, notebookPageCanvas.height);
+      }
       await this.loadDrawingSession(targetPageId);
     } catch (_error) {
       if (this.activePageId === targetPageId) {
@@ -1483,15 +1515,13 @@ struct EditorPage {
       return;
     }
 
+    const normalizedSize: PageCanvasRenderSize = this.normalizeCanvasRenderSize(width, height);
     const cachedSize = this.pageCanvasRenderSizeMap.get(pageId);
-    if (cachedSize !== undefined && cachedSize.width === width && cachedSize.height === height) {
+    if (cachedSize !== undefined && cachedSize.width === normalizedSize.width && cachedSize.height === normalizedSize.height) {
       return;
     }
 
-    this.pageCanvasRenderSizeMap.set(pageId, {
-      width,
-      height
-    });
+    this.pageCanvasRenderSizeMap.set(pageId, normalizedSize);
     this.requestThumbnailRefresh(true);
   }
 
@@ -1505,12 +1535,26 @@ struct EditorPage {
 
   private getThumbnailCanvasWidth(pageId: string): number {
     const cachedSize = this.pageCanvasRenderSizeMap.get(pageId);
-    return cachedSize === undefined ? 0 : cachedSize.width;
+    if (cachedSize !== undefined) {
+      return cachedSize.width;
+    }
+
+    return this.getActiveCanvasWidth();
   }
 
   private getThumbnailCanvasHeight(pageId: string): number {
     const cachedSize = this.pageCanvasRenderSizeMap.get(pageId);
-    return cachedSize === undefined ? 0 : cachedSize.height;
+    if (cachedSize !== undefined) {
+      return cachedSize.height;
+    }
+
+    return this.getActiveCanvasHeight();
+  }
+
+  private getPageThumbnailHeight(pageId: string): number {
+    const canvasWidth: number = this.getThumbnailCanvasWidth(pageId);
+    const canvasHeight: number = this.getThumbnailCanvasHeight(pageId);
+    return Math.round(PAGE_THUMBNAIL_WIDTH * canvasHeight / Math.max(1, canvasWidth));
   }
 
   private async handleUndo(): Promise<void> {
@@ -1545,6 +1589,7 @@ struct EditorPage {
 
   private handleWorkspaceToolButtonClick(tool: ToolType): void {
     const isCurrentTool = this.toolSetting.tool === tool;
+    this.isCanvasPanModeEnabled = false;
     this.handleWorkspaceToolChange(tool);
     this.closePageActionMenu();
     this.closePageTemplateDropdown();
@@ -1555,6 +1600,21 @@ struct EditorPage {
     }
 
     this.isToolDropdownVisible = true;
+  }
+
+  private toggleCanvasPanMode(): void {
+    if (this.isCanvasLoading) {
+      return;
+    }
+
+    this.closeToolDropdown();
+    this.closePageActionMenu();
+    this.closePageTemplateDropdown();
+    this.isCanvasPanModeEnabled = !this.isCanvasPanModeEnabled;
+  }
+
+  private isWorkspaceToolActive(tool: ToolType): boolean {
+    return !this.isCanvasPanModeEnabled && this.toolSetting.tool === tool;
   }
 
   private handleWorkspaceToolChange(tool: ToolType): void {
@@ -2048,6 +2108,45 @@ struct EditorPage {
       return '#FFFFFF';
     }
     return this.activePageCanvas.backgroundColor;
+  }
+
+  private getActiveCanvasWidth(): number {
+    if (this.activePageCanvas === null) {
+      return NotebookPageCanvasEntity.DEFAULT_WIDTH;
+    }
+
+    return this.normalizeCanvasRenderSize(this.activePageCanvas.width, this.activePageCanvas.height).width;
+  }
+
+  private getActiveCanvasHeight(): number {
+    if (this.activePageCanvas === null) {
+      return NotebookPageCanvasEntity.DEFAULT_HEIGHT;
+    }
+
+    return this.normalizeCanvasRenderSize(this.activePageCanvas.width, this.activePageCanvas.height).height;
+  }
+
+  private normalizeCanvasRenderSize(width: number, height: number): PageCanvasRenderSize {
+    const normalizedWidth = NotebookPageCanvasEntity.normalizeDimension(
+      width,
+      NotebookPageCanvasEntity.DEFAULT_WIDTH
+    );
+    const normalizedHeight = NotebookPageCanvasEntity.normalizeDimension(
+      height,
+      NotebookPageCanvasEntity.DEFAULT_HEIGHT
+    );
+
+    if (normalizedWidth >= normalizedHeight) {
+      return {
+        width: normalizedWidth,
+        height: normalizedHeight
+      };
+    }
+
+    return {
+      width: normalizedHeight,
+      height: normalizedWidth
+    };
   }
 
   private getCanvasText(): string {

@@ -9,8 +9,8 @@ export interface NotebookPageCanvas {
 }
 
 export class NotebookPageCanvasEntity {
-  static readonly DEFAULT_WIDTH: number = 1600;
-  static readonly DEFAULT_HEIGHT: number = 2200;
+  static readonly DEFAULT_WIDTH: number = 2200;
+  static readonly DEFAULT_HEIGHT: number = 1600;
   static readonly DEFAULT_BACKGROUND_COLOR: string = '#FFFFFF';
 
   static normalizeDimension(value: number, fallbackValue: number): number {
