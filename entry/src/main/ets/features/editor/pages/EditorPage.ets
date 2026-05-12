@@ -29,7 +29,7 @@ const SIDEBAR_COLLAPSED_WIDTH = 56;
 const PAGE_THUMBNAIL_WIDTH = SIDEBAR_EXPANDED_WIDTH - SIDEBAR_EXPANDED_PADDING * 2;
 const WORKSPACE_MENU_BUTTON_FONT_SIZE = 26;
 const PAGE_TEMPLATE_DROPDOWN_LEFT = 384;
-const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser', 'text', 'shape', 'select'];
+const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser', 'text', 'shape', 'edit'];
 const SHAPE_TOOL_OPTIONS: ShapeType[] = ['rectangle', 'circle', 'line'];
 const PAGE_TEMPLATE_OPTIONS: NotebookPageTemplateType[] = [
   NotebookPageTemplateType.BLANK,
@@ -958,7 +958,9 @@ struct EditorPage {
               this.refreshElementLayer();
             }
             this.restoreWritingToolAfterOneShotElementInsertion();
-            this.requestThumbnailRefresh(immediate);
+            if (immediate || kind === 'stroke') {
+              this.requestThumbnailRefresh(immediate);
+            }
           },
           onCanvasMetricsChanged: (width: number, height: number): void => {
             this.updatePageCanvasRenderSize(this.activePageId, width, height);
@@ -1821,7 +1823,7 @@ struct EditorPage {
       return;
     }
 
-    if (tool === 'select') {
+    if (tool === 'edit') {
       this.handleWorkspaceToolChange(tool);
       this.closeTransientDropdowns();
       return;
@@ -1926,8 +1928,8 @@ struct EditorPage {
         return 'Text';
       case 'shape':
         return 'Shape';
-      case 'select':
-        return 'Select';
+      case 'edit':
+        return 'Edit';
       default:
         return tool;
     }

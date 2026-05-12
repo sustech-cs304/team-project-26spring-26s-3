@@ -33,7 +33,7 @@ export struct ElementLayer {
         if (element.id === this.selectedElementId) {
           ElementSelectionOverlay({ element: element })
         }
-      }, (element: CanvasElement): string => `selection_${element.id}_${this.selectedElementId}`)
+      }, (element: CanvasElement): string => this.getSelectionRenderKey(element))
     }
     .width('100%')
     .height('100%')
@@ -76,6 +76,10 @@ export struct ElementLayer {
 
   private getDisplayText(element: TextCanvasElement): string {
     return element.content.length === 0 ? 'Text' : element.content;
+  }
+
+  private getSelectionRenderKey(element: CanvasElement): string {
+    return `selection_${element.id}_${this.selectedElementId}_${element.updatedAt}_${element.x}_${element.y}_${element.width}_${element.height}`;
   }
 
   private onPageIdChanged(): void {

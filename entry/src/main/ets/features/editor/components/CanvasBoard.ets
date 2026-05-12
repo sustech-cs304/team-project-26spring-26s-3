@@ -229,15 +229,50 @@ export struct CanvasBoard {
       return;
     }
 
-    if (activeTool === 'select') {
+    if (activeTool === 'edit') {
+      const point = this.buildPoint(touch, event.type !== TouchType.Down);
+      const pageBounds = this.getPageBounds();
+      const hitTolerance = this.getEditHitToleranceInPage();
+
       if (event.type === TouchType.Down) {
-        const point = this.buildPoint(touch, false);
         if (point === null) {
           viewModel.clearElementSelection();
         } else {
-          viewModel.selectElementAt(point);
+          if (viewModel.isSelectedElementDeleteHit(point, hitTolerance)) {
+            viewModel.deleteSelectedElement();
+            this.syncEditorSnapshot();
+            this.onContentChanged(true, 'element');
+            return;
+          }
+
+          viewModel.beginElementEditGesture(point, pageBounds, hitTolerance);
         }
 
+        this.syncEditorSnapshot();
+        this.onContentChanged(false, 'element');
+        return;
+      }
+
+      if (event.type === TouchType.Move) {
+        if (point !== null && viewModel.updateElementEditGesture(point, pageBounds)) {
+          this.syncEditorSnapshot();
+          this.onContentChanged(false, 'element');
+        }
+        return;
+      }
+
+      if (event.type === TouchType.Up) {
+        if (point !== null) {
+          viewModel.updateElementEditGesture(point, pageBounds);
+        }
+        const editedElement = viewModel.finishElementEditGesture(pageBounds);
+        this.syncEditorSnapshot();
+        this.onContentChanged(editedElement !== null, 'element');
+        return;
+      }
+
+      if (event.type === TouchType.Cancel) {
+        viewModel.cancelElementEditGesture();
         this.syncEditorSnapshot();
         this.onContentChanged(false, 'element');
       }
@@ -623,6 +658,19 @@ export struct CanvasBoard {
 
   private notifyCanvasMetricsChanged(): void {
     this.onCanvasMetricsChanged(this.getPageWidth(), this.getPageHeight());
+  }
+
+  private getPageBounds(): CanvasSize {
+    return {
+      width: this.getPageWidth(),
+      height: this.getPageHeight()
+    };
+  }
+
+  private getEditHitToleranceInPage(): number {
+    const size = this.getCanvasSize(this.overlayContext2D);
+    const transform = this.getPageViewportTransform(size);
+    return Math.max(3, 10 / Math.max(0.01, transform.scale));
   }
 
   private syncElementLayerTransform(transform: PageViewportTransform): void {

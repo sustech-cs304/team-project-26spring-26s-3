@@ -63,6 +63,22 @@ interface ShapeDraft {
   currentPoint: StrokePoint;
 }
 
+type ElementEditGestureKind =
+  'move' |
+  'resizeTopLeft' |
+  'resizeTopRight' |
+  'resizeBottomLeft' |
+  'resizeBottomRight' |
+  'lineStart' |
+  'lineEnd';
+
+interface ElementEditGesture {
+  elementId: string;
+  kind: ElementEditGestureKind;
+  startPoint: StrokePoint;
+  originalElement: CanvasElement;
+}
+
 export interface ImageInsertAsset {
   uri: string;
   originalWidth: number;
@@ -72,13 +88,19 @@ export interface ImageInsertAsset {
 const MAX_DEBUG_EVENTS = 20;
 const SAVE_DEBOUNCE_MS = 900;
 const EDITOR_BUILD_MARKER = 'editor-build-2026-04-20-state-link-sync-v1';
-const DEFAULT_TEXT_ELEMENT_WIDTH = 220;
-const DEFAULT_TEXT_ELEMENT_HEIGHT = 88;
 const DEFAULT_TEXT_ELEMENT_TOP_OFFSET = 24;
 const DEFAULT_SHAPE_STROKE_COLOR = '#111827';
 const DEFAULT_SHAPE_STROKE_WIDTH = 2;
 const MIN_SHAPE_DRAG_DISTANCE = 8;
 const ELEMENT_LINE_HIT_TOLERANCE = 8;
+const MIN_TEXT_FONT_SIZE = 8;
+const MAX_TEXT_FONT_SIZE = 96;
+const TEXT_ELEMENT_HORIZONTAL_PADDING = 16;
+const TEXT_ELEMENT_VERTICAL_PADDING = 12;
+const TEXT_ELEMENT_WIDTH_FACTOR = 0.58;
+const TEXT_ELEMENT_LINE_HEIGHT_FACTOR = 1.35;
+const MIN_IMAGE_ELEMENT_SIZE = 24;
+const MIN_SHAPE_ELEMENT_SIZE = 8;
 const MAX_IMAGE_INSERT_WIDTH = 420;
 const MAX_IMAGE_INSERT_HEIGHT = 320;
 const IMAGE_CANVAS_FILL_RATIO = 0.6;
@@ -115,6 +137,7 @@ export class DrawingEditorViewModel {
   private lastRenderInvalidation: RenderInvalidation | null = null;
   private shapeDraft: ShapeDraft | null = null;
   private selectedElementId: string = '';
+  private elementEditGesture: ElementEditGesture | null = null;
   private readonly instanceId: number = nextEditorViewModelInstanceId++;
 
   constructor(private readonly contextProvider: () => common.Context) {}
@@ -313,7 +336,7 @@ export class DrawingEditorViewModel {
       this.cancelStroke();
     }
     this.cancelShapeDraft();
-    if (nextSetting.tool !== 'select') {
+    if (nextSetting.tool !== 'edit') {
       this.clearElementSelection();
     }
 
@@ -393,7 +416,132 @@ export class DrawingEditorViewModel {
     if (this.selectedElementId.length > 0) {
       this.appendDebugEvent('clearElementSelection', `element=${this.selectedElementId}`);
     }
+    this.elementEditGesture = null;
     this.selectedElementId = '';
+  }
+
+  hasSelectedElement(): boolean {
+    return this.selectedElementId.length > 0 &&
+      this.elements.some((element: CanvasElement): boolean => element.id === this.selectedElementId);
+  }
+
+  isSelectedElementDeleteHit(point: StrokePoint, hitTolerance: number): boolean {
+    const selectedElement = this.getElementById(this.selectedElementId);
+    if (selectedElement === null) {
+      return false;
+    }
+
+    const center = this.getDeleteButtonCenter(selectedElement);
+    const radius = Math.max(12, hitTolerance);
+    const deltaX = point.x - center.x;
+    const deltaY = point.y - center.y;
+    return Math.sqrt(deltaX * deltaX + deltaY * deltaY) <= radius;
+  }
+
+  deleteSelectedElement(): CanvasElement | null {
+    const selectedElement = this.getElementById(this.selectedElementId);
+    if (selectedElement === null) {
+      this.clearElementSelection();
+      return null;
+    }
+
+    this.elements = this.elements.filter((element: CanvasElement): boolean => element.id !== selectedElement.id);
+    this.selectedElementId = '';
+    this.elementEditGesture = null;
+    this.changeSequence += 1;
+    this.persistenceStatus = 'pending element delete save';
+    this.schedulePersistCurrentStrokes('elementDelete', 0);
+    this.errorMessage = '';
+    this.appendDebugEvent('deleteElement', `element=${selectedElement.id} type=${selectedElement.type}`);
+    return this.cloneElement(selectedElement);
+  }
+
+  beginElementEditGesture(point: StrokePoint, bounds: ElementBounds, hitTolerance: number): boolean {
+    if (this.pageId.length === 0) {
+      return false;
+    }
+
+    this.cancelStroke();
+    this.cancelShapeDraft();
+
+    const selectedElement = this.getElementById(this.selectedElementId);
+    if (selectedElement !== null) {
+      const handleKind = this.hitTestElementEditHandle(point, selectedElement, hitTolerance);
+      if (handleKind !== null) {
+        this.elementEditGesture = {
+          elementId: selectedElement.id,
+          kind: handleKind,
+          startPoint: this.clonePoint(point),
+          originalElement: this.cloneElement(selectedElement)
+        };
+        this.appendDebugEvent('beginElementEdit', `element=${selectedElement.id} kind=${handleKind}`);
+        return true;
+      }
+    }
+
+    const hitElement = this.hitTestElement(point);
+    if (hitElement === null) {
+      this.clearElementSelection();
+      this.appendDebugEvent('beginElementEdit', `empty x=${Math.round(point.x)} y=${Math.round(point.y)}`);
+      return false;
+    }
+
+    this.selectedElementId = hitElement.id;
+    this.elementEditGesture = {
+      elementId: hitElement.id,
+      kind: 'move',
+      startPoint: this.clonePoint(point),
+      originalElement: this.cloneElement(hitElement)
+    };
+    this.appendDebugEvent('beginElementEdit', `element=${hitElement.id} kind=move`);
+    return true;
+  }
+
+  updateElementEditGesture(point: StrokePoint, bounds: ElementBounds): boolean {
+    if (this.elementEditGesture === null) {
+      return false;
+    }
+
+    const nextElement = this.buildElementFromEditGesture(this.elementEditGesture, point, bounds);
+    if (nextElement === null) {
+      return false;
+    }
+
+    this.replaceElementInMemory(nextElement);
+    return true;
+  }
+
+  finishElementEditGesture(bounds: ElementBounds): CanvasElement | null {
+    if (this.elementEditGesture === null) {
+      return null;
+    }
+
+    const gesture = this.elementEditGesture;
+    this.elementEditGesture = null;
+    const editedElement = this.getElementById(gesture.elementId);
+    if (editedElement === null || this.areElementsEquivalent(gesture.originalElement, editedElement)) {
+      return null;
+    }
+
+    this.selectedElementId = editedElement.id;
+    this.changeSequence += 1;
+    this.persistenceStatus = 'pending element edit save';
+    this.schedulePersistCurrentStrokes('elementEdit', 0);
+    this.errorMessage = '';
+    this.appendDebugEvent('finishElementEdit', `element=${editedElement.id} kind=${gesture.kind}`);
+    return this.cloneElement(editedElement);
+  }
+
+  cancelElementEditGesture(): void {
+    if (this.elementEditGesture === null) {
+      return;
+    }
+
+    const originalElement = this.cloneElement(this.elementEditGesture.originalElement);
+    this.replaceElementInMemory(originalElement);
+    this.selectedElementId = originalElement.id;
+    this.appendDebugEvent('cancelElementEdit', `element=${originalElement.id}`);
+    this.elementEditGesture = null;
   }
 
   insertTextElement(point: StrokePoint, bounds: ElementBounds): TextCanvasElement | null {
@@ -404,11 +552,13 @@ export class DrawingEditorViewModel {
 
     this.cancelStroke();
     const timestamp = now();
+    const fontSize = 18;
+    const textSize = this.calculateTextElementSize('Text', fontSize);
     const frame: ElementFrame = clampElementFrameToBounds({
-      x: point.x - DEFAULT_TEXT_ELEMENT_WIDTH / 2,
+      x: point.x - textSize.width / 2,
       y: point.y - DEFAULT_TEXT_ELEMENT_TOP_OFFSET,
-      width: DEFAULT_TEXT_ELEMENT_WIDTH,
-      height: DEFAULT_TEXT_ELEMENT_HEIGHT
+      width: textSize.width,
+      height: textSize.height
     }, bounds);
     const nextElement: TextCanvasElement = {
       id: createId('text'),
@@ -424,7 +574,7 @@ export class DrawingEditorViewModel {
       updatedAt: timestamp,
       content: 'Text',
       color: this.toolSetting.color,
-      fontSize: 18,
+      fontSize,
       backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR
     };
 
@@ -626,14 +776,24 @@ export class DrawingEditorViewModel {
       }
 
       changed = true;
+      const textSize = this.calculateTextElementSize(content, element.fontSize);
+      const frame = clampElementFrameToBounds({
+        x: element.x,
+        y: element.y,
+        width: textSize.width,
+        height: textSize.height
+      }, {
+        width: Math.max(element.x + textSize.width, element.x + element.width),
+        height: Math.max(element.y + textSize.height, element.y + element.height)
+      });
       return {
         id: element.id,
         pageId: element.pageId,
         type: 'text',
-        x: element.x,
-        y: element.y,
-        width: element.width,
-        height: element.height,
+        x: frame.x,
+        y: frame.y,
+        width: frame.width,
+        height: frame.height,
         rotation: element.rotation,
         zIndex: element.zIndex,
         createdAt: element.createdAt,
@@ -1018,6 +1178,398 @@ export class DrawingEditorViewModel {
     const distanceX = point.x - closestX;
     const distanceY = point.y - closestY;
     return Math.sqrt(distanceX * distanceX + distanceY * distanceY);
+  }
+
+  private hitTestElementEditHandle(
+    point: StrokePoint,
+    element: CanvasElement,
+    hitTolerance: number
+  ): ElementEditGestureKind | null {
+    if (element.type === 'shape' && element.shapeType === 'line' && element.geometry.points.length >= 2) {
+      if (this.isPointNearGeometryPoint(point, element.geometry.points[0], hitTolerance)) {
+        return 'lineStart';
+      }
+
+      if (this.isPointNearGeometryPoint(point, element.geometry.points[1], hitTolerance)) {
+        return 'lineEnd';
+      }
+
+      return null;
+    }
+
+    const handles: Array<{ kind: ElementEditGestureKind; point: ShapeGeometryPoint }> = [
+      {
+        kind: 'resizeTopLeft',
+        point: { x: element.x, y: element.y }
+      },
+      {
+        kind: 'resizeTopRight',
+        point: { x: element.x + element.width, y: element.y }
+      },
+      {
+        kind: 'resizeBottomLeft',
+        point: { x: element.x, y: element.y + element.height }
+      },
+      {
+        kind: 'resizeBottomRight',
+        point: { x: element.x + element.width, y: element.y + element.height }
+      }
+    ];
+
+    for (const handle of handles) {
+      if (this.isPointNearGeometryPoint(point, handle.point, hitTolerance)) {
+        return handle.kind;
+      }
+    }
+
+    return null;
+  }
+
+  private isPointNearGeometryPoint(point: StrokePoint, targetPoint: ShapeGeometryPoint, tolerance: number): boolean {
+    const deltaX = point.x - targetPoint.x;
+    const deltaY = point.y - targetPoint.y;
+    return Math.sqrt(deltaX * deltaX + deltaY * deltaY) <= Math.max(1, tolerance);
+  }
+
+  private buildElementFromEditGesture(
+    gesture: ElementEditGesture,
+    point: StrokePoint,
+    bounds: ElementBounds
+  ): CanvasElement | null {
+    switch (gesture.kind) {
+      case 'move':
+        return this.buildMovedElement(gesture.originalElement, point, gesture.startPoint, bounds);
+      case 'lineStart':
+      case 'lineEnd':
+        return this.buildLineEndpointEditedElement(gesture, point, bounds);
+      case 'resizeTopLeft':
+      case 'resizeTopRight':
+      case 'resizeBottomLeft':
+      case 'resizeBottomRight':
+        return this.buildResizedElement(gesture, point, bounds);
+      default:
+        return null;
+    }
+  }
+
+  private buildMovedElement(
+    originalElement: CanvasElement,
+    point: StrokePoint,
+    startPoint: StrokePoint,
+    bounds: ElementBounds
+  ): CanvasElement {
+    const deltaX = point.x - startPoint.x;
+    const deltaY = point.y - startPoint.y;
+    if (originalElement.type === 'shape' && originalElement.shapeType === 'line') {
+      return this.buildMovedLineElement(originalElement, deltaX, deltaY, bounds);
+    }
+
+    const frame = clampElementFrameToBounds({
+      x: originalElement.x + deltaX,
+      y: originalElement.y + deltaY,
+      width: originalElement.width,
+      height: originalElement.height
+    }, bounds);
+    return this.cloneElementWithFrame(originalElement, frame);
+  }
+
+  private buildMovedLineElement(
+    originalElement: ShapeCanvasElement,
+    deltaX: number,
+    deltaY: number,
+    bounds: ElementBounds
+  ): ShapeCanvasElement {
+    if (originalElement.geometry.points.length < 2) {
+      return this.cloneShapeElement(originalElement);
+    }
+
+    const startPoint = originalElement.geometry.points[0];
+    const endPoint = originalElement.geometry.points[1];
+    const minX = Math.min(startPoint.x, endPoint.x);
+    const minY = Math.min(startPoint.y, endPoint.y);
+    const maxX = Math.max(startPoint.x, endPoint.x);
+    const maxY = Math.max(startPoint.y, endPoint.y);
+    const safeDeltaX = this.clampNumber(deltaX, -minX, Math.max(0, bounds.width) - maxX);
+    const safeDeltaY = this.clampNumber(deltaY, -minY, Math.max(0, bounds.height) - maxY);
+    return this.buildLineElementFromPoints(
+      originalElement,
+      { x: startPoint.x + safeDeltaX, y: startPoint.y + safeDeltaY },
+      { x: endPoint.x + safeDeltaX, y: endPoint.y + safeDeltaY }
+    );
+  }
+
+  private buildLineEndpointEditedElement(
+    gesture: ElementEditGesture,
+    point: StrokePoint,
+    bounds: ElementBounds
+  ): ShapeCanvasElement | null {
+    if (gesture.originalElement.type !== 'shape' ||
+      gesture.originalElement.shapeType !== 'line' ||
+      gesture.originalElement.geometry.points.length < 2) {
+      return null;
+    }
+
+    const clampedPoint = this.clampPointToBounds(point, bounds);
+    const startPoint = gesture.originalElement.geometry.points[0];
+    const endPoint = gesture.originalElement.geometry.points[1];
+    return this.buildLineElementFromPoints(
+      gesture.originalElement,
+      gesture.kind === 'lineStart' ? clampedPoint : startPoint,
+      gesture.kind === 'lineEnd' ? clampedPoint : endPoint
+    );
+  }
+
+  private buildLineElementFromPoints(
+    originalElement: ShapeCanvasElement,
+    startPoint: ShapeGeometryPoint,
+    endPoint: ShapeGeometryPoint
+  ): ShapeCanvasElement {
+    const frame = this.buildShapeFrameFromPoints(originalElement.shapeType, {
+      x: startPoint.x,
+      y: startPoint.y,
+      t: 0
+    }, {
+      x: endPoint.x,
+      y: endPoint.y,
+      t: 0
+    });
+    return {
+      ...this.cloneShapeElement(originalElement),
+      x: frame.x,
+      y: frame.y,
+      width: frame.width,
+      height: frame.height,
+      geometry: {
+        kind: 'line',
+        points: [
+          { x: startPoint.x, y: startPoint.y },
+          { x: endPoint.x, y: endPoint.y }
+        ]
+      },
+      updatedAt: now()
+    };
+  }
+
+  private buildResizedElement(
+    gesture: ElementEditGesture,
+    point: StrokePoint,
+    bounds: ElementBounds
+  ): CanvasElement | null {
+    if (gesture.originalElement.type === 'shape' && gesture.originalElement.shapeType === 'line') {
+      return null;
+    }
+
+    const targetFrame = this.buildResizeFrame(gesture.originalElement, gesture.kind, point, bounds);
+    if (gesture.originalElement.type === 'text') {
+      return this.buildResizedTextElement(gesture.originalElement, gesture.kind, targetFrame, bounds);
+    }
+
+    const minSize = gesture.originalElement.type === 'image' ? MIN_IMAGE_ELEMENT_SIZE : MIN_SHAPE_ELEMENT_SIZE;
+    const frame = this.clampFrameWithMinimumSize(targetFrame, bounds, minSize, minSize);
+    return this.cloneElementWithFrame(gesture.originalElement, frame);
+  }
+
+  private buildResizeFrame(
+    originalElement: CanvasElement,
+    kind: ElementEditGestureKind,
+    point: StrokePoint,
+    bounds: ElementBounds
+  ): ElementFrame {
+    const minX = 0;
+    const minY = 0;
+    const maxX = Math.max(0, bounds.width);
+    const maxY = Math.max(0, bounds.height);
+    const clampedX = this.clampNumber(point.x, minX, maxX);
+    const clampedY = this.clampNumber(point.y, minY, maxY);
+    const left = originalElement.x;
+    const top = originalElement.y;
+    const right = originalElement.x + originalElement.width;
+    const bottom = originalElement.y + originalElement.height;
+
+    switch (kind) {
+      case 'resizeTopLeft':
+        return this.normalizeFrame(clampedX, clampedY, right, bottom);
+      case 'resizeTopRight':
+        return this.normalizeFrame(left, clampedY, clampedX, bottom);
+      case 'resizeBottomLeft':
+        return this.normalizeFrame(clampedX, top, right, clampedY);
+      case 'resizeBottomRight':
+      default:
+        return this.normalizeFrame(left, top, clampedX, clampedY);
+    }
+  }
+
+  private buildResizedTextElement(
+    originalElement: TextCanvasElement,
+    kind: ElementEditGestureKind,
+    targetFrame: ElementFrame,
+    bounds: ElementBounds
+  ): TextCanvasElement {
+    const nextFontSize = this.calculateFontSizeForTextTarget(originalElement.content, targetFrame);
+    const textSize = this.calculateTextElementSize(originalElement.content, nextFontSize);
+    const anchoredFrame = this.buildAnchoredTextFrame(originalElement, kind, textSize, bounds);
+    return {
+      ...this.cloneTextElement(originalElement),
+      x: anchoredFrame.x,
+      y: anchoredFrame.y,
+      width: anchoredFrame.width,
+      height: anchoredFrame.height,
+      fontSize: nextFontSize,
+      updatedAt: now()
+    };
+  }
+
+  private calculateFontSizeForTextTarget(content: string, targetFrame: ElementFrame): number {
+    const lines = this.getTextLines(content);
+    const longestLineLength = Math.max(1, ...lines.map((line: string): number => line.length));
+    const lineCount = Math.max(1, lines.length);
+    const widthFontSize = (Math.max(1, targetFrame.width) - TEXT_ELEMENT_HORIZONTAL_PADDING) /
+      (longestLineLength * TEXT_ELEMENT_WIDTH_FACTOR);
+    const heightFontSize = (Math.max(1, targetFrame.height) - TEXT_ELEMENT_VERTICAL_PADDING) /
+      (lineCount * TEXT_ELEMENT_LINE_HEIGHT_FACTOR);
+    const nextFontSize = Math.min(widthFontSize, heightFontSize);
+    return this.clampNumber(nextFontSize, MIN_TEXT_FONT_SIZE, MAX_TEXT_FONT_SIZE);
+  }
+
+  private buildAnchoredTextFrame(
+    originalElement: TextCanvasElement,
+    kind: ElementEditGestureKind,
+    textSize: ElementBounds,
+    bounds: ElementBounds
+  ): ElementFrame {
+    let x = originalElement.x;
+    let y = originalElement.y;
+    if (kind === 'resizeTopLeft' || kind === 'resizeBottomLeft') {
+      x = originalElement.x + originalElement.width - textSize.width;
+    }
+    if (kind === 'resizeTopLeft' || kind === 'resizeTopRight') {
+      y = originalElement.y + originalElement.height - textSize.height;
+    }
+
+    return clampElementFrameToBounds({
+      x,
+      y,
+      width: textSize.width,
+      height: textSize.height
+    }, bounds);
+  }
+
+  private calculateTextElementSize(content: string, fontSize: number): ElementBounds {
+    const lines = this.getTextLines(content);
+    const longestLineLength = Math.max(1, ...lines.map((line: string): number => line.length));
+    return {
+      width: Math.max(1, Math.ceil(longestLineLength * fontSize * TEXT_ELEMENT_WIDTH_FACTOR +
+        TEXT_ELEMENT_HORIZONTAL_PADDING)),
+      height: Math.max(1, Math.ceil(lines.length * fontSize * TEXT_ELEMENT_LINE_HEIGHT_FACTOR +
+        TEXT_ELEMENT_VERTICAL_PADDING))
+    };
+  }
+
+  private getTextLines(content: string): string[] {
+    const normalizedContent = content.length === 0 ? 'Text' : content;
+    return normalizedContent.split('\n').map((line: string): string => line.length === 0 ? ' ' : line);
+  }
+
+  private normalizeFrame(left: number, top: number, right: number, bottom: number): ElementFrame {
+    const x = Math.min(left, right);
+    const y = Math.min(top, bottom);
+    return {
+      x,
+      y,
+      width: Math.abs(right - left),
+      height: Math.abs(bottom - top)
+    };
+  }
+
+  private clampFrameWithMinimumSize(
+    frame: ElementFrame,
+    bounds: ElementBounds,
+    minWidth: number,
+    minHeight: number
+  ): ElementFrame {
+    const width = Math.max(minWidth, frame.width);
+    const height = Math.max(minHeight, frame.height);
+    return clampElementFrameToBounds({
+      x: frame.x,
+      y: frame.y,
+      width,
+      height
+    }, bounds);
+  }
+
+  private cloneElementWithFrame(element: CanvasElement, frame: ElementFrame): CanvasElement {
+    if (element.type === 'text') {
+      return {
+        ...this.cloneTextElement(element),
+        x: frame.x,
+        y: frame.y,
+        width: frame.width,
+        height: frame.height,
+        updatedAt: now()
+      };
+    }
+
+    if (element.type === 'image') {
+      return {
+        ...this.cloneImageElement(element),
+        x: frame.x,
+        y: frame.y,
+        width: frame.width,
+        height: frame.height,
+        updatedAt: now()
+      };
+    }
+
+    const nextElement = {
+      ...this.cloneShapeElement(element),
+      x: frame.x,
+      y: frame.y,
+      width: frame.width,
+      height: frame.height,
+      updatedAt: now()
+    };
+    if (nextElement.shapeType === 'rectangle' || nextElement.shapeType === 'circle') {
+      nextElement.geometry = {
+        kind: nextElement.shapeType === 'circle' ? 'ellipse' : 'rect',
+        points: [
+          { x: frame.x, y: frame.y },
+          { x: frame.x + frame.width, y: frame.y + frame.height }
+        ]
+      };
+    }
+
+    return nextElement;
+  }
+
+  private replaceElementInMemory(nextElement: CanvasElement): void {
+    this.elements = this.elements.map((element: CanvasElement): CanvasElement => {
+      return element.id === nextElement.id ? this.cloneElement(nextElement) : element;
+    });
+  }
+
+  private getElementById(elementId: string): CanvasElement | null {
+    const element = this.elements.find((candidate: CanvasElement): boolean => candidate.id === elementId);
+    return element === undefined ? null : element;
+  }
+
+  private getDeleteButtonCenter(element: CanvasElement): ShapeGeometryPoint {
+    if (element.type === 'shape' && element.shapeType === 'line' && element.geometry.points.length >= 2) {
+      const startPoint = element.geometry.points[0];
+      const endPoint = element.geometry.points[1];
+      return {
+        x: Math.max(startPoint.x, endPoint.x) - 8,
+        y: Math.min(startPoint.y, endPoint.y) + 8
+      };
+    }
+
+    return {
+      x: element.x + Math.max(12, element.width - 18),
+      y: element.y + 18
+    };
+  }
+
+  private areElementsEquivalent(left: CanvasElement, right: CanvasElement): boolean {
+    return JSON.stringify(left) === JSON.stringify(right);
   }
 
   private buildDrawableStrokeStyle(): StrokeStyle {
