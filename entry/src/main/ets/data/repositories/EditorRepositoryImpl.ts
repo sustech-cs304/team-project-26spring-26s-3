@@ -3,6 +3,19 @@ import preferences from '@ohos.data.preferences';
 import fileIo from '@ohos.file.fs';
 
 import { NotebookRepositoryImpl } from './NotebookRepositoryImpl';
+import {
+  CanvasElement,
+  ImageCanvasElement,
+  isShapeGeometryKind,
+  isShapeType,
+  PAGE_CANVAS_CONTENT_VERSION,
+  PageCanvasContent,
+  ShapeCanvasElement,
+  ShapeGeometry,
+  ShapeGeometryPoint,
+  TextCanvasElement,
+  TRANSPARENT_ELEMENT_BACKGROUND_COLOR
+} from '../../domain/entities/CanvasElement';
 import { Stroke, StrokePoint, StrokeStyle } from '../../domain/entities/Stroke';
 import { DrawableToolType, isDrawableToolType } from '../../domain/entities/ToolSetting';
 import { EditorRepository } from '../../domain/repositories/EditorRepository';
@@ -11,6 +24,7 @@ const EDITOR_PREFERENCES_NAME = 'editor_store';
 const PAGE_STROKES_KEY_PREFIX = 'page_strokes_';
 const LEGACY_STORAGE_DIR_NAME = 'editor_store';
 const LEGACY_FILE_SUFFIX = '.json';
+const PAGE_CONTENT_VERSION = PAGE_CANVAS_CONTENT_VERSION;
 
 const MEMORY_STORES: Map<string, Map<string, preferences.ValueType>> = new Map<string, Map<string, preferences.ValueType>>();
 
@@ -19,7 +33,6 @@ type ErrorRecordValue = Object | string | number | boolean | undefined | null;
 interface KeyValueStore {
   get(key: string, defaultValue: preferences.ValueType): Promise<preferences.ValueType>;
   put(key: string, value: preferences.ValueType): Promise<void>;
-  delete(key: string): Promise<void>;
   flush(): Promise<void>;
 }
 
@@ -34,10 +47,6 @@ class MemoryStore implements KeyValueStore {
 
   async put(key: string, value: preferences.ValueType): Promise<void> {
     this.getStore().set(key, value);
-  }
-
-  async delete(key: string): Promise<void> {
-    this.getStore().delete(key);
   }
 
   async flush(): Promise<void> {}
@@ -60,8 +69,8 @@ export class EditorRepositoryImpl implements EditorRepository {
 
   async getStrokes(pageId: string): Promise<Stroke[]> {
     try {
-      const rawValue = await this.readRawValue(pageId);
-      const strokes = this.deserializeStrokes(rawValue, pageId);
+      const pageContent = await this.getPageContent(pageId);
+      const strokes = pageContent.strokes;
       this.logDebug(`getStrokes pageId=${pageId} count=${strokes.length}`);
       return strokes;
     } catch (error) {
@@ -70,12 +79,13 @@ export class EditorRepositoryImpl implements EditorRepository {
   }
 
   async saveStrokes(pageId: string, strokes: Stroke[]): Promise<void> {
-    const serialized = this.serializeStrokes(strokes);
-    this.logDebug(`saveStrokes beforePut pageId=${pageId} count=${strokes.length} bytes=${serialized.length}`);
-
     try {
-      await this.writeRawValue(pageId, serialized);
-      await this.syncNotebookUpdatedAt(pageId);
+      const pageContent = await this.getPageContent(pageId);
+      await this.savePageContent(pageId, {
+        version: PAGE_CONTENT_VERSION,
+        strokes,
+        elements: pageContent.elements
+      });
       this.logDebug(`saveStrokes pageId=${pageId} count=${strokes.length}`);
     } catch (error) {
       throw new Error(`Failed to save strokes: ${this.stringifyError(error)}`);
@@ -84,10 +94,48 @@ export class EditorRepositoryImpl implements EditorRepository {
 
   async clearStrokes(pageId: string): Promise<void> {
     try {
-      await this.deleteRawValue(pageId);
+      const pageContent = await this.getPageContent(pageId);
+      await this.savePageContent(pageId, {
+        version: PAGE_CONTENT_VERSION,
+        strokes: [],
+        elements: pageContent.elements
+      });
       this.logDebug(`clearStrokes pageId=${pageId}`);
     } catch (error) {
       throw new Error(`Failed to clear strokes: ${this.stringifyError(error)}`);
+    }
+  }
+
+  async getPageContent(pageId: string): Promise<PageCanvasContent> {
+    try {
+      const rawValue = await this.readRawValue(pageId);
+      const pageContent = this.deserializePageContent(rawValue, pageId);
+      this.logDebug(
+        `getPageContent pageId=${pageId} strokes=${pageContent.strokes.length} elements=${pageContent.elements.length}`
+      );
+      return pageContent;
+    } catch (error) {
+      throw new Error(`Failed to load page content: ${this.stringifyError(error)}`);
+    }
+  }
+
+  async savePageContent(pageId: string, content: PageCanvasContent): Promise<void> {
+    const normalizedContent: PageCanvasContent = {
+      version: PAGE_CONTENT_VERSION,
+      strokes: content.strokes,
+      elements: content.elements
+    };
+    const serialized = this.serializePageContent(normalizedContent);
+    this.logDebug(
+      `savePageContent beforePut pageId=${pageId} strokes=${content.strokes.length} elements=${content.elements.length} bytes=${serialized.length}`
+    );
+
+    try {
+      await this.writeRawValue(pageId, serialized);
+      await this.syncNotebookUpdatedAt(pageId);
+      this.logDebug(`savePageContent pageId=${pageId}`);
+    } catch (error) {
+      throw new Error(`Failed to save page content: ${this.stringifyError(error)}`);
     }
   }
 
@@ -108,14 +156,6 @@ export class EditorRepositoryImpl implements EditorRepository {
     const pageKey = this.buildPageKey(pageId);
     await this.withStore('saveStrokes', async (store: KeyValueStore) => {
       await store.put(pageKey, value);
-      await store.flush();
-    });
-  }
-
-  private async deleteRawValue(pageId: string): Promise<void> {
-    const pageKey = this.buildPageKey(pageId);
-    await this.withStore('clearStrokes', async (store: KeyValueStore) => {
-      await store.delete(pageKey);
       await store.flush();
     });
   }
@@ -224,30 +264,270 @@ export class EditorRepositoryImpl implements EditorRepository {
     return typeof filesDir === 'string' ? filesDir : '';
   }
 
-  private serializeStrokes(strokes: Stroke[]): string {
-    return JSON.stringify(strokes);
+  private serializePageContent(content: PageCanvasContent): string {
+    return JSON.stringify(content);
+  }
+
+  private deserializePageContent(rawValue: string, pageId: string): PageCanvasContent {
+    try {
+      const parsed = JSON.parse(rawValue) as Object;
+      if (Array.isArray(parsed)) {
+        return {
+          version: PAGE_CONTENT_VERSION,
+          strokes: this.parseStrokeList(parsed, pageId),
+          elements: []
+        };
+      }
+
+      if (!parsed || typeof parsed !== 'object') {
+        return this.buildEmptyPageContent();
+      }
+
+      const record = parsed as Record<string, Object>;
+      return {
+        version: PAGE_CONTENT_VERSION,
+        strokes: this.parseStrokeList(record.strokes, pageId),
+        elements: this.parseElementList(record.elements, pageId)
+      };
+    } catch (_error) {
+      return this.buildEmptyPageContent();
+    }
+  }
+
+  private buildEmptyPageContent(): PageCanvasContent {
+    return {
+      version: PAGE_CONTENT_VERSION,
+      strokes: [],
+      elements: []
+    };
   }
 
   private deserializeStrokes(rawValue: string, pageId: string): Stroke[] {
-    try {
-      const parsed = JSON.parse(rawValue) as Object[];
-      if (!Array.isArray(parsed)) {
-        return [];
-      }
+    return this.deserializePageContent(rawValue, pageId).strokes;
+  }
 
-      const result: Stroke[] = [];
-
-      for (const item of parsed) {
-        const stroke = this.parseStroke(item, pageId);
-        if (stroke) {
-          result.push(stroke);
-        }
-      }
-
-      return result;
-    } catch (_error) {
+  private parseStrokeList(value: Object, pageId: string): Stroke[] {
+    if (!Array.isArray(value)) {
       return [];
     }
+
+    const result: Stroke[] = [];
+
+    for (const item of value) {
+      const stroke = this.parseStroke(item, pageId);
+      if (stroke) {
+        result.push(stroke);
+      }
+    }
+
+    return result;
+  }
+
+  private parseElementList(value: Object, pageId: string): CanvasElement[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    const result: CanvasElement[] = [];
+
+    for (const item of value) {
+      const element = this.parseElement(item, pageId);
+      if (element) {
+        result.push(element);
+      }
+    }
+
+    return result.sort((left: CanvasElement, right: CanvasElement): number => left.zIndex - right.zIndex);
+  }
+
+  private parseElement(value: Object, pageId: string): CanvasElement | null {
+    if (!value || typeof value !== 'object') {
+      return null;
+    }
+
+    const candidate = value as Record<string, Object>;
+    const type = typeof candidate.type === 'string' ? candidate.type : '';
+    if (type === 'text') {
+      return this.parseTextElement(candidate, pageId);
+    }
+
+    if (type === 'shape') {
+      return this.parseShapeElement(candidate, pageId);
+    }
+
+    if (type === 'image') {
+      return this.parseImageElement(candidate, pageId);
+    }
+
+    return null;
+  }
+
+  private parseTextElement(candidate: Record<string, Object>, pageId: string): TextCanvasElement | null {
+    const id = typeof candidate.id === 'string' ? candidate.id : '';
+    if (id.length === 0) {
+      return null;
+    }
+
+    const x = this.parseFiniteNumber(candidate.x, 80);
+    const y = this.parseFiniteNumber(candidate.y, 80);
+    const width = Math.max(80, this.parseFiniteNumber(candidate.width, 220));
+    const height = Math.max(40, this.parseFiniteNumber(candidate.height, 96));
+    const rotation = this.parseFiniteNumber(candidate.rotation, 0);
+    const zIndex = Math.max(0, Math.floor(this.parseFiniteNumber(candidate.zIndex, 0)));
+    const createdAt = this.parseFiniteNumber(candidate.createdAt, Date.now());
+    const updatedAt = this.parseFiniteNumber(candidate.updatedAt, createdAt);
+    const content = typeof candidate.content === 'string' ? candidate.content : '';
+    const color = typeof candidate.color === 'string' && candidate.color.length > 0 ? candidate.color : '#111827';
+    const fontSize = Math.max(8, this.parseFiniteNumber(candidate.fontSize, 18));
+    const backgroundColor = typeof candidate.backgroundColor === 'string' && candidate.backgroundColor.length > 0 ?
+      candidate.backgroundColor : TRANSPARENT_ELEMENT_BACKGROUND_COLOR;
+
+    return {
+      id,
+      pageId,
+      type: 'text',
+      x,
+      y,
+      width,
+      height,
+      rotation,
+      zIndex,
+      createdAt,
+      updatedAt,
+      content,
+      color,
+      fontSize,
+      backgroundColor
+    };
+  }
+
+  private parseImageElement(candidate: Record<string, Object>, pageId: string): ImageCanvasElement | null {
+    const id = typeof candidate.id === 'string' ? candidate.id : '';
+    const uri = typeof candidate.uri === 'string' ? candidate.uri : '';
+    if (id.length === 0 || uri.length === 0) {
+      return null;
+    }
+
+    const x = this.parseFiniteNumber(candidate.x, 80);
+    const y = this.parseFiniteNumber(candidate.y, 80);
+    const width = Math.max(1, this.parseFiniteNumber(candidate.width, 240));
+    const height = Math.max(1, this.parseFiniteNumber(candidate.height, 180));
+    const rotation = this.parseFiniteNumber(candidate.rotation, 0);
+    const zIndex = Math.max(0, Math.floor(this.parseFiniteNumber(candidate.zIndex, 0)));
+    const createdAt = this.parseFiniteNumber(candidate.createdAt, Date.now());
+    const updatedAt = this.parseFiniteNumber(candidate.updatedAt, createdAt);
+    const originalWidth = Math.max(1, this.parseFiniteNumber(candidate.originalWidth, width));
+    const originalHeight = Math.max(1, this.parseFiniteNumber(candidate.originalHeight, height));
+    const opacity = Math.max(0, Math.min(1, this.parseFiniteNumber(candidate.opacity, 1)));
+
+    return {
+      id,
+      pageId,
+      type: 'image',
+      x,
+      y,
+      width,
+      height,
+      rotation,
+      zIndex,
+      createdAt,
+      updatedAt,
+      uri,
+      originalWidth,
+      originalHeight,
+      opacity
+    };
+  }
+
+  private parseShapeElement(candidate: Record<string, Object>, pageId: string): ShapeCanvasElement | null {
+    const id = typeof candidate.id === 'string' ? candidate.id : '';
+    if (id.length === 0) {
+      return null;
+    }
+
+    const geometry = this.parseShapeGeometry(candidate.geometry);
+    if (geometry === null) {
+      return null;
+    }
+
+    const x = this.parseFiniteNumber(candidate.x, 80);
+    const y = this.parseFiniteNumber(candidate.y, 80);
+    const width = Math.max(0, this.parseFiniteNumber(candidate.width, 160));
+    const height = Math.max(0, this.parseFiniteNumber(candidate.height, 100));
+    const rotation = this.parseFiniteNumber(candidate.rotation, 0);
+    const zIndex = Math.max(0, Math.floor(this.parseFiniteNumber(candidate.zIndex, 0)));
+    const createdAt = this.parseFiniteNumber(candidate.createdAt, Date.now());
+    const updatedAt = this.parseFiniteNumber(candidate.updatedAt, createdAt);
+    const shapeTypeValue = typeof candidate.shapeType === 'string' ? candidate.shapeType : '';
+    const shapeType = isShapeType(shapeTypeValue) ? shapeTypeValue : 'rectangle';
+    const strokeColor = typeof candidate.strokeColor === 'string' && candidate.strokeColor.length > 0 ?
+      candidate.strokeColor : '#111827';
+    const fillColor = typeof candidate.fillColor === 'string' && candidate.fillColor.length > 0 ?
+      candidate.fillColor : TRANSPARENT_ELEMENT_BACKGROUND_COLOR;
+    const strokeWidth = Math.max(1, this.parseFiniteNumber(candidate.strokeWidth, 2));
+    const opacity = Math.max(0, Math.min(1, this.parseFiniteNumber(candidate.opacity, 1)));
+
+    return {
+      id,
+      pageId,
+      type: 'shape',
+      x,
+      y,
+      width,
+      height,
+      rotation,
+      zIndex,
+      createdAt,
+      updatedAt,
+      shapeType,
+      geometry,
+      strokeColor,
+      fillColor,
+      strokeWidth,
+      opacity
+    };
+  }
+
+  private parseShapeGeometry(value: Object): ShapeGeometry | null {
+    if (!value || typeof value !== 'object') {
+      return null;
+    }
+
+    const candidate = value as Record<string, Object>;
+    const kindValue = typeof candidate.kind === 'string' ? candidate.kind : '';
+    if (!isShapeGeometryKind(kindValue) || !Array.isArray(candidate.points)) {
+      return null;
+    }
+
+    const points: ShapeGeometryPoint[] = [];
+    for (const item of candidate.points) {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+
+      const point = item as Record<string, Object>;
+      const x = Number(point.x);
+      const y = Number(point.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return null;
+      }
+
+      points.push({ x, y });
+    }
+
+    if (points.length !== 2) {
+      return null;
+    }
+
+    return {
+      kind: kindValue,
+      points
+    };
+  }
+
+  private parseFiniteNumber(value: Object, fallbackValue: number): number {
+    const numericValue = Number(value);
+    return Number.isFinite(numericValue) ? numericValue : fallbackValue;
   }
 
   private parseStroke(value: Object, pageId: string): Stroke | null {

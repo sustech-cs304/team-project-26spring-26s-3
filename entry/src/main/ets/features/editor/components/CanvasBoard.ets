@@ -6,18 +6,22 @@ import {
   doBoundingBoxesIntersect,
   getStrokeRenderBoundingBox
 } from '../../../common/utils/GeometryUtil';
+import { clampElementFrameToBounds } from '../../../common/utils/ElementBoundsUtil';
+import { CanvasElement, ShapeType, TextCanvasElement } from '../../../domain/entities/CanvasElement';
 import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { NotebookPageCanvasEntity } from '../../../domain/entities/NotebookPageCanvas';
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
-import { ToolSetting } from '../../../domain/entities/ToolSetting';
+import { ToolSetting, ToolType } from '../../../domain/entities/ToolSetting';
 import { PageTemplateRenderer } from '../controllers/PageTemplateRenderer';
 import { IncrementalPreviewSession, StrokeRenderer } from '../controllers/StrokeRenderer';
+import { ShapeRenderer } from '../controllers/ShapeRenderer';
 import { IndexedStrokeRecord } from '../controllers/UndoRedoController';
 import { StrokeSpatialHashIndex } from '../controllers/StrokeSpatialHashIndex';
 import { EditorDebugSnapshot } from '../viewmodels/EditorDebugSnapshot';
 import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
 import { RenderInvalidation } from '../viewmodels/RenderInvalidation';
+import { ElementLayer } from './ElementLayer';
 
 interface CanvasSize {
   width: number;
@@ -64,6 +68,11 @@ const DEFAULT_VIEWPORT_WIDTH = 1600;
 const DEFAULT_VIEWPORT_HEIGHT = 900;
 const PAGE_BORDER_COLOR = '#C4D2E6';
 const VIEWPORT_REDRAW_INTERVAL_MS = 16;
+const TEXT_EDIT_DOUBLE_TAP_MS = 360;
+const TEXT_EDIT_DOUBLE_TAP_DISTANCE = 18;
+const INLINE_TEXT_LINE_HEIGHT_FACTOR = 1.35;
+const INLINE_TEXT_MAX_LINES = 1000;
+export type CanvasBoardContentChangeKind = 'stroke' | 'element';
 
 @Component
 export struct CanvasBoard {
@@ -81,8 +90,13 @@ export struct CanvasBoard {
   @Prop pageHeight: number = NotebookPageCanvasEntity.DEFAULT_HEIGHT;
   @Watch('onInteractionModeChanged')
   @Prop isPanModeEnabled: boolean = false;
+  @Watch('onActiveToolChanged')
+  @Prop activeTool: ToolType = 'pen';
+  @Prop elementVersion: number = 0;
+  @Prop selectedShapeType: ShapeType = 'rectangle';
   @Link editorSnapshot: EditorDebugSnapshot;
-  onContentChanged: (immediate: boolean) => void = (_immediate: boolean): void => {};
+  onContentChanged: (immediate: boolean, kind: CanvasBoardContentChangeKind) => void =
+    (_immediate: boolean, _kind: CanvasBoardContentChangeKind): void => {};
   onCanvasMetricsChanged: (width: number, height: number) => void = (_width: number, _height: number): void => {};
   private viewModel: DrawingEditorViewModel | null = null;
 
@@ -119,13 +133,32 @@ export struct CanvasBoard {
   private viewportGestureStartPageX: number = 0;
   private viewportGestureStartPageY: number = 0;
   private lastViewportRedrawTime: number = 0;
+  private lastEditTapTime: number = 0;
+  private lastEditTapElementId: string = '';
+  private lastEditTapX: number = 0;
+  private lastEditTapY: number = 0;
 
   @State private isCommittedLayerReady: boolean = false;
   @State private isStablePreviewLayerReady: boolean = false;
   @State private isOverlayLayerReady: boolean = false;
+  @State private elementLayerPageWidth: number = NotebookPageCanvasEntity.DEFAULT_WIDTH;
+  @State private elementLayerPageHeight: number = NotebookPageCanvasEntity.DEFAULT_HEIGHT;
+  @State private elementLayerScale: number = 1;
+  @State private elementLayerOffsetX: number = 0;
+  @State private elementLayerOffsetY: number = 0;
+  @State private inlineTextEditElement: TextCanvasElement | null = null;
+  @State private inlineTextEditContent: string = '';
+  @State private inlineTextEditX: number = 0;
+  @State private inlineTextEditY: number = 0;
+  @State private inlineTextEditWidth: number = 1;
+  @State private inlineTextEditHeight: number = 1;
 
   aboutToAppear(): void {
     this.resolveViewModel();
+  }
+
+  aboutToDisappear(): void {
+    this.commitInlineTextEdit(true);
   }
 
   build() {
@@ -149,6 +182,30 @@ export struct CanvasBoard {
           this.redrawOverlayLayer();
         })
 
+      Stack() {
+        ElementLayer({
+          pageId: this.pageId,
+          refreshVersion: this.elementVersion,
+          editingElementId: this.getInlineTextEditElementId()
+        })
+          .width('100%')
+          .height('100%')
+      }
+        .width(this.elementLayerPageWidth)
+        .height(this.elementLayerPageHeight)
+        .position({
+          x: this.elementLayerOffsetX,
+          y: this.elementLayerOffsetY
+        })
+        .scale({
+          x: this.elementLayerScale,
+          y: this.elementLayerScale,
+          centerX: 0,
+          centerY: 0
+        })
+        .clip(true)
+        .hitTestBehavior(HitTestMode.None)
+
       Canvas(this.overlayContext2D)
         .width('100%')
         .height('100%')
@@ -160,9 +217,129 @@ export struct CanvasBoard {
         .onTouch((event: TouchEvent) => {
           this.handleTouch(event);
         })
+
+      if (this.inlineTextEditElement !== null) {
+        this.buildInlineTextSizeProbe(this.inlineTextEditElement)
+        this.buildInlineTextEditor(this.inlineTextEditElement)
+      }
+
     }
     .width('100%')
     .height('100%')
+    .clip(true)
+  }
+
+  @Builder
+  private buildInlineTextEditor(element: TextCanvasElement): void {
+    Stack({ alignContent: Alignment.TopStart }) {
+      this.buildInlineTextDisplay(element)
+      this.buildInlineTextInputProxy(element)
+    }
+      .width(this.getScaledInlineTextWidth())
+      .height(this.getScaledInlineTextHeight())
+      .position({
+        x: this.elementLayerOffsetX + this.inlineTextEditX * this.elementLayerScale,
+        y: this.elementLayerOffsetY + this.inlineTextEditY * this.elementLayerScale
+      })
+      .backgroundColor('#FFFFFF')
+      .border({
+        width: 2,
+        color: '#2563EB'
+      })
+      .borderRadius(2)
+      .zIndex(element.zIndex + 20000)
+  }
+
+  @Builder
+  private buildInlineTextSizeProbe(element: TextCanvasElement): void {
+    TextArea({
+      placeholder: 'Text',
+      text: this.inlineTextEditContent
+    })
+      .width(this.getScaledInlineTextWidth())
+      .padding({
+        left: this.getScaledInlineTextHorizontalPadding(),
+        right: this.getScaledInlineTextHorizontalPadding(),
+        top: this.getScaledInlineTextVerticalPadding(),
+        bottom: this.getScaledInlineTextVerticalPadding()
+      })
+      .fontSize(this.getScaledInlineTextFontSize(element))
+      .lineHeight(this.getInlineTextLineHeight(element))
+      .fontFamily('monospace')
+      .fontColor(element.color)
+      .wordBreak(WordBreak.BREAK_ALL)
+      .maxLines(INLINE_TEXT_MAX_LINES)
+      .barState(BarState.Off)
+      .backgroundColor(Color.Transparent)
+      .opacity(0)
+      .hitTestBehavior(HitTestMode.None)
+      .position({
+        x: this.elementLayerOffsetX + this.inlineTextEditX * this.elementLayerScale,
+        y: this.elementLayerOffsetY + this.inlineTextEditY * this.elementLayerScale
+      })
+      .zIndex(element.zIndex + 19999)
+      .onAreaChange((_oldValue: Area, newValue: Area) => {
+        this.handleInlineTextSizeProbeAreaChange(newValue);
+      })
+  }
+
+  @Builder
+  private buildInlineTextDisplay(element: TextCanvasElement): void {
+    TextArea({
+      text: this.getInlineTextDisplayContent()
+    })
+      .width(this.getScaledInlineTextWidth())
+      .height(this.getScaledInlineTextHeight())
+      .padding({
+        left: this.getScaledInlineTextHorizontalPadding(),
+        right: this.getScaledInlineTextHorizontalPadding(),
+        top: this.getScaledInlineTextVerticalPadding(),
+        bottom: this.getScaledInlineTextVerticalPadding()
+      })
+      .fontSize(this.getScaledInlineTextFontSize(element))
+      .lineHeight(this.getInlineTextLineHeight(element))
+      .fontFamily('monospace')
+      .fontColor(element.color)
+      .wordBreak(WordBreak.BREAK_ALL)
+      .maxLines(INLINE_TEXT_MAX_LINES)
+      .barState(BarState.Off)
+      .backgroundColor(Color.Transparent)
+      .hitTestBehavior(HitTestMode.None)
+  }
+
+  @Builder
+  private buildInlineTextInputProxy(element: TextCanvasElement): void {
+    TextArea({
+      placeholder: 'Text',
+      text: this.inlineTextEditContent
+    })
+      .width(this.getScaledInlineTextWidth())
+      .height(this.getScaledInlineTextHeight())
+      .position({
+        x: 0,
+        y: 0
+      })
+      .padding({
+        left: this.getScaledInlineTextHorizontalPadding(),
+        right: this.getScaledInlineTextHorizontalPadding(),
+        top: this.getScaledInlineTextVerticalPadding(),
+        bottom: this.getScaledInlineTextVerticalPadding()
+      })
+      .fontSize(this.getScaledInlineTextFontSize(element))
+      .lineHeight(this.getInlineTextLineHeight(element))
+      .fontFamily('monospace')
+      .fontColor(Color.Transparent)
+      .caretColor('#2563EB')
+      .wordBreak(WordBreak.BREAK_ALL)
+      .maxLines(INLINE_TEXT_MAX_LINES)
+      .barState(BarState.Off)
+      .backgroundColor(Color.Transparent)
+      .onChange((value: string) => {
+        this.inlineTextEditContent = value;
+      })
+      .onBlur(() => {
+        this.commitInlineTextEdit(true);
+      })
   }
 
   private onCanvasVersionChanged(): void {
@@ -191,6 +368,13 @@ export struct CanvasBoard {
     const activeTool = toolSetting.tool;
     const touch = event.changedTouches.length > 0 ? event.changedTouches[0] : event.touches[0];
     if (!touch) {
+      if (activeTool === 'shape') {
+        viewModel.cancelShapeDraft();
+        this.syncEditorSnapshot();
+        this.redrawOverlayLayer();
+        return;
+      }
+
       if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
         this.finishDrawingGestureWithoutPoint(viewModel, activeTool, event.type);
       }
@@ -198,6 +382,157 @@ export struct CanvasBoard {
     }
 
     if (this.handlePanModeTouch(event, touch)) {
+      return;
+    }
+
+    if (activeTool === 'edit') {
+      const point = this.buildPoint(touch, event.type !== TouchType.Down);
+      const pageBounds = this.getPageBounds();
+      const hitTolerance = this.getEditHitToleranceInPage();
+
+      if (event.type === TouchType.Down) {
+        if (point === null) {
+          this.commitInlineTextEdit(true);
+          viewModel.clearElementSelection();
+        } else {
+          if (this.inlineTextEditElement !== null && !this.isPointInsideTextElement(point, this.inlineTextEditElement)) {
+            this.commitInlineTextEdit(true);
+          }
+
+          if (viewModel.isSelectedElementDeleteHit(point, hitTolerance)) {
+            this.commitInlineTextEdit(false);
+            viewModel.deleteSelectedElement();
+            this.syncEditorSnapshot();
+            this.onContentChanged(true, 'element');
+            return;
+          }
+
+          const selectedElement = viewModel.getSelectedElement();
+          if (this.shouldBeginInlineTextEdit(point, selectedElement, hitTolerance)) {
+            this.beginInlineTextEdit(selectedElement as TextCanvasElement);
+            this.syncEditorSnapshot();
+            this.onContentChanged(false, 'element');
+            return;
+          }
+
+          viewModel.beginElementEditGesture(point, pageBounds, hitTolerance);
+          this.recordEditTap(point, viewModel.getSelectedElement());
+        }
+
+        this.syncEditorSnapshot();
+        this.onContentChanged(false, 'element');
+        return;
+      }
+
+      if (event.type === TouchType.Move) {
+        if (point !== null && viewModel.updateElementEditGesture(point, pageBounds)) {
+          this.syncEditorSnapshot();
+          this.onContentChanged(false, 'element');
+        }
+        return;
+      }
+
+      if (event.type === TouchType.Up) {
+        if (point !== null) {
+          viewModel.updateElementEditGesture(point, pageBounds);
+        }
+        const editedElement = viewModel.finishElementEditGesture(pageBounds);
+        this.syncEditorSnapshot();
+        this.onContentChanged(editedElement !== null, 'element');
+        return;
+      }
+
+      if (event.type === TouchType.Cancel) {
+        viewModel.cancelElementEditGesture();
+        this.syncEditorSnapshot();
+        this.onContentChanged(false, 'element');
+      }
+      return;
+    }
+
+    if (this.inlineTextEditElement !== null) {
+      this.commitInlineTextEdit(true);
+    }
+
+    if (activeTool === 'text') {
+      if (event.type === TouchType.Down) {
+        const point = this.buildPoint(touch, false);
+        if (point === null) {
+          this.beginWorkspacePan(touch);
+          return;
+        }
+
+        viewModel.appendDebugEvent('CanvasBoard', `insertText x=${Math.round(point.x)} y=${Math.round(point.y)}`);
+        viewModel.insertTextElement(point, {
+          width: this.getPageWidth(),
+          height: this.getPageHeight()
+        });
+        this.syncEditorSnapshot();
+        this.onContentChanged(true, 'element');
+      }
+      return;
+    }
+
+    if (activeTool === 'shape') {
+      const point = this.buildPoint(touch, event.type === TouchType.Down ? false : true);
+
+      if (event.type === TouchType.Down) {
+        if (point === null) {
+          this.beginWorkspacePan(touch);
+          return;
+        }
+
+        viewModel.appendDebugEvent(
+          'CanvasBoard',
+          `beginShape shape=${this.selectedShapeType} x=${Math.round(point.x)} y=${Math.round(point.y)}`
+        );
+        viewModel.beginShapeDraft(point, {
+          width: this.getPageWidth(),
+          height: this.getPageHeight()
+        }, this.selectedShapeType);
+        this.syncEditorSnapshot();
+        this.redrawOverlayLayer();
+        return;
+      }
+
+      if (event.type === TouchType.Move) {
+        if (point === null) {
+          return;
+        }
+
+        viewModel.updateShapeDraft(point, {
+          width: this.getPageWidth(),
+          height: this.getPageHeight()
+        });
+        this.redrawOverlayLayer();
+        return;
+      }
+
+      if (event.type === TouchType.Up) {
+        if (point !== null) {
+          viewModel.updateShapeDraft(point, {
+            width: this.getPageWidth(),
+            height: this.getPageHeight()
+          });
+        }
+
+        const createdElement = viewModel.commitShapeDraft({
+          width: this.getPageWidth(),
+          height: this.getPageHeight()
+        });
+        this.syncEditorSnapshot();
+        this.redrawOverlayLayer();
+        if (createdElement !== null) {
+          this.onContentChanged(true, 'element');
+        }
+        return;
+      }
+
+      if (event.type === TouchType.Cancel) {
+        viewModel.cancelShapeDraft();
+        this.syncEditorSnapshot();
+        this.redrawOverlayLayer();
+      }
       return;
     }
 
@@ -371,7 +706,7 @@ export struct CanvasBoard {
     }
     this.clearPreviewLayers();
     this.resetActivePreviewSession();
-    this.onContentChanged(true);
+    this.onContentChanged(true, 'stroke');
     viewModel.appendDebugEvent('CanvasBoard', 'finishStroke done');
   }
 
@@ -402,6 +737,7 @@ export struct CanvasBoard {
 
     const size = this.getCanvasSize(this.committedContext2D);
     const transform = this.getPageViewportTransform(size);
+    this.syncElementLayerTransform(transform);
     const visibleRegion = this.getVisiblePageRegion(transform);
     this.committedContext2D.clearRect(0, 0, size.width, size.height);
 
@@ -450,6 +786,7 @@ export struct CanvasBoard {
     if (viewModel.hasActiveEraseGesture()) {
       const size = this.getCanvasSize(this.overlayContext2D);
       const transform = this.getPageViewportTransform(size);
+      this.syncElementLayerTransform(transform);
       this.overlayContext2D.save();
       this.applyPageTransformAndClip(this.overlayContext2D, transform);
       this.drawErasePreview(this.overlayContext2D, viewModel.getActiveErasePath(), viewModel.getErasePreviewWidth());
@@ -459,7 +796,22 @@ export struct CanvasBoard {
 
     const activeStroke = viewModel.getActiveStrokeForRendering();
     if (activeStroke) {
+      const size = this.getCanvasSize(this.overlayContext2D);
+      const transform = this.getPageViewportTransform(size);
+      this.syncElementLayerTransform(transform);
       this.rebuildActivePreviewLayers(activeStroke);
+      return;
+    }
+
+    const shapeDraft = viewModel.getShapeDraftForRendering();
+    if (shapeDraft !== null) {
+      const size = this.getCanvasSize(this.overlayContext2D);
+      const transform = this.getPageViewportTransform(size);
+      this.syncElementLayerTransform(transform);
+      this.overlayContext2D.save();
+      this.applyPageTransformAndClip(this.overlayContext2D, transform);
+      ShapeRenderer.drawShape(this.overlayContext2D, shapeDraft);
+      this.overlayContext2D.restore();
     }
   }
 
@@ -503,8 +855,246 @@ export struct CanvasBoard {
     this.editorSnapshot = viewModel.getDebugSnapshot();
   }
 
+  private beginInlineTextEdit(element: TextCanvasElement): void {
+    this.inlineTextEditElement = this.cloneTextElement(element);
+    this.inlineTextEditX = element.x;
+    this.inlineTextEditY = element.y;
+    this.inlineTextEditWidth = element.width;
+    this.inlineTextEditHeight = element.height;
+    this.inlineTextEditContent = element.content;
+    this.clampInlineTextEditFrameToBounds();
+    this.clearLastEditTap();
+  }
+
+  private commitInlineTextEdit(refreshThumbnail: boolean): void {
+    if (this.inlineTextEditElement === null) {
+      return;
+    }
+
+    const editingElementId = this.inlineTextEditElement.id;
+    const nextContent = this.inlineTextEditContent;
+    const nextFrame = clampElementFrameToBounds({
+      x: this.inlineTextEditX,
+      y: this.inlineTextEditY,
+      width: this.inlineTextEditWidth,
+      height: this.inlineTextEditHeight
+    }, this.getPageBounds());
+    this.inlineTextEditElement = null;
+    this.inlineTextEditContent = '';
+    this.resetInlineTextEditFrame();
+    this.clearLastEditTap();
+
+    const viewModel = this.getViewModel();
+    if (viewModel === null) {
+      return;
+    }
+
+    const updatedElement = viewModel.updateTextElementContentWithFrame(editingElementId, nextContent, nextFrame);
+    this.syncEditorSnapshot();
+    this.onContentChanged(updatedElement !== null && refreshThumbnail, 'element');
+  }
+
+  private clampInlineTextEditFrameToBounds(): void {
+    const frame = clampElementFrameToBounds({
+      x: this.inlineTextEditX,
+      y: this.inlineTextEditY,
+      width: this.inlineTextEditWidth,
+      height: this.inlineTextEditHeight
+    }, this.getPageBounds());
+    this.inlineTextEditX = frame.x;
+    this.inlineTextEditY = frame.y;
+    this.inlineTextEditWidth = frame.width;
+    this.inlineTextEditHeight = frame.height;
+  }
+
+  private handleInlineTextSizeProbeAreaChange(newValue: Area): void {
+    if (this.inlineTextEditElement === null) {
+      return;
+    }
+
+    const measuredHeight = this.getLengthNumber(newValue.height);
+    if (measuredHeight <= 0) {
+      return;
+    }
+
+    const scale = Math.max(0.01, this.elementLayerScale);
+    const pageHeight = measuredHeight / scale;
+    const maximumHeight = Math.max(1, this.getPageHeight() - this.inlineTextEditY);
+    const nextHeight = Math.ceil(this.clampNumber(pageHeight, 1, maximumHeight));
+    if (Math.abs(nextHeight - this.inlineTextEditHeight) >= 1) {
+      this.inlineTextEditHeight = nextHeight;
+    }
+  }
+
+  private getInlineTextLineHeight(element: TextCanvasElement): number {
+    return this.getScaledInlineTextFontSize(element) * INLINE_TEXT_LINE_HEIGHT_FACTOR;
+  }
+
+  private getScaledInlineTextWidth(): number {
+    return Math.max(36, this.inlineTextEditWidth * this.elementLayerScale);
+  }
+
+  private getScaledInlineTextHeight(): number {
+    return Math.max(32, this.inlineTextEditHeight * this.elementLayerScale);
+  }
+
+  private getScaledInlineTextFontSize(element: TextCanvasElement): number {
+    return Math.max(8, element.fontSize * this.elementLayerScale);
+  }
+
+  private getScaledInlineTextHorizontalPadding(): number {
+    return Math.max(4, 8 * this.elementLayerScale);
+  }
+
+  private getScaledInlineTextVerticalPadding(): number {
+    return Math.max(3, 6 * this.elementLayerScale);
+  }
+
+  private getInlineTextDisplayContent(): string {
+    return this.inlineTextEditContent.length === 0 ? 'Text' : this.inlineTextEditContent;
+  }
+
+  private cloneTextElement(element: TextCanvasElement): TextCanvasElement {
+    return {
+      id: element.id,
+      pageId: element.pageId,
+      type: 'text',
+      x: element.x,
+      y: element.y,
+      width: element.width,
+      height: element.height,
+      rotation: element.rotation,
+      zIndex: element.zIndex,
+      createdAt: element.createdAt,
+      updatedAt: element.updatedAt,
+      content: element.content,
+      color: element.color,
+      fontSize: element.fontSize,
+      backgroundColor: element.backgroundColor
+    };
+  }
+
+  private getLengthNumber(value: Length): number {
+    const numericValue = Number(value);
+    if (Number.isFinite(numericValue)) {
+      return numericValue;
+    }
+
+    const parsedValue = Number.parseFloat(`${value}`);
+    return Number.isFinite(parsedValue) ? parsedValue : 0;
+  }
+
+  private clampNumber(value: number, minimumValue: number, maximumValue: number): number {
+    if (!Number.isFinite(value)) {
+      return minimumValue;
+    }
+
+    return Math.min(Math.max(value, minimumValue), maximumValue);
+  }
+
+  private resetInlineTextEditFrame(): void {
+    this.inlineTextEditX = 0;
+    this.inlineTextEditY = 0;
+    this.inlineTextEditWidth = 1;
+    this.inlineTextEditHeight = 1;
+  }
+
+  private getInlineTextEditElementId(): string {
+    return this.inlineTextEditElement === null ? '' : this.inlineTextEditElement.id;
+  }
+
+  private shouldBeginInlineTextEdit(
+    point: StrokePoint,
+    selectedElement: CanvasElement | null,
+    hitTolerance: number
+  ): boolean {
+    if (selectedElement === null || selectedElement.type !== 'text') {
+      return false;
+    }
+
+    if (!this.isPointInsideTextElementContent(point, selectedElement, hitTolerance)) {
+      return false;
+    }
+
+    if (this.lastEditTapElementId !== selectedElement.id) {
+      return false;
+    }
+
+    const elapsedTime = Date.now() - this.lastEditTapTime;
+    const deltaX = point.x - this.lastEditTapX;
+    const deltaY = point.y - this.lastEditTapY;
+    const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+    return elapsedTime >= 0 && elapsedTime <= TEXT_EDIT_DOUBLE_TAP_MS &&
+      distance <= Math.max(hitTolerance * 2, TEXT_EDIT_DOUBLE_TAP_DISTANCE);
+  }
+
+  private recordEditTap(point: StrokePoint, element: CanvasElement | null): void {
+    if (element === null || element.type !== 'text') {
+      this.clearLastEditTap();
+      return;
+    }
+
+    this.lastEditTapTime = Date.now();
+    this.lastEditTapElementId = element.id;
+    this.lastEditTapX = point.x;
+    this.lastEditTapY = point.y;
+  }
+
+  private clearLastEditTap(): void {
+    this.lastEditTapTime = 0;
+    this.lastEditTapElementId = '';
+    this.lastEditTapX = 0;
+    this.lastEditTapY = 0;
+  }
+
+  private isPointInsideTextElement(point: StrokePoint, element: TextCanvasElement): boolean {
+    return point.x >= element.x && point.x <= element.x + element.width &&
+      point.y >= element.y && point.y <= element.y + element.height;
+  }
+
+  private isPointInsideTextElementContent(point: StrokePoint, element: TextCanvasElement, hitTolerance: number): boolean {
+    const margin = Math.min(Math.max(4, hitTolerance), Math.max(0, Math.min(element.width, element.height) / 3));
+    return point.x >= element.x + margin && point.x <= element.x + element.width - margin &&
+      point.y >= element.y + margin && point.y <= element.y + element.height - margin;
+  }
+
   private notifyCanvasMetricsChanged(): void {
     this.onCanvasMetricsChanged(this.getPageWidth(), this.getPageHeight());
+  }
+
+  private getPageBounds(): CanvasSize {
+    return {
+      width: this.getPageWidth(),
+      height: this.getPageHeight()
+    };
+  }
+
+  private getEditHitToleranceInPage(): number {
+    const size = this.getCanvasSize(this.overlayContext2D);
+    const transform = this.getPageViewportTransform(size);
+    return Math.max(3, 10 / Math.max(0.01, transform.scale));
+  }
+
+  private syncElementLayerTransform(transform: PageViewportTransform): void {
+    if (this.elementLayerPageWidth !== transform.pageWidth) {
+      this.elementLayerPageWidth = transform.pageWidth;
+    }
+
+    if (this.elementLayerPageHeight !== transform.pageHeight) {
+      this.elementLayerPageHeight = transform.pageHeight;
+    }
+
+    if (this.elementLayerScale !== transform.scale) {
+      this.elementLayerScale = transform.scale;
+    }
+
+    if (this.elementLayerOffsetX !== transform.offsetX) {
+      this.elementLayerOffsetX = transform.offsetX;
+    }
+
+    if (this.elementLayerOffsetY !== transform.offsetY) {
+      this.elementLayerOffsetY = transform.offsetY;
+    }
   }
 
   private getCanvasSize(context: CanvasRenderingContext2D): CanvasSize {
@@ -1321,12 +1911,22 @@ export struct CanvasBoard {
   }
 
   private onPageIdChanged(): void {
+    this.inlineTextEditElement = null;
+    this.inlineTextEditContent = '';
+    this.resetInlineTextEditFrame();
+    this.clearLastEditTap();
     this.resetViewportTransform();
     this.clearRenderedStrokeState();
     this.lastAppliedRenderInvalidationSequence = 0;
     this.clearPreviewLayers();
     this.resetActivePreviewSession();
     this.resolveViewModel();
+  }
+
+  private onActiveToolChanged(): void {
+    if (this.activeTool !== 'edit') {
+      this.commitInlineTextEdit(true);
+    }
   }
 
   private onCanvasStyleChanged(): void {

@@ -1,12 +1,15 @@
 import common from '@ohos.app.ability.common';
+import picker from '@ohos.file.picker';
 import router from '@ohos.router';
 
 import { AppRouter, RouterParams } from '../../../app/AppRouter';
+import { ImageAssetDataSource, ImportedImageAsset } from '../../../data/sources/local/ImageAssetDataSource';
 import { Notebook } from '../../../domain/entities/Notebook';
 import { NotebookPage, NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
+import { ShapeType } from '../../../domain/entities/CanvasElement';
 import { NotebookPageCanvas, NotebookPageCanvasEntity } from '../../../domain/entities/NotebookPageCanvas';
 import { ToolSetting, ToolType } from '../../../domain/entities/ToolSetting';
-import { CanvasBoard } from '../components/CanvasBoard';
+import { CanvasBoard, CanvasBoardContentChangeKind } from '../components/CanvasBoard';
 import { PageThumbnailPreview } from '../components/PageThumbnailPreview';
 import { ToolPropertyPanel } from '../components/ToolPropertyPanel';
 import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
@@ -26,7 +29,8 @@ const SIDEBAR_COLLAPSED_WIDTH = 56;
 const PAGE_THUMBNAIL_WIDTH = SIDEBAR_EXPANDED_WIDTH - SIDEBAR_EXPANDED_PADDING * 2;
 const WORKSPACE_MENU_BUTTON_FONT_SIZE = 26;
 const PAGE_TEMPLATE_DROPDOWN_LEFT = 384;
-const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser'];
+const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser', 'text', 'shape', 'edit'];
+const SHAPE_TOOL_OPTIONS: ShapeType[] = ['rectangle', 'circle', 'line'];
 const PAGE_TEMPLATE_OPTIONS: NotebookPageTemplateType[] = [
   NotebookPageTemplateType.BLANK,
   NotebookPageTemplateType.LINED,
@@ -47,6 +51,7 @@ struct EditorPage {
   @State private isCreatingPage: boolean = false;
   @State private isReorderingPages: boolean = false;
   @State private isUpdatingPageTemplate: boolean = false;
+  @State private isImportingImage: boolean = false;
   @State private pageActionMenuPageId: string = '';
   @State private isDeletePageDialogVisible: boolean = false;
   @State private isDeletingPage: boolean = false;
@@ -56,11 +61,15 @@ struct EditorPage {
   @State private hasMissingNotebookId: boolean = false;
   @State private isNotebookMissing: boolean = false;
   @State private toolSetting: ToolSetting = this.buildDefaultToolSetting();
+  private lastWritingTool: ToolType = 'pen';
+  @State private selectedShapeType: ShapeType = 'rectangle';
   @State private editorSnapshot: EditorDebugSnapshot = this.buildEmptySnapshot('');
   @State private canvasVersion: number = 0;
+  @State private elementLayerRefreshVersion: number = 0;
   @State private thumbnailRefreshVersion: number = 0;
   @State private isPagePreviewCollapsed: boolean = false;
   @State private isToolDropdownVisible: boolean = false;
+  @State private isShapeDropdownVisible: boolean = false;
   @State private isPageTemplateDropdownVisible: boolean = false;
   @State private isCanvasPanModeEnabled: boolean = false;
   private readonly pageCanvasRenderSizeMap: Map<string, PageCanvasRenderSize> = new Map<string, PageCanvasRenderSize>();
@@ -81,6 +90,7 @@ struct EditorPage {
     this.drawingViewModel = null;
     this.currentDrawingPageId = '';
     this.isToolDropdownVisible = false;
+    this.isShapeDropdownVisible = false;
     this.isPageTemplateDropdownVisible = false;
     this.isCanvasPanModeEnabled = false;
   }
@@ -259,6 +269,7 @@ struct EditorPage {
     })
     .onClick(() => {
       this.closeToolDropdown();
+      this.closeShapeDropdown();
     })
   }
 
@@ -388,6 +399,7 @@ struct EditorPage {
     })
     .onClick(() => {
       this.closeToolDropdown();
+      this.closeShapeDropdown();
     })
   }
 
@@ -488,6 +500,26 @@ struct EditorPage {
               }, (tool: ToolType): string => tool)
 
               this.buildCanvasPanToolbarButton()
+
+              Button('Image')
+                .height(32)
+                .padding({
+                  left: 10,
+                  right: 10
+                })
+                .fontSize(12)
+                .backgroundColor('#FFFFFF')
+                .fontColor('#475569')
+                .borderRadius(10)
+                .border({
+                  width: 1,
+                  color: '#CBD5E1'
+                })
+                .enabled(!this.isCanvasLoading && !this.isImportingImage)
+                .onClick(() => {
+                  void this.handleImageInsertRequest();
+                })
+
               this.buildPageTemplateToolbarButton()
             }
             .alignItems(VerticalAlign.Center)
@@ -578,6 +610,7 @@ struct EditorPage {
                 .borderRadius(12)
                 .onClick(() => {
                   this.closeToolDropdown();
+                  this.closeShapeDropdown();
                   this.closePageTemplateDropdown();
                   this.togglePageActionMenu(this.activePageId);
                 })
@@ -599,6 +632,7 @@ struct EditorPage {
         }
         .width('100%')
         .alignItems(VerticalAlign.Center)
+        .zIndex(10)
 
         this.buildWorkspaceSurface()
       }
@@ -606,6 +640,7 @@ struct EditorPage {
       .height('100%')
       .onClick(() => {
         this.closeToolDropdown();
+        this.closeShapeDropdown();
       })
 
       if (this.activePageId.length > 0 && this.isPageActionMenuVisible(this.activePageId)) {
@@ -614,6 +649,10 @@ struct EditorPage {
 
       if (this.isToolDropdownVisible) {
         this.buildToolDropdown()
+      }
+
+      if (this.isShapeDropdownVisible) {
+        this.buildShapeDropdown()
       }
 
       if (this.isPageTemplateDropdownVisible) {
@@ -657,13 +696,10 @@ struct EditorPage {
     }
     .layoutWeight(1)
     .width('100%')
+    .clip(true)
+    .zIndex(0)
     .onClick(() => {
       this.closeTransientDropdowns();
-    })
-    .onTouch((event: TouchEvent) => {
-      if (event.type === TouchType.Down) {
-        this.closeTransientDropdowns();
-      }
     })
   }
 
@@ -740,6 +776,106 @@ struct EditorPage {
   }
 
   @Builder
+  private buildShapeDropdown(): void {
+    Row() {
+      Column({ space: 7 }) {
+        Text('Shape')
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#111827')
+          .width('100%')
+
+        ForEach(SHAPE_TOOL_OPTIONS, (shapeType: ShapeType) => {
+          this.buildShapeOption(shapeType)
+        }, (shapeType: ShapeType): string => shapeType)
+      }
+      .width(204)
+      .padding(7)
+      .backgroundColor('#F8FAFC')
+      .borderRadius(12)
+      .border({
+        width: 1,
+        color: '#E2E8F0'
+      })
+    }
+    .width('100%')
+    .margin({
+      top: 52
+    })
+    .justifyContent(FlexAlign.Start)
+    .alignItems(VerticalAlign.Top)
+  }
+
+  @Builder
+  private buildShapeOption(shapeType: ShapeType): void {
+    Button() {
+      Row({ space: 8 }) {
+        this.buildShapeGlyph(shapeType, this.selectedShapeType === shapeType)
+
+        Text(this.getShapeLabel(shapeType))
+          .fontSize(13)
+          .fontWeight(this.selectedShapeType === shapeType ? FontWeight.Medium : FontWeight.Regular)
+          .fontColor(this.selectedShapeType === shapeType ? '#FFFFFF' : '#334155')
+          .layoutWeight(1)
+          .textAlign(TextAlign.Start)
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+    }
+    .width('100%')
+    .height(38)
+    .padding({
+      left: 8,
+      right: 8
+    })
+    .backgroundColor(this.selectedShapeType === shapeType ? '#0F172A' : '#FFFFFF')
+    .borderRadius(10)
+    .border({
+      width: 1,
+      color: this.selectedShapeType === shapeType ? '#0F172A' : '#CBD5E1'
+    })
+    .enabled(!this.isCanvasLoading)
+    .onClick(() => {
+      this.selectedShapeType = shapeType;
+      this.handleWorkspaceToolChange('shape');
+      this.closeShapeDropdown();
+    })
+  }
+
+  @Builder
+  private buildShapeGlyph(shapeType: ShapeType, isSelected: boolean): void {
+    Stack({ alignContent: Alignment.Center }) {
+      if (shapeType === 'rectangle') {
+        Column() {}
+          .width(24)
+          .height(16)
+          .backgroundColor('#00FFFFFF')
+          .border({
+            width: 2,
+            color: isSelected ? '#FFFFFF' : '#111827'
+          })
+      } else if (shapeType === 'circle') {
+        Column() {}
+          .width(20)
+          .height(20)
+          .backgroundColor('#00FFFFFF')
+          .borderRadius('50%')
+          .border({
+            width: 2,
+            color: isSelected ? '#FFFFFF' : '#111827'
+          })
+      } else if (shapeType === 'line') {
+        Column() {}
+          .width(24)
+          .height(2)
+          .backgroundColor(isSelected ? '#FFFFFF' : '#111827')
+      }
+    }
+    .width(28)
+    .height(20)
+  }
+
+  @Builder
   private buildPageTemplateDropdown(): void {
     Row() {
       Column({ space: 7 }) {
@@ -809,14 +945,23 @@ struct EditorPage {
         CanvasBoard({
           pageId: this.activePageId,
           canvasVersion: this.canvasVersion,
+          elementVersion: this.elementLayerRefreshVersion,
+          selectedShapeType: this.selectedShapeType,
           templateType: this.getActivePageTemplateType(),
           paperBackgroundColor: this.getActiveCanvasBackgroundColor(),
           pageWidth: this.getActiveCanvasWidth(),
           pageHeight: this.getActiveCanvasHeight(),
           isPanModeEnabled: this.isCanvasPanModeEnabled,
+          activeTool: this.toolSetting.tool,
           editorSnapshot: $editorSnapshot,
-          onContentChanged: (immediate: boolean): void => {
-            this.requestThumbnailRefresh(immediate);
+          onContentChanged: (immediate: boolean, kind: CanvasBoardContentChangeKind): void => {
+            if (kind === 'element') {
+              this.refreshElementLayer();
+            }
+            this.restoreWritingToolAfterOneShotElementInsertion();
+            if (immediate || kind === 'stroke') {
+              this.requestThumbnailRefresh(immediate);
+            }
           },
           onCanvasMetricsChanged: (width: number, height: number): void => {
             this.updatePageCanvasRenderSize(this.activePageId, width, height);
@@ -828,6 +973,7 @@ struct EditorPage {
       .width('100%')
       .layoutWeight(1)
       .borderRadius(30)
+      .clip(true)
       .border({
         width: 1,
         color: $r('app.color.editor_paper_border')
@@ -1456,6 +1602,7 @@ struct EditorPage {
       this.editorSnapshot = this.buildEmptySnapshot(targetPageId);
       if (redrawCanvas) {
         this.canvasVersion += 1;
+        this.refreshElementLayer();
         this.requestThumbnailRefresh(true);
       }
       return;
@@ -1469,8 +1616,13 @@ struct EditorPage {
     this.editorSnapshot = targetViewModel.getDebugSnapshot();
     if (redrawCanvas) {
       this.canvasVersion += 1;
+      this.refreshElementLayer();
       this.requestThumbnailRefresh(refreshThumbnailImmediately);
     }
+  }
+
+  private refreshElementLayer(): void {
+    this.elementLayerRefreshVersion += 1;
   }
 
   private requestThumbnailRefresh(immediate: boolean = false): void {
@@ -1557,6 +1709,28 @@ struct EditorPage {
     return Math.round(PAGE_THUMBNAIL_WIDTH * canvasHeight / Math.max(1, canvasWidth));
   }
 
+  private getActiveCanvasBounds(): PageCanvasRenderSize {
+    const cachedSize = this.pageCanvasRenderSizeMap.get(this.activePageId);
+    if (cachedSize !== undefined && cachedSize.width > 0 && cachedSize.height > 0) {
+      return {
+        width: cachedSize.width,
+        height: cachedSize.height
+      };
+    }
+
+    if (this.activePageCanvas !== null) {
+      return {
+        width: this.activePageCanvas.width,
+        height: this.activePageCanvas.height
+      };
+    }
+
+    return {
+      width: 1600,
+      height: 900
+    };
+  }
+
   private async handleUndo(): Promise<void> {
     if (this.drawingViewModel === null || this.isCanvasLoading) {
       return;
@@ -1587,12 +1761,79 @@ struct EditorPage {
     this.syncDrawingSnapshot(true, this.drawingViewModel, targetPageId, false);
   }
 
+  private async handleImageInsertRequest(): Promise<void> {
+    if (this.isImportingImage || this.isCanvasLoading || this.activePageId.length === 0 ||
+      this.drawingViewModel === null) {
+      return;
+    }
+
+    const hostContext: common.Context | undefined = this.getUIContext().getHostContext() as common.Context | undefined;
+    if (hostContext === undefined) {
+      return;
+    }
+
+    this.closeTransientDropdowns();
+    this.isImportingImage = true;
+    try {
+      const selectOptions = new picker.PhotoSelectOptions();
+      selectOptions.MIMEType = picker.PhotoViewMIMETypes.IMAGE_TYPE;
+      selectOptions.maxSelectNumber = 1;
+
+      const photoPicker = new picker.PhotoViewPicker(hostContext);
+      const selectResult = await photoPicker.select(selectOptions);
+      const selectedUri = selectResult.photoUris.length > 0 ? selectResult.photoUris[0] : '';
+      if (selectedUri.length === 0) {
+        return;
+      }
+
+      const importedAsset: ImportedImageAsset = await new ImageAssetDataSource(hostContext).importImage(selectedUri);
+      const insertedElement = this.drawingViewModel.insertImageElement(importedAsset, this.getActiveCanvasBounds());
+      if (insertedElement === null) {
+        this.syncDrawingSnapshot(false, this.drawingViewModel, this.currentDrawingPageId);
+        return;
+      }
+
+      this.refreshElementLayer();
+      this.syncDrawingSnapshot(false, this.drawingViewModel, this.currentDrawingPageId);
+      this.requestThumbnailRefresh(true);
+    } catch (error) {
+      if (this.drawingViewModel !== null) {
+        this.drawingViewModel.appendDebugEvent('insertImage', `failed error=${this.stringifyError(error)}`);
+        this.syncDrawingSnapshot(false, this.drawingViewModel, this.currentDrawingPageId);
+      }
+    } finally {
+      this.isImportingImage = false;
+    }
+  }
+
   private handleWorkspaceToolButtonClick(tool: ToolType): void {
     const isCurrentTool = this.toolSetting.tool === tool;
     this.isCanvasPanModeEnabled = false;
+    if (tool === 'text') {
+      this.handleWorkspaceToolChange(tool);
+      this.closeTransientDropdowns();
+      return;
+    }
+
+    if (tool === 'shape') {
+      this.handleWorkspaceToolChange(tool);
+      this.closePageActionMenu();
+      this.closeToolDropdown();
+      this.closePageTemplateDropdown();
+      this.isShapeDropdownVisible = isCurrentTool ? !this.isShapeDropdownVisible : true;
+      return;
+    }
+
+    if (tool === 'edit') {
+      this.handleWorkspaceToolChange(tool);
+      this.closeTransientDropdowns();
+      return;
+    }
+
     this.handleWorkspaceToolChange(tool);
     this.closePageActionMenu();
     this.closePageTemplateDropdown();
+    this.closeShapeDropdown();
 
     if (isCurrentTool) {
       this.isToolDropdownVisible = !this.isToolDropdownVisible;
@@ -1618,6 +1859,10 @@ struct EditorPage {
   }
 
   private handleWorkspaceToolChange(tool: ToolType): void {
+    if (this.isWritingTool(tool)) {
+      this.lastWritingTool = tool;
+    }
+
     const nextSetting: ToolSetting = {
       tool,
       color: this.toolSetting.color,
@@ -1638,6 +1883,38 @@ struct EditorPage {
     }
   }
 
+  private restoreWritingToolAfterOneShotElementInsertion(): void {
+    if (this.toolSetting.tool !== 'text' && this.toolSetting.tool !== 'shape') {
+      return;
+    }
+
+    const nextTool: ToolType = this.isWritingTool(this.lastWritingTool) ? this.lastWritingTool : 'pen';
+    const nextSetting: ToolSetting = {
+      tool: nextTool,
+      color: this.toolSetting.color,
+      width: this.toolSetting.width,
+      opacity: this.toolSetting.opacity
+    };
+
+    this.toolSetting = {
+      tool: nextSetting.tool,
+      color: nextSetting.color,
+      width: nextSetting.width,
+      opacity: nextSetting.opacity
+    };
+    this.isToolDropdownVisible = false;
+    this.isShapeDropdownVisible = false;
+
+    if (this.drawingViewModel !== null) {
+      this.drawingViewModel.updateToolSetting(nextSetting);
+      this.syncDrawingSnapshot(false, this.drawingViewModel, this.currentDrawingPageId);
+    }
+  }
+
+  private isWritingTool(tool: ToolType): boolean {
+    return tool === 'pen' || tool === 'pencil' || tool === 'highlighter';
+  }
+
   private getWorkspaceToolLabel(tool: ToolType): string {
     switch (tool) {
       case 'pen':
@@ -1648,8 +1925,27 @@ struct EditorPage {
         return 'Highlight';
       case 'eraser':
         return 'Eraser';
+      case 'text':
+        return 'Text';
+      case 'shape':
+        return 'Shape';
+      case 'edit':
+        return 'Edit';
       default:
         return tool;
+    }
+  }
+
+  private getShapeLabel(shapeType: ShapeType): string {
+    switch (shapeType) {
+      case 'rectangle':
+        return 'Rectangle';
+      case 'circle':
+        return 'Circle';
+      case 'line':
+        return 'Line';
+      default:
+        return shapeType;
     }
   }
 
@@ -1661,6 +1957,10 @@ struct EditorPage {
     this.isToolDropdownVisible = false;
   }
 
+  private closeShapeDropdown(): void {
+    this.isShapeDropdownVisible = false;
+  }
+
   private closePageTemplateDropdown(): void {
     this.isPageTemplateDropdownVisible = false;
   }
@@ -1668,6 +1968,7 @@ struct EditorPage {
   private closeTransientDropdowns(): void {
     this.closePageActionMenu();
     this.closeToolDropdown();
+    this.closeShapeDropdown();
     this.closePageTemplateDropdown();
   }
 
@@ -1692,6 +1993,7 @@ struct EditorPage {
     }
 
     this.closeToolDropdown();
+    this.closeShapeDropdown();
     this.closePageActionMenu();
     this.isPageTemplateDropdownVisible = !this.isPageTemplateDropdownVisible;
   }
@@ -2174,6 +2476,8 @@ struct EditorPage {
       pageId,
       toolSetting: this.buildDefaultToolSetting(),
       strokeCount: 0,
+      elementCount: 0,
+      selectedElementId: '',
       activeStrokeStyle: null,
       undoDepth: 0,
       redoDepth: 0,
@@ -2189,5 +2493,27 @@ struct EditorPage {
     } catch (_error) {
       return {};
     }
+  }
+
+  private stringifyError(error: Object): string {
+    if (error instanceof Error) {
+      return error.message.length > 0 ? error.message : error.name;
+    }
+
+    const errorRecord = error as Record<string, Object>;
+    const message = typeof errorRecord.message === 'string' ? errorRecord.message : '';
+    if (message.length > 0) {
+      return message;
+    }
+
+    try {
+      const serialized = JSON.stringify(error);
+      if (serialized.length > 0 && serialized !== '{}') {
+        return serialized;
+      }
+    } catch (_jsonError) {
+    }
+
+    return `${error}`;
   }
 }
