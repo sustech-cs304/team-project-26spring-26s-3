@@ -1378,9 +1378,7 @@ struct EditorPage {
 
     if (this.currentDrawingPageId.length > 0 && this.currentDrawingPageId !== pageId) {
       await this.flushActiveDrawingSession();
-      EditorSessionRegistry.clear(this.currentDrawingPageId);
     }
-    EditorSessionRegistry.clear(pageId);
 
     this.currentDrawingPageId = pageId;
     this.drawingViewModel = EditorSessionRegistry.getOrCreate(pageId, hostContext);
@@ -1390,11 +1388,13 @@ struct EditorPage {
 
     const targetPageId: string = pageId;
     const viewModel: DrawingEditorViewModel = this.drawingViewModel;
-    const loadPageTask = viewModel.loadPage(targetPageId);
     this.syncDrawingSnapshot(false, viewModel, targetPageId);
-    await loadPageTask;
-    if (this.activePageId === targetPageId && this.currentDrawingPageId === targetPageId) {
-      this.syncDrawingSnapshot(true, viewModel, targetPageId);
+    if (!viewModel.isLoadedForPage(targetPageId)) {
+      const loadPageTask = viewModel.loadPage(targetPageId);
+      await loadPageTask;
+      if (this.activePageId === targetPageId && this.currentDrawingPageId === targetPageId) {
+        this.syncDrawingSnapshot(true, viewModel, targetPageId);
+      }
     }
   }
 

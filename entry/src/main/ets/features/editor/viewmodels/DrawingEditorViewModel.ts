@@ -73,6 +73,7 @@ export class DrawingEditorViewModel {
   private lastPersistedChangeSequence: number = 0;
   private renderInvalidationSequence: number = 0;
   private lastRenderInvalidation: RenderInvalidation | null = null;
+  private hasLoadedPageSnapshot: boolean = false;
   private readonly instanceId: number = nextEditorViewModelInstanceId++;
 
   constructor(private readonly contextProvider: () => common.Context) {}
@@ -81,6 +82,7 @@ export class DrawingEditorViewModel {
     this.isLoading = true;
     this.errorMessage = '';
     this.pageId = pageId;
+    this.hasLoadedPageSnapshot = false;
     this.debugEvents = [];
     this.debugSequence = 0;
     this.persistenceStatus = 'loading';
@@ -95,6 +97,7 @@ export class DrawingEditorViewModel {
       this.markFullRenderInvalidation('load');
       this.changeSequence = 0;
       this.lastPersistedChangeSequence = 0;
+      this.hasLoadedPageSnapshot = true;
       this.persistenceStatus = `loaded count=${this.strokes.length}`;
       this.appendDebugEvent('loadPage', `loaded strokes=${this.strokes.length}`);
     } catch (error) {
@@ -105,6 +108,7 @@ export class DrawingEditorViewModel {
       this.markFullRenderInvalidation('load');
       this.changeSequence = 0;
       this.lastPersistedChangeSequence = 0;
+      this.hasLoadedPageSnapshot = false;
       this.persistenceStatus = `loadFailed error=${this.errorMessage}`;
       this.appendDebugEvent('loadPage', `failed error=${this.errorMessage}`);
     } finally {
@@ -352,6 +356,10 @@ export class DrawingEditorViewModel {
 
   isPageLoading(): boolean {
     return this.isLoading;
+  }
+
+  isLoadedForPage(pageId: string): boolean {
+    return this.pageId === pageId && this.hasLoadedPageSnapshot;
   }
 
   getRenderInvalidation(): RenderInvalidation | null {
