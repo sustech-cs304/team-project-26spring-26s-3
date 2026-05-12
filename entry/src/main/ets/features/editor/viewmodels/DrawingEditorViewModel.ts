@@ -69,6 +69,8 @@ type ElementEditGestureKind =
   'resizeTopRight' |
   'resizeBottomLeft' |
   'resizeBottomRight' |
+  'resizeTextLeft' |
+  'resizeTextRight' |
   'lineStart' |
   'lineEnd';
 
@@ -95,6 +97,8 @@ const MIN_SHAPE_DRAG_DISTANCE = 8;
 const ELEMENT_LINE_HIT_TOLERANCE = 8;
 const MIN_TEXT_FONT_SIZE = 8;
 const MAX_TEXT_FONT_SIZE = 96;
+const DEFAULT_TEXT_ELEMENT_WIDTH = 64;
+const MIN_TEXT_ELEMENT_WIDTH = 40;
 const TEXT_ELEMENT_HORIZONTAL_PADDING = 16;
 const TEXT_ELEMENT_VERTICAL_PADDING = 12;
 const TEXT_ELEMENT_WIDTH_FACTOR = 0.58;
@@ -553,7 +557,7 @@ export class DrawingEditorViewModel {
     this.cancelStroke();
     const timestamp = now();
     const fontSize = 18;
-    const textSize = this.calculateTextElementSize('Text', fontSize);
+    const textSize = this.buildDefaultTextElementSize(fontSize);
     const frame: ElementFrame = clampElementFrameToBounds({
       x: point.x - textSize.width / 2,
       y: point.y - DEFAULT_TEXT_ELEMENT_TOP_OFFSET,
@@ -759,34 +763,32 @@ export class DrawingEditorViewModel {
     };
   }
 
-  updateTextElementContent(elementId: string, content: string): void {
+  updateTextElementContentWithFrame(
+    elementId: string,
+    content: string,
+    frame: ElementFrame
+  ): TextCanvasElement | null {
     if (this.pageId.length === 0 || elementId.length === 0) {
-      return;
+      return null;
     }
 
     let changed = false;
+    let updatedTextElement: TextCanvasElement | null = null;
     const timestamp = now();
     this.elements = this.elements.map((element: CanvasElement): CanvasElement => {
       if (element.id !== elementId || element.type !== 'text') {
         return element;
       }
 
-      if (element.content === content) {
+      const frameChanged = element.x !== frame.x || element.y !== frame.y ||
+        element.width !== frame.width || element.height !== frame.height;
+      if (element.content === content && !frameChanged) {
+        updatedTextElement = this.cloneTextElement(element);
         return element;
       }
 
       changed = true;
-      const textSize = this.calculateTextElementSize(content, element.fontSize);
-      const frame = clampElementFrameToBounds({
-        x: element.x,
-        y: element.y,
-        width: textSize.width,
-        height: textSize.height
-      }, {
-        width: Math.max(element.x + textSize.width, element.x + element.width),
-        height: Math.max(element.y + textSize.height, element.y + element.height)
-      });
-      return {
+      const nextElement: TextCanvasElement = {
         id: element.id,
         pageId: element.pageId,
         type: 'text',
@@ -803,16 +805,20 @@ export class DrawingEditorViewModel {
         backgroundColor: element.backgroundColor,
         updatedAt: timestamp
       };
+      updatedTextElement = this.cloneTextElement(nextElement);
+      return nextElement;
     });
 
     if (!changed) {
-      return;
+      return null;
     }
 
     this.changeSequence += 1;
     this.persistenceStatus = 'pending text edit save';
-    this.schedulePersistCurrentStrokes('textEdit');
+    this.schedulePersistCurrentStrokes('textEdit', 0);
     this.errorMessage = '';
+    this.appendDebugEvent('textEdit', `element=${elementId} length=${content.length}`);
+    return updatedTextElement;
   }
 
   getActiveStroke(): Stroke | null {
@@ -1197,6 +1203,17 @@ export class DrawingEditorViewModel {
       return null;
     }
 
+    if (element.type === 'text') {
+      const verticalCenter = element.y + element.height / 2;
+      if (this.isPointNearGeometryPoint(point, { x: element.x, y: verticalCenter }, hitTolerance)) {
+        return 'resizeTextLeft';
+      }
+
+      if (this.isPointNearGeometryPoint(point, { x: element.x + element.width, y: verticalCenter }, hitTolerance)) {
+        return 'resizeTextRight';
+      }
+    }
+
     const handles: Array<{ kind: ElementEditGestureKind; point: ShapeGeometryPoint }> = [
       {
         kind: 'resizeTopLeft',
@@ -1246,6 +1263,8 @@ export class DrawingEditorViewModel {
       case 'resizeTopRight':
       case 'resizeBottomLeft':
       case 'resizeBottomRight':
+      case 'resizeTextLeft':
+      case 'resizeTextRight':
         return this.buildResizedElement(gesture, point, bounds);
       default:
         return null;
@@ -1361,6 +1380,10 @@ export class DrawingEditorViewModel {
 
     const targetFrame = this.buildResizeFrame(gesture.originalElement, gesture.kind, point, bounds);
     if (gesture.originalElement.type === 'text') {
+      if (gesture.kind === 'resizeTextLeft' || gesture.kind === 'resizeTextRight') {
+        return this.buildTextWidthResizedElement(gesture.originalElement, gesture.kind, point, bounds);
+      }
+
       return this.buildResizedTextElement(gesture.originalElement, gesture.kind, targetFrame, bounds);
     }
 
@@ -1393,6 +1416,14 @@ export class DrawingEditorViewModel {
         return this.normalizeFrame(left, clampedY, clampedX, bottom);
       case 'resizeBottomLeft':
         return this.normalizeFrame(clampedX, top, right, clampedY);
+      case 'resizeTextLeft':
+      case 'resizeTextRight':
+        return {
+          x: left,
+          y: top,
+          width: originalElement.width,
+          height: originalElement.height
+        };
       case 'resizeBottomRight':
       default:
         return this.normalizeFrame(left, top, clampedX, clampedY);
@@ -1405,9 +1436,18 @@ export class DrawingEditorViewModel {
     targetFrame: ElementFrame,
     bounds: ElementBounds
   ): TextCanvasElement {
-    const nextFontSize = this.calculateFontSizeForTextTarget(originalElement.content, targetFrame);
-    const textSize = this.calculateTextElementSize(originalElement.content, nextFontSize);
-    const anchoredFrame = this.buildAnchoredTextFrame(originalElement, kind, textSize, bounds);
+    const nextFontSize = this.calculateFontSizeForTextTarget(originalElement, targetFrame);
+    const anchoredFrame = this.buildAnchoredTextFrame(
+      originalElement,
+      kind,
+      this.clampFrameWithMinimumSize(
+        targetFrame,
+        bounds,
+        MIN_TEXT_ELEMENT_WIDTH,
+        this.calculateTextMinimumHeight(nextFontSize)
+      ),
+      bounds
+    );
     return {
       ...this.cloneTextElement(originalElement),
       x: anchoredFrame.x,
@@ -1419,55 +1459,116 @@ export class DrawingEditorViewModel {
     };
   }
 
-  private calculateFontSizeForTextTarget(content: string, targetFrame: ElementFrame): number {
-    const lines = this.getTextLines(content);
-    const longestLineLength = Math.max(1, ...lines.map((line: string): number => line.length));
-    const lineCount = Math.max(1, lines.length);
-    const widthFontSize = (Math.max(1, targetFrame.width) - TEXT_ELEMENT_HORIZONTAL_PADDING) /
-      (longestLineLength * TEXT_ELEMENT_WIDTH_FACTOR);
-    const heightFontSize = (Math.max(1, targetFrame.height) - TEXT_ELEMENT_VERTICAL_PADDING) /
-      (lineCount * TEXT_ELEMENT_LINE_HEIGHT_FACTOR);
-    const nextFontSize = Math.min(widthFontSize, heightFontSize);
-    return this.clampNumber(nextFontSize, MIN_TEXT_FONT_SIZE, MAX_TEXT_FONT_SIZE);
+  private buildTextWidthResizedElement(
+    originalElement: TextCanvasElement,
+    kind: ElementEditGestureKind,
+    point: StrokePoint,
+    bounds: ElementBounds
+  ): TextCanvasElement {
+    const right = originalElement.x + originalElement.width;
+    const minWidth = MIN_TEXT_ELEMENT_WIDTH;
+    const maxRightWidth = Math.max(minWidth, Math.max(1, bounds.width - originalElement.x));
+    if (kind === 'resizeTextRight') {
+      const targetWidth = this.clampNumber(point.x - originalElement.x, minWidth, maxRightWidth);
+      const targetHeight = this.calculatePredictedTextHeight(originalElement.content, targetWidth, originalElement.fontSize);
+      return this.cloneTextElementWithFrame(
+        originalElement,
+        clampElementFrameToBounds({
+          x: originalElement.x,
+          y: originalElement.y,
+          width: targetWidth,
+          height: targetHeight
+        }, bounds)
+      );
+    }
+
+    const maxLeftWidth = Math.max(minWidth, right);
+    const targetWidth = this.clampNumber(right - point.x, minWidth, maxLeftWidth);
+    const targetHeight = this.calculatePredictedTextHeight(originalElement.content, targetWidth, originalElement.fontSize);
+    const frame = clampElementFrameToBounds({
+      x: right - targetWidth,
+      y: originalElement.y,
+      width: targetWidth,
+      height: targetHeight
+    }, bounds);
+    return this.cloneTextElementWithFrame(originalElement, frame);
+  }
+
+  private calculateFontSizeForTextTarget(originalElement: TextCanvasElement, targetFrame: ElementFrame): number {
+    const widthRatio = Math.max(1, targetFrame.width) / Math.max(1, originalElement.width);
+    const heightRatio = Math.max(1, targetFrame.height) / Math.max(1, originalElement.height);
+    return this.clampNumber(
+      originalElement.fontSize * Math.min(widthRatio, heightRatio),
+      MIN_TEXT_FONT_SIZE,
+      MAX_TEXT_FONT_SIZE
+    );
   }
 
   private buildAnchoredTextFrame(
     originalElement: TextCanvasElement,
     kind: ElementEditGestureKind,
-    textSize: ElementBounds,
+    frame: ElementFrame,
     bounds: ElementBounds
   ): ElementFrame {
-    let x = originalElement.x;
-    let y = originalElement.y;
     if (kind === 'resizeTopLeft' || kind === 'resizeBottomLeft') {
-      x = originalElement.x + originalElement.width - textSize.width;
+      frame.x = originalElement.x + originalElement.width - frame.width;
     }
     if (kind === 'resizeTopLeft' || kind === 'resizeTopRight') {
-      y = originalElement.y + originalElement.height - textSize.height;
+      frame.y = originalElement.y + originalElement.height - frame.height;
     }
 
-    return clampElementFrameToBounds({
-      x,
-      y,
-      width: textSize.width,
-      height: textSize.height
-    }, bounds);
+    return clampElementFrameToBounds(frame, bounds);
   }
 
-  private calculateTextElementSize(content: string, fontSize: number): ElementBounds {
-    const lines = this.getTextLines(content);
-    const longestLineLength = Math.max(1, ...lines.map((line: string): number => line.length));
+  private buildDefaultTextElementSize(fontSize: number): ElementBounds {
     return {
-      width: Math.max(1, Math.ceil(longestLineLength * fontSize * TEXT_ELEMENT_WIDTH_FACTOR +
-        TEXT_ELEMENT_HORIZONTAL_PADDING)),
-      height: Math.max(1, Math.ceil(lines.length * fontSize * TEXT_ELEMENT_LINE_HEIGHT_FACTOR +
-        TEXT_ELEMENT_VERTICAL_PADDING))
+      width: DEFAULT_TEXT_ELEMENT_WIDTH,
+      height: this.calculateTextMinimumHeight(fontSize)
     };
+  }
+
+  private calculateTextMinimumHeight(fontSize: number): number {
+    return Math.max(1, Math.ceil(fontSize * TEXT_ELEMENT_LINE_HEIGHT_FACTOR + TEXT_ELEMENT_VERTICAL_PADDING));
+  }
+
+  private calculatePredictedTextHeight(content: string, width: number, fontSize: number): number {
+    const lines = this.getTextLines(content);
+    const contentWidth = Math.max(1, width - TEXT_ELEMENT_HORIZONTAL_PADDING);
+    const estimatedCharacterWidth = Math.max(1, fontSize * TEXT_ELEMENT_WIDTH_FACTOR);
+    const maxCharactersPerLine = Math.max(1, Math.floor(contentWidth / estimatedCharacterWidth));
+    let visualLineCount = 0;
+
+    for (const line of lines) {
+      visualLineCount += Math.max(1, Math.ceil(line.length / maxCharactersPerLine));
+    }
+
+    return Math.max(
+      this.calculateTextMinimumHeight(fontSize),
+      Math.ceil(visualLineCount * fontSize * TEXT_ELEMENT_LINE_HEIGHT_FACTOR + TEXT_ELEMENT_VERTICAL_PADDING)
+    );
   }
 
   private getTextLines(content: string): string[] {
     const normalizedContent = content.length === 0 ? 'Text' : content;
-    return normalizedContent.split('\n').map((line: string): string => line.length === 0 ? ' ' : line);
+    const rawLines = normalizedContent.split('\n');
+    const lines: string[] = [];
+
+    for (const line of rawLines) {
+      lines.push(line.length === 0 ? ' ' : line);
+    }
+
+    return lines.length === 0 ? ['Text'] : lines;
+  }
+
+  private cloneTextElementWithFrame(element: TextCanvasElement, frame: ElementFrame): TextCanvasElement {
+    return {
+      ...this.cloneTextElement(element),
+      x: frame.x,
+      y: frame.y,
+      width: frame.width,
+      height: frame.height,
+      updatedAt: now()
+    };
   }
 
   private normalizeFrame(left: number, top: number, right: number, bottom: number): ElementFrame {

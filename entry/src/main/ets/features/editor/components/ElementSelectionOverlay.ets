@@ -41,6 +41,10 @@ export struct ElementSelectionOverlay {
         this.element.width - HANDLE_SIZE - HANDLE_OFFSET,
         this.element.height - HANDLE_SIZE - HANDLE_OFFSET
       )
+      if (this.element.type === 'text') {
+        this.buildHandle(HANDLE_OFFSET, this.getBoxMiddleHandleY())
+        this.buildHandle(this.element.width - HANDLE_SIZE - HANDLE_OFFSET, this.getBoxMiddleHandleY())
+      }
       this.buildDeleteButton(this.getBoxDeleteButtonX(), 6)
     }
     .width(this.element.width)
@@ -199,6 +203,10 @@ export struct ElementSelectionOverlay {
 
   private getBoxDeleteButtonX(): number {
     return Math.max(0, this.element.width - DELETE_BUTTON_SIZE - 6);
+  }
+
+  private getBoxMiddleHandleY(): number {
+    return this.element.height / 2 - HANDLE_SIZE / 2;
   }
 
   private getLineDeleteButtonX(): number {

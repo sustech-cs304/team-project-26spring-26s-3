@@ -7,13 +7,15 @@ import { ElementSelectionOverlay } from './ElementSelectionOverlay';
 import { ImageElementView } from './ImageElementView';
 import { ShapeElementView } from './ShapeElementView';
 
+const TEXT_LINE_HEIGHT_FACTOR = 1.35;
+
 @Component
 export struct ElementLayer {
   @Watch('onPageIdChanged')
   @Prop pageId: string = '';
   @Watch('onRefreshVersionChanged')
   @Prop refreshVersion: number = 0;
-
+  @Prop editingElementId: string = '';
   @State private elements: CanvasElement[] = [];
   @State private selectedElementId: string = '';
   private viewModel: DrawingEditorViewModel | null = null;
@@ -26,11 +28,13 @@ export struct ElementLayer {
   build() {
     Stack() {
       ForEach(this.elements, (element: CanvasElement) => {
-        this.buildElement(element);
+        if (element.id !== this.editingElementId) {
+          this.buildElement(element);
+        }
       }, (element: CanvasElement): string => `${element.id}_${element.updatedAt}`)
 
       ForEach(this.elements, (element: CanvasElement) => {
-        if (element.id === this.selectedElementId) {
+        if (element.id === this.selectedElementId && element.id !== this.editingElementId) {
           ElementSelectionOverlay({ element: element })
         }
       }, (element: CanvasElement): string => this.getSelectionRenderKey(element))
@@ -53,7 +57,9 @@ export struct ElementLayer {
 
   @Builder
   private buildTextElement(element: TextCanvasElement): void {
-    Text(this.getDisplayText(element))
+    TextArea({
+      text: this.getDisplayText(element)
+    })
       .width(element.width)
       .height(element.height)
       .position({
@@ -67,15 +73,23 @@ export struct ElementLayer {
         bottom: 6
       })
       .fontSize(Math.max(8, element.fontSize))
+      .lineHeight(this.getTextLineHeight(element))
+      .fontFamily('monospace')
       .fontColor(element.color)
+      .wordBreak(WordBreak.BREAK_ALL)
+      .maxLines(1000)
+      .barState(BarState.Off)
       .backgroundColor(element.backgroundColor)
-      .textAlign(TextAlign.Start)
       .zIndex(element.zIndex)
       .hitTestBehavior(HitTestMode.None)
   }
 
   private getDisplayText(element: TextCanvasElement): string {
     return element.content.length === 0 ? 'Text' : element.content;
+  }
+
+  private getTextLineHeight(element: TextCanvasElement): number {
+    return Math.max(8, element.fontSize) * TEXT_LINE_HEIGHT_FACTOR;
   }
 
   private getSelectionRenderKey(element: CanvasElement): string {

@@ -6,6 +6,12 @@ interface CanvasResolvedColor {
   alpha: number;
 }
 
+const TEXT_HORIZONTAL_PADDING = 16;
+const TEXT_VERTICAL_PADDING = 12;
+const TEXT_LINE_HEIGHT_FACTOR = 1.35;
+const TEXT_PADDING_LEFT = 8;
+const TEXT_PADDING_TOP = 6;
+
 export class CanvasElementRenderer {
   static drawElements(context: CanvasRenderingContext2D, elements: CanvasElement[]): void {
     const sortedElements = elements
@@ -28,22 +34,21 @@ export class CanvasElementRenderer {
   }
 
   private static drawTextElement(context: CanvasRenderingContext2D, element: TextCanvasElement): void {
-    const lines = CanvasElementRenderer.buildTextLines(element.content);
     const fontSize = Math.max(8, element.fontSize);
-    const padding = 8;
-    const lineHeight = fontSize * 1.25;
-    const maxLineCount = Math.max(1, Math.floor((element.height - padding * 2) / lineHeight));
+    const lineHeight = fontSize * TEXT_LINE_HEIGHT_FACTOR;
+    const maxLineCount = Math.max(1, Math.floor((element.height - TEXT_VERTICAL_PADDING) / lineHeight));
 
     context.save();
     CanvasElementRenderer.drawTextBackground(context, element);
     const textColor = CanvasElementRenderer.resolveCanvasColor(element.color, '#111827');
     context.fillStyle = textColor.fillStyle;
     context.globalAlpha = textColor.alpha;
-    context.font = `${fontSize}px sans-serif`;
+    context.font = `${fontSize}px monospace`;
     context.textBaseline = 'top';
+    const lines = CanvasElementRenderer.buildWrappedTextLines(context, element.content, element.width);
 
     for (let index = 0; index < Math.min(lines.length, maxLineCount); index += 1) {
-      context.fillText(lines[index], element.x + padding, element.y + padding + index * lineHeight);
+      context.fillText(lines[index], element.x + TEXT_PADDING_LEFT, element.y + TEXT_PADDING_TOP + index * lineHeight);
     }
 
     context.restore();
@@ -87,6 +92,29 @@ export class CanvasElementRenderer {
 
     for (const line of rawLines) {
       result.push(line.length === 0 ? ' ' : line);
+    }
+
+    return result.length === 0 ? ['Text'] : result;
+  }
+
+  private static buildWrappedTextLines(context: CanvasRenderingContext2D, content: string, width: number): string[] {
+    const hardLines = CanvasElementRenderer.buildTextLines(content);
+    const result: string[] = [];
+    const contentWidth = Math.max(1, width - TEXT_HORIZONTAL_PADDING);
+
+    for (const hardLine of hardLines) {
+      let currentLine = '';
+      for (let index = 0; index < hardLine.length; index += 1) {
+        const nextCharacter = hardLine.charAt(index);
+        const nextLine = currentLine + nextCharacter;
+        if (currentLine.length === 0 || context.measureText(nextLine).width <= contentWidth) {
+          currentLine = nextLine;
+        } else {
+          result.push(currentLine);
+          currentLine = nextCharacter;
+        }
+      }
+      result.push(currentLine.length === 0 ? ' ' : currentLine);
     }
 
     return result.length === 0 ? ['Text'] : result;

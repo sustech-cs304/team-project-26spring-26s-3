@@ -952,6 +952,7 @@ struct EditorPage {
           pageWidth: this.getActiveCanvasWidth(),
           pageHeight: this.getActiveCanvasHeight(),
           isPanModeEnabled: this.isCanvasPanModeEnabled,
+          activeTool: this.toolSetting.tool,
           editorSnapshot: $editorSnapshot,
           onContentChanged: (immediate: boolean, kind: CanvasBoardContentChangeKind): void => {
             if (kind === 'element') {
