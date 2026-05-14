@@ -1,5 +1,5 @@
 import { BoundingBox, getDistance, getStrokeRenderBoundingBox, mergeBoundingBoxes } from '../../../common/utils/GeometryUtil';
-import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
+import { getStrokeRenderKey, Stroke, StrokePoint } from '../../../domain/entities/Stroke';
 import { DrawableToolType } from '../../../domain/entities/ToolSetting';
 
 interface RenderPoint {
@@ -37,6 +37,22 @@ interface BrushPass {
   widthJitter: number;
   alphaJitter: number;
   normalOffsetFactor: number;
+}
+
+export interface InProgressStrokeRenderSession {
+  strokeId: string;
+  styleSignature: string;
+  renderKey: string;
+  processedPointCount: number;
+  spacing: number;
+  carryDistance: number;
+  lastFilteredPoint: StrokePoint | null;
+  lastEmittedPoint: StrokePoint | null;
+  lastEmittedVelocity: number;
+  lastEmittedWidth: number;
+  lastEmittedAlpha: number;
+  lastEmittedTangentX: number;
+  lastEmittedTangentY: number;
 }
 
 export interface IncrementalPreviewSession {
@@ -128,8 +144,11 @@ const MIN_DT = 4;
 const MIN_RENDER_WIDTH = 0.8;
 const MIN_PRESSURE = 0.12;
 const HASH_OFFSET = 2166136261;
-const INCREMENTAL_PREVIEW_MUTABLE_POINT_WINDOW = 16;
-const INCREMENTAL_PREVIEW_REPAIR_OVERLAP_POINTS = 6;
+const CAUSAL_MIN_SMOOTHING = 0.18;
+const CAUSAL_MAX_SMOOTHING = 0.72;
+const CAUSAL_SMOOTHING_DISTANCE_FACTOR = 1.4;
+const INCREMENTAL_PREVIEW_MUTABLE_POINT_WINDOW = 24;
+const INCREMENTAL_PREVIEW_REPAIR_OVERLAP_POINTS = 12;
 const INCREMENTAL_PREVIEW_STABLE_PROMOTION_STEP = 4;
 export class StrokeRenderer {
   static drawStrokeFast(context: CanvasRenderingContext2D, stroke: Stroke): void {
@@ -137,48 +156,436 @@ export class StrokeRenderer {
   }
 
   static drawPreviewStrokeFast(context: CanvasRenderingContext2D, stroke: Stroke): void {
-    this.drawRawPolyline(context, stroke);
+    this.drawPreviewStroke(context, stroke);
   }
 
   static drawStroke(context: CanvasRenderingContext2D, stroke: Stroke): void {
-    if (stroke.points.length === 0) {
-      return;
-    }
-
-    const profile = this.getProfile(stroke.style.tool);
-    const renderPoints = this.buildRenderPoints(stroke.points, stroke.style.width, profile);
-    if (renderPoints.length === 0) {
-      return;
-    }
-
-    const samples = this.buildRenderSamples(renderPoints, stroke.style.width, profile);
+    const samples = this.buildVisibleSamplesForStroke(stroke);
     if (samples.length === 0) {
       return;
     }
 
-    const strokeSeed = this.hashString(stroke.id);
+    const strokeSeed = this.hashString(getStrokeRenderKey(stroke));
     const passes = this.getBrushPasses(stroke.style.tool);
     this.drawBrushPasses(context, stroke.style.tool, stroke.style.color, stroke.style.opacity, strokeSeed, samples, passes);
   }
 
   static drawPreviewStroke(context: CanvasRenderingContext2D, stroke: Stroke): void {
-    if (stroke.points.length === 0) {
-      return;
+    this.drawStroke(context, stroke);
+  }
+
+  static replayInProgressStroke(
+    context: CanvasRenderingContext2D,
+    stroke: Stroke
+  ): InProgressStrokeRenderSession {
+    let session = this.createInProgressStrokeRenderSession(stroke);
+    const warmupPoints = stroke.renderWarmupPoints ?? [];
+    if (warmupPoints.length === 0) {
+      const result = this.consumeStrokePoints(stroke, session, stroke.points, true);
+      if (result.emittedSamples.length > 0) {
+        this.drawEmittedSamples(context, stroke, result.emittedSamples);
+      }
+      result.session.processedPointCount = stroke.points.length;
+      return result.session;
     }
 
+    session = this.consumeStrokePoints(stroke, session, warmupPoints, false).session;
+    const warmResult = this.buildVisibleSamplesFromWarmSession(stroke, session);
+    if (warmResult.emittedSamples.length > 0) {
+      this.drawEmittedSamples(context, stroke, warmResult.emittedSamples);
+    }
+    warmResult.session.processedPointCount = stroke.points.length;
+    return warmResult.session;
+  }
+
+  static appendInProgressStroke(
+    context: CanvasRenderingContext2D,
+    stroke: Stroke,
+    previousSession: InProgressStrokeRenderSession | null
+  ): InProgressStrokeRenderSession {
+    if (previousSession === null || !this.canContinueInProgressStroke(previousSession, stroke)) {
+      return this.replayInProgressStroke(context, stroke);
+    }
+
+    const previousSample = this.restoreLastEmittedSample(previousSession);
+    const nextRawPoints = stroke.points.slice(previousSession.processedPointCount);
+    if (nextRawPoints.length === 0) {
+      return previousSession;
+    }
+
+    const result = this.consumeStrokePoints(stroke, previousSession, nextRawPoints, true);
+    if (result.emittedSamples.length > 0) {
+      const samplesToDraw = previousSample === null
+        ? result.emittedSamples
+        : [previousSample, ...result.emittedSamples];
+      this.drawEmittedSamples(context, stroke, samplesToDraw);
+    }
+    result.session.processedPointCount = stroke.points.length;
+    return result.session;
+  }
+
+  private static buildVisibleSamplesForStroke(stroke: Stroke): RenderSample[] {
+    let session = this.createInProgressStrokeRenderSession(stroke);
+    const warmupPoints = stroke.renderWarmupPoints ?? [];
+    if (warmupPoints.length === 0) {
+      return this.consumeStrokePoints(stroke, session, stroke.points, true).emittedSamples;
+    }
+
+    session = this.consumeStrokePoints(stroke, session, warmupPoints, false).session;
+    return this.buildVisibleSamplesFromWarmSession(stroke, session).emittedSamples;
+  }
+
+  private static createInProgressStrokeRenderSession(stroke: Stroke): InProgressStrokeRenderSession {
     const profile = this.getProfile(stroke.style.tool);
-    const renderPoints = this.buildRenderPoints(stroke.points, stroke.style.width, profile);
-    if (renderPoints.length === 0) {
+    return {
+      strokeId: stroke.id,
+      styleSignature: this.buildStyleSignature(stroke),
+      renderKey: getStrokeRenderKey(stroke),
+      processedPointCount: 0,
+      spacing: Math.max(MIN_RESAMPLE_SPACING, stroke.style.width * profile.resampleSpacingFactor),
+      carryDistance: 0,
+      lastFilteredPoint: null,
+      lastEmittedPoint: null,
+      lastEmittedVelocity: 0,
+      lastEmittedWidth: 0,
+      lastEmittedAlpha: 0,
+      lastEmittedTangentX: 1,
+      lastEmittedTangentY: 0
+    };
+  }
+
+  private static canContinueInProgressStroke(
+    session: InProgressStrokeRenderSession,
+    stroke: Stroke
+  ): boolean {
+    return session.strokeId === stroke.id &&
+      session.styleSignature === this.buildStyleSignature(stroke) &&
+      session.renderKey === getStrokeRenderKey(stroke) &&
+      session.processedPointCount <= stroke.points.length;
+  }
+
+  private static consumeStrokePoints(
+    stroke: Stroke,
+    sourceSession: InProgressStrokeRenderSession,
+    points: StrokePoint[],
+    emitVisible: boolean
+  ): { session: InProgressStrokeRenderSession; emittedSamples: RenderSample[] } {
+    const profile = this.getProfile(stroke.style.tool);
+    const nextSession: InProgressStrokeRenderSession = this.cloneInProgressStrokeRenderSession(sourceSession);
+    const emittedSamples: RenderSample[] = [];
+
+    for (const point of points) {
+      const normalizedPoint = this.normalizeRenderPoint(point);
+      if (nextSession.lastFilteredPoint === null) {
+        nextSession.lastFilteredPoint = this.cloneStrokePoint(normalizedPoint);
+        const firstSample = this.createFirstCausalSample(normalizedPoint, stroke.style.width, profile);
+        this.applyEmittedSampleToSession(nextSession, firstSample);
+        if (emitVisible) {
+          emittedSamples.push(firstSample);
+        }
+        continue;
+      }
+
+      const previousFilteredPoint = this.toRenderPoint(nextSession.lastFilteredPoint);
+      const filteredPoint = this.filterCausalPoint(previousFilteredPoint, normalizedPoint, stroke.style.width);
+      this.consumeCausalSegment(
+        nextSession,
+        previousFilteredPoint,
+        filteredPoint,
+        stroke.style.width,
+        profile,
+        emitVisible,
+        emittedSamples
+      );
+      nextSession.lastFilteredPoint = this.cloneStrokePoint(filteredPoint);
+    }
+
+    return {
+      session: nextSession,
+      emittedSamples
+    };
+  }
+
+  private static consumeCausalSegment(
+    session: InProgressStrokeRenderSession,
+    segmentStart: RenderPoint,
+    segmentEnd: RenderPoint,
+    baseWidth: number,
+    profile: BrushProfile,
+    emitVisible: boolean,
+    emittedSamples: RenderSample[]
+  ): void {
+    let currentStart = this.cloneRenderPoint(segmentStart);
+    let remainingDistance = getDistance(currentStart, segmentEnd);
+    if (remainingDistance <= 0) {
       return;
     }
 
-    const samples = this.buildRenderSamples(renderPoints, stroke.style.width, profile);
+    let carryDistance = session.carryDistance;
+    while (carryDistance + remainingDistance >= session.spacing) {
+      const nextDistance = session.spacing - carryDistance;
+      const ratio = remainingDistance <= 0 ? 0 : nextDistance / remainingDistance;
+      const emittedPoint = this.interpolateRenderPoint(currentStart, segmentEnd, ratio);
+      const emittedSample = this.buildNextCausalSample(session, emittedPoint, baseWidth, profile);
+      this.applyEmittedSampleToSession(session, emittedSample);
+      if (emitVisible) {
+        emittedSamples.push(emittedSample);
+      }
+      currentStart = emittedPoint;
+      remainingDistance = getDistance(currentStart, segmentEnd);
+      carryDistance = 0;
+    }
+
+    session.carryDistance = carryDistance + remainingDistance;
+  }
+
+  private static buildVisibleSamplesFromWarmSession(
+    stroke: Stroke,
+    session: InProgressStrokeRenderSession
+  ): { session: InProgressStrokeRenderSession; emittedSamples: RenderSample[] } {
+    if (stroke.points.length === 0) {
+      return {
+        session,
+        emittedSamples: []
+      };
+    }
+
+    const warmedSession = this.alignSessionToVisibleStart(session, stroke.points[0]);
+    const seededSample = this.restoreLastEmittedSample(warmedSession);
+    const emittedSamples: RenderSample[] = seededSample === null ? [] : [seededSample];
+    if (stroke.points.length === 1) {
+      return {
+        session: warmedSession,
+        emittedSamples
+      };
+    }
+
+    const result = this.consumeStrokePoints(stroke, warmedSession, stroke.points.slice(1), true);
+    return {
+      session: result.session,
+      emittedSamples: emittedSamples.concat(result.emittedSamples)
+    };
+  }
+
+  private static alignSessionToVisibleStart(
+    session: InProgressStrokeRenderSession,
+    point: StrokePoint
+  ): InProgressStrokeRenderSession {
+    const nextSession = this.cloneInProgressStrokeRenderSession(session);
+    const normalizedPoint = this.normalizeRenderPoint(point);
+    nextSession.lastFilteredPoint = this.cloneStrokePoint(normalizedPoint);
+    nextSession.lastEmittedPoint = this.cloneStrokePoint(normalizedPoint);
+    nextSession.carryDistance = 0;
+    return nextSession;
+  }
+
+  private static createFirstCausalSample(
+    point: RenderPoint,
+    baseWidth: number,
+    profile: BrushProfile
+  ): RenderSample {
+    const pressureFactor = 1 + (point.pressure - 0.5) * 2 * profile.pressureFactor;
+    const velocityFactor = 0.72 + 0.48;
+    const width = baseWidth * this.clamp(
+      pressureFactor * velocityFactor,
+      profile.minWidthFactor,
+      profile.maxWidthFactor
+    );
+    const alpha = this.clamp(
+      profile.baseAlpha * (0.84 + point.pressure * 0.34),
+      0.04,
+      1
+    );
+
+    return {
+      x: point.x,
+      y: point.y,
+      t: point.t,
+      pressure: point.pressure,
+      velocity: 0,
+      width,
+      alpha,
+      tangentX: 1,
+      tangentY: 0,
+      normalX: 0,
+      normalY: 1
+    };
+  }
+
+  private static buildNextCausalSample(
+    session: InProgressStrokeRenderSession,
+    point: RenderPoint,
+    baseWidth: number,
+    profile: BrushProfile
+  ): RenderSample {
+    const previousSample = this.restoreLastEmittedSample(session);
+    if (previousSample === null) {
+      return this.createFirstCausalSample(point, baseWidth, profile);
+    }
+
+    const deltaX = point.x - previousSample.x;
+    const deltaY = point.y - previousSample.y;
+    const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+    const deltaTime = Math.max(MIN_DT, point.t - previousSample.t);
+    const tangentLength = Math.max(distance, 0.0001);
+    const tangentX = distance > 0 ? deltaX / tangentLength : previousSample.tangentX;
+    const tangentY = distance > 0 ? deltaY / tangentLength : previousSample.tangentY;
+    const velocity = this.lerp(previousSample.velocity, distance / deltaTime, profile.velocityBlend);
+    const pressureFactor = 1 + (point.pressure - 0.5) * 2 * profile.pressureFactor;
+    const velocityFactor = 0.72 + 0.48 / (1 + velocity * profile.velocityFactor);
+    const targetWidth = baseWidth * this.clamp(
+      pressureFactor * velocityFactor,
+      profile.minWidthFactor,
+      profile.maxWidthFactor
+    );
+    const width = this.lerp(previousSample.width, targetWidth, profile.widthBlend);
+    const alpha = this.clamp(
+      profile.baseAlpha * (0.84 + point.pressure * 0.34),
+      0.04,
+      1
+    );
+
+    return {
+      x: point.x,
+      y: point.y,
+      t: point.t,
+      pressure: point.pressure,
+      velocity,
+      width,
+      alpha,
+      tangentX,
+      tangentY,
+      normalX: -tangentY,
+      normalY: tangentX
+    };
+  }
+
+  private static applyEmittedSampleToSession(
+    session: InProgressStrokeRenderSession,
+    sample: RenderSample
+  ): void {
+    session.lastEmittedPoint = {
+      x: sample.x,
+      y: sample.y,
+      t: sample.t,
+      pressure: sample.pressure
+    };
+    session.lastEmittedVelocity = sample.velocity;
+    session.lastEmittedWidth = sample.width;
+    session.lastEmittedAlpha = sample.alpha;
+    session.lastEmittedTangentX = sample.tangentX;
+    session.lastEmittedTangentY = sample.tangentY;
+  }
+
+  private static restoreLastEmittedSample(session: InProgressStrokeRenderSession): RenderSample | null {
+    if (session.lastEmittedPoint === null) {
+      return null;
+    }
+
+    return {
+      x: session.lastEmittedPoint.x,
+      y: session.lastEmittedPoint.y,
+      t: session.lastEmittedPoint.t,
+      pressure: this.resolvePressure(session.lastEmittedPoint.pressure),
+      velocity: session.lastEmittedVelocity,
+      width: session.lastEmittedWidth,
+      alpha: session.lastEmittedAlpha,
+      tangentX: session.lastEmittedTangentX,
+      tangentY: session.lastEmittedTangentY,
+      normalX: -session.lastEmittedTangentY,
+      normalY: session.lastEmittedTangentX
+    };
+  }
+
+  private static drawEmittedSamples(
+    context: CanvasRenderingContext2D,
+    stroke: Stroke,
+    samples: RenderSample[]
+  ): void {
     if (samples.length === 0) {
       return;
     }
 
-    const previewPasses = this.getPreviewPasses(stroke.style.tool);
-    this.drawBrushPasses(context, stroke.style.tool, stroke.style.color, stroke.style.opacity, 0, samples, previewPasses);
+    const strokeSeed = this.hashString(getStrokeRenderKey(stroke));
+    const passes = this.getBrushPasses(stroke.style.tool);
+    this.drawBrushPasses(context, stroke.style.tool, stroke.style.color, stroke.style.opacity, strokeSeed, samples, passes);
+  }
+
+  private static filterCausalPoint(
+    previousPoint: RenderPoint,
+    nextPoint: RenderPoint,
+    baseWidth: number
+  ): RenderPoint {
+    const distance = getDistance(previousPoint, nextPoint);
+    const smoothing = this.clamp(
+      distance / Math.max(1, baseWidth * CAUSAL_SMOOTHING_DISTANCE_FACTOR),
+      CAUSAL_MIN_SMOOTHING,
+      CAUSAL_MAX_SMOOTHING
+    );
+
+    return {
+      x: this.lerp(previousPoint.x, nextPoint.x, smoothing),
+      y: this.lerp(previousPoint.y, nextPoint.y, smoothing),
+      t: this.lerp(previousPoint.t, nextPoint.t, smoothing),
+      pressure: this.lerp(previousPoint.pressure, nextPoint.pressure, smoothing)
+    };
+  }
+
+  private static normalizeRenderPoint(point: StrokePoint): RenderPoint {
+    return {
+      x: point.x,
+      y: point.y,
+      t: point.t,
+      pressure: this.resolvePressure(point.pressure)
+    };
+  }
+
+  private static toRenderPoint(point: StrokePoint): RenderPoint {
+    return {
+      x: point.x,
+      y: point.y,
+      t: point.t,
+      pressure: this.resolvePressure(point.pressure)
+    };
+  }
+
+  private static cloneStrokePoint(point: RenderPoint): StrokePoint {
+    return {
+      x: point.x,
+      y: point.y,
+      t: point.t,
+      pressure: point.pressure
+    };
+  }
+
+  private static cloneInProgressStrokeRenderSession(
+    session: InProgressStrokeRenderSession
+  ): InProgressStrokeRenderSession {
+    return {
+      strokeId: session.strokeId,
+      styleSignature: session.styleSignature,
+      renderKey: session.renderKey,
+      processedPointCount: session.processedPointCount,
+      spacing: session.spacing,
+      carryDistance: session.carryDistance,
+      lastFilteredPoint: session.lastFilteredPoint === null ? null : {
+        x: session.lastFilteredPoint.x,
+        y: session.lastFilteredPoint.y,
+        t: session.lastFilteredPoint.t,
+        pressure: session.lastFilteredPoint.pressure
+      },
+      lastEmittedPoint: session.lastEmittedPoint === null ? null : {
+        x: session.lastEmittedPoint.x,
+        y: session.lastEmittedPoint.y,
+        t: session.lastEmittedPoint.t,
+        pressure: session.lastEmittedPoint.pressure
+      },
+      lastEmittedVelocity: session.lastEmittedVelocity,
+      lastEmittedWidth: session.lastEmittedWidth,
+      lastEmittedAlpha: session.lastEmittedAlpha,
+      lastEmittedTangentX: session.lastEmittedTangentX,
+      lastEmittedTangentY: session.lastEmittedTangentY
+    };
   }
 
   static createIncrementalPreviewSession(stroke: Stroke): IncrementalPreviewSession {
@@ -793,6 +1200,13 @@ export class StrokeRenderer {
     return {
       id: stroke.id,
       pageId: stroke.pageId,
+      renderKey: stroke.renderKey,
+      renderWarmupPoints: stroke.renderWarmupPoints?.map((point: StrokePoint) => ({
+        x: point.x,
+        y: point.y,
+        t: point.t,
+        pressure: point.pressure
+      })) ?? [],
       points: stroke.points.slice(normalizedStartIndex, normalizedEndExclusive).map((point: StrokePoint) => ({
         x: point.x,
         y: point.y,

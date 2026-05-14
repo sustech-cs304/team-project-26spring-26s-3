@@ -3,6 +3,7 @@ import common from '@ohos.app.ability.common';
 import {
   BoundingBox,
   doBoundingBoxesIntersect,
+  ErasedStrokeSegment,
   eraseStrokePointsWithPath,
   expandBoundingBox,
   getBoundingBox,
@@ -41,6 +42,7 @@ import {
   UndoRedoDebugState
 } from '../controllers/UndoRedoController';
 import { EditorDebugSnapshot } from './EditorDebugSnapshot';
+import { EditorPerformanceTrace } from '../utils/EditorPerformanceTrace';
 import { RenderInvalidation, RenderInvalidationReason } from './RenderInvalidation';
 
 const DEFAULT_TOOL_SETTING: ToolSetting = {
@@ -89,6 +91,7 @@ export interface ImageInsertAsset {
 
 const MAX_DEBUG_EVENTS = 20;
 const SAVE_DEBOUNCE_MS = 900;
+const INTERACTION_SAVE_DEBOUNCE_MS = 180;
 const EDITOR_BUILD_MARKER = 'editor-build-2026-04-20-state-link-sync-v1';
 const DEFAULT_TEXT_ELEMENT_TOP_OFFSET = 24;
 const DEFAULT_SHAPE_STROKE_COLOR = '#111827';
@@ -230,6 +233,7 @@ export class DrawingEditorViewModel {
       return null;
     }
 
+    const applyStartedAt = Date.now();
     const nextStrokes = this.strokes.slice();
     nextStrokes.push(completedStroke);
     this.strokes = nextStrokes;
@@ -239,6 +243,12 @@ export class DrawingEditorViewModel {
     this.persistenceStatus = 'pending stroke save';
     this.appendDebugEvent('finishStroke', `queuedSave count=${nextStrokes.length} stroke=${this.describeStroke(completedStroke)}`);
     this.schedulePersistCurrentStrokes('stroke');
+    EditorPerformanceTrace.record(
+      'stroke.commit',
+      Date.now() - applyStartedAt,
+      `strokes=${nextStrokes.length} strokePoints=${completedStroke.points.length}`,
+      4
+    );
 
     return completedStroke;
   }
@@ -259,21 +269,43 @@ export class DrawingEditorViewModel {
     }
 
     this.cancelStroke();
+    const operationStartedAt = Date.now();
+    const beforeStrokeCount = this.strokes.length;
+    const beforePointCount = this.countStrokePoints(this.strokes);
     this.appendDebugEvent('undo', `requested count=${this.strokes.length} history=${this.describeHistoryState()}`);
-    const undoResult: UndoRedoApplyResult = this.undoRedoController.undo(this.strokes);
+    const undoResult: UndoRedoApplyResult = EditorPerformanceTrace.measureSync(
+      'undo.controller',
+      () => this.undoRedoController.undo(this.strokes),
+      `beforeStrokes=${beforeStrokeCount} beforePoints=${beforePointCount}`,
+      6
+    );
     if (undoResult.removed.length === 0 && undoResult.added.length === 0) {
       this.appendDebugEvent('undo', 'skipped noChange');
       return;
     }
 
+    const applyStartedAt = Date.now();
     this.strokes = undoResult.strokes;
     this.applyStrokeSpatialIndexMutation(undoResult.removed, undoResult.added);
     this.markPartialRenderInvalidation('undo', undoResult.removed, undoResult.added);
     this.changeSequence += 1;
     this.persistenceStatus = 'pending undo save';
-    this.schedulePersistCurrentStrokes('undo', 0);
+    this.schedulePersistCurrentStrokes('undo', INTERACTION_SAVE_DEBOUNCE_MS);
     this.errorMessage = '';
     this.appendDebugEvent('undo', `applied queuedSave count=${this.strokes.length} history=${this.describeHistoryState()}`);
+    const afterPointCount = this.countStrokePoints(this.strokes);
+    EditorPerformanceTrace.record(
+      'undo.apply',
+      Date.now() - applyStartedAt,
+      `afterStrokes=${this.strokes.length} afterPoints=${afterPointCount} removed=${undoResult.removed.length} added=${undoResult.added.length}`,
+      6
+    );
+    EditorPerformanceTrace.record(
+      'undo.total',
+      Date.now() - operationStartedAt,
+      `beforeStrokes=${beforeStrokeCount} afterStrokes=${this.strokes.length} beforePoints=${beforePointCount} afterPoints=${afterPointCount} persistDelay=${INTERACTION_SAVE_DEBOUNCE_MS}`,
+      8
+    );
   }
 
   async redo(): Promise<void> {
@@ -283,21 +315,43 @@ export class DrawingEditorViewModel {
     }
 
     this.cancelStroke();
+    const operationStartedAt = Date.now();
+    const beforeStrokeCount = this.strokes.length;
+    const beforePointCount = this.countStrokePoints(this.strokes);
     this.appendDebugEvent('redo', `requested count=${this.strokes.length} history=${this.describeHistoryState()}`);
-    const redoResult: UndoRedoApplyResult = this.undoRedoController.redo(this.strokes);
+    const redoResult: UndoRedoApplyResult = EditorPerformanceTrace.measureSync(
+      'redo.controller',
+      () => this.undoRedoController.redo(this.strokes),
+      `beforeStrokes=${beforeStrokeCount} beforePoints=${beforePointCount}`,
+      6
+    );
     if (redoResult.removed.length === 0 && redoResult.added.length === 0) {
       this.appendDebugEvent('redo', 'skipped noChange');
       return;
     }
 
+    const applyStartedAt = Date.now();
     this.strokes = redoResult.strokes;
     this.applyStrokeSpatialIndexMutation(redoResult.removed, redoResult.added);
     this.markPartialRenderInvalidation('redo', redoResult.removed, redoResult.added);
     this.changeSequence += 1;
     this.persistenceStatus = 'pending redo save';
-    this.schedulePersistCurrentStrokes('redo', 0);
+    this.schedulePersistCurrentStrokes('redo', INTERACTION_SAVE_DEBOUNCE_MS);
     this.errorMessage = '';
     this.appendDebugEvent('redo', `applied queuedSave count=${this.strokes.length} history=${this.describeHistoryState()}`);
+    const afterPointCount = this.countStrokePoints(this.strokes);
+    EditorPerformanceTrace.record(
+      'redo.apply',
+      Date.now() - applyStartedAt,
+      `afterStrokes=${this.strokes.length} afterPoints=${afterPointCount} removed=${redoResult.removed.length} added=${redoResult.added.length}`,
+      6
+    );
+    EditorPerformanceTrace.record(
+      'redo.total',
+      Date.now() - operationStartedAt,
+      `beforeStrokes=${beforeStrokeCount} afterStrokes=${this.strokes.length} beforePoints=${beforePointCount} afterPoints=${afterPointCount} persistDelay=${INTERACTION_SAVE_DEBOUNCE_MS}`,
+      8
+    );
   }
 
   async clear(): Promise<void> {
@@ -314,6 +368,7 @@ export class DrawingEditorViewModel {
     }
 
     this.appendDebugEvent('clear', `requested count=${sourceSnapshot.length} history=${this.describeHistoryState()}`);
+    const applyStartedAt = Date.now();
     this.strokes = [];
     this.strokeSpatialIndex.clear();
     this.undoRedoController.recordDelta(
@@ -334,9 +389,15 @@ export class DrawingEditorViewModel {
     );
     this.changeSequence += 1;
     this.persistenceStatus = 'pending clear save';
-    this.schedulePersistCurrentStrokes('clear', 0);
+    this.schedulePersistCurrentStrokes('clear', INTERACTION_SAVE_DEBOUNCE_MS);
     this.errorMessage = '';
     this.appendDebugEvent('clear', `queuedSave history=${this.describeHistoryState()}`);
+    EditorPerformanceTrace.record(
+      'clear.total',
+      Date.now() - applyStartedAt,
+      `removed=${sourceSnapshot.length} removedPoints=${this.countStrokePoints(sourceSnapshot)} persistDelay=${INTERACTION_SAVE_DEBOUNCE_MS}`,
+      8
+    );
   }
 
   updateToolSetting(nextSetting: ToolSetting): void {
@@ -938,7 +999,12 @@ export class DrawingEditorViewModel {
 
     const sourceSnapshot = this.cloneStrokes(this.eraseSourceStrokes);
     const erasePath = this.activeErasePath.map((point: StrokePoint) => this.clonePoint(point));
-    const eraseResult = this.eraseStrokes(sourceSnapshot, erasePath);
+    const eraseResult = EditorPerformanceTrace.measureSync(
+      'erase.diff',
+      () => this.eraseStrokes(sourceSnapshot, erasePath),
+      `sourceStrokes=${sourceSnapshot.length} sourcePoints=${this.countStrokePoints(sourceSnapshot)} pathPoints=${erasePath.length}`,
+      10
+    );
     this.clearEraseState();
 
     if (!eraseResult.changed) {
@@ -947,6 +1013,7 @@ export class DrawingEditorViewModel {
       return null;
     }
 
+    const applyStartedAt = Date.now();
     this.strokes = eraseResult.strokes;
     this.applyStrokeSpatialIndexMutation(eraseResult.removed, eraseResult.added);
     this.undoRedoController.recordDelta(eraseResult.removed, eraseResult.added, 'erase');
@@ -956,6 +1023,12 @@ export class DrawingEditorViewModel {
     this.schedulePersistCurrentStrokes('erase');
     this.errorMessage = '';
     this.appendDebugEvent('erase', `queuedSave count=${this.strokes.length} history=${this.describeHistoryState()}`);
+    EditorPerformanceTrace.record(
+      'erase.apply',
+      Date.now() - applyStartedAt,
+      `afterStrokes=${this.strokes.length} afterPoints=${this.countStrokePoints(this.strokes)} removed=${eraseResult.removed.length} added=${eraseResult.added.length}`,
+      8
+    );
 
     return null;
   }
@@ -1019,13 +1092,21 @@ export class DrawingEditorViewModel {
     const elementSnapshot = this.cloneElements(this.elements);
     const snapshotChangeSequence: number = this.changeSequence;
     this.persistenceStatus = `saving ${reason}`;
+    const snapshotPointCount = this.countStrokePoints(strokeSnapshot);
 
     try {
-      await this.createRepository().savePageContent(this.pageId, {
-        version: PAGE_CANVAS_CONTENT_VERSION,
-        strokes: strokeSnapshot,
-        elements: elementSnapshot
-      });
+      await EditorPerformanceTrace.measureAsync(
+        'persist.pageContent',
+        async () => {
+          await this.createRepository().savePageContent(this.pageId, {
+            version: PAGE_CANVAS_CONTENT_VERSION,
+            strokes: strokeSnapshot,
+            elements: elementSnapshot
+          });
+        },
+        `reason=${reason} strokes=${strokeSnapshot.length} points=${snapshotPointCount} elements=${elementSnapshot.length}`,
+        20
+      );
       this.lastPersistedChangeSequence = Math.max(this.lastPersistedChangeSequence, snapshotChangeSequence);
       this.errorMessage = '';
       this.persistenceStatus = `saved ${reason} strokes=${strokeSnapshot.length} elements=${elementSnapshot.length}`;
@@ -1097,7 +1178,7 @@ export class DrawingEditorViewModel {
       const samplingStep = Math.max(1, Math.min(this.toolSetting.width, stroke.style.width) / 2);
       const remainingSegments = eraseStrokePointsWithPath(stroke.points, eraserPath, effectiveRadius, samplingStep);
 
-      if (remainingSegments.length === 1 && this.arePointListsEqual(remainingSegments[0], stroke.points)) {
+      if (remainingSegments.length === 1 && this.arePointListsEqual(remainingSegments[0].points, stroke.points)) {
         result.push(stroke);
         continue;
       }
@@ -1110,10 +1191,13 @@ export class DrawingEditorViewModel {
 
       const insertionStartIndex = result.length;
       for (let segmentIndex = 0; segmentIndex < remainingSegments.length; segmentIndex += 1) {
+        const segment: ErasedStrokeSegment = remainingSegments[segmentIndex];
         const nextStroke: Stroke = {
           id: this.buildDerivedStrokeId(stroke.id, segmentIndex, updateTime),
           pageId: stroke.pageId,
-          points: remainingSegments[segmentIndex].map((point: StrokePoint) => this.clonePoint(point)),
+          renderKey: stroke.renderKey ?? stroke.id,
+          renderWarmupPoints: segment.renderWarmupPoints.map((point: StrokePoint) => this.clonePoint(point)),
+          points: segment.points.map((point: StrokePoint) => this.clonePoint(point)),
           style: this.cloneStyle(stroke.style),
           createdAt: stroke.createdAt,
           updatedAt: updateTime
@@ -1736,6 +1820,14 @@ export class DrawingEditorViewModel {
     return strokes.map((stroke: Stroke) => this.cloneStroke(stroke));
   }
 
+  private countStrokePoints(strokes: Stroke[]): number {
+    let pointCount = 0;
+    for (const stroke of strokes) {
+      pointCount += stroke.points.length;
+    }
+    return pointCount;
+  }
+
   private cloneElements(elements: CanvasElement[]): CanvasElement[] {
     return elements.map((element: CanvasElement): CanvasElement => this.cloneElement(element));
   }
@@ -1831,6 +1923,8 @@ export class DrawingEditorViewModel {
     return {
       id: stroke.id,
       pageId: stroke.pageId,
+      renderKey: stroke.renderKey,
+      renderWarmupPoints: stroke.renderWarmupPoints?.map((point: StrokePoint) => this.clonePoint(point)) ?? [],
       points: stroke.points.map((point: StrokePoint) => this.clonePoint(point)),
       style: this.cloneStyle(stroke.style),
       createdAt: stroke.createdAt,

@@ -4,6 +4,7 @@ import {
   BoundingBox,
   clampBoundingBox,
   doBoundingBoxesIntersect,
+  expandBoundingBox,
   getStrokeRenderBoundingBox
 } from '../../../common/utils/GeometryUtil';
 import { clampElementFrameToBounds } from '../../../common/utils/ElementBoundsUtil';
@@ -13,7 +14,7 @@ import { NotebookPageCanvasEntity } from '../../../domain/entities/NotebookPageC
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
 import { ToolSetting, ToolType } from '../../../domain/entities/ToolSetting';
 import { PageTemplateRenderer } from '../controllers/PageTemplateRenderer';
-import { IncrementalPreviewSession, StrokeRenderer } from '../controllers/StrokeRenderer';
+import { InProgressStrokeRenderSession, StrokeRenderer } from '../controllers/StrokeRenderer';
 import { ShapeRenderer } from '../controllers/ShapeRenderer';
 import { IndexedStrokeRecord } from '../controllers/UndoRedoController';
 import { StrokeSpatialHashIndex } from '../controllers/StrokeSpatialHashIndex';
@@ -21,6 +22,7 @@ import { EditorDebugSnapshot } from '../viewmodels/EditorDebugSnapshot';
 import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
 import { RenderInvalidation } from '../viewmodels/RenderInvalidation';
+import { EditorPerformanceTrace } from '../utils/EditorPerformanceTrace';
 import { ElementLayer } from './ElementLayer';
 
 interface CanvasSize {
@@ -60,6 +62,7 @@ interface ExtendedTouchObject extends TouchObject {
 }
 
 const COMMITTED_TILE_SIZE = 256;
+const PARTIAL_REDRAW_OVERDRAW_VIEWPORT_PX = 2;
 const VIEWPORT_PAGE_MARGIN = 36;
 const VIEWPORT_EDGE_MARGIN = 42;
 const MIN_ZOOM_SCALE = 1;
@@ -114,7 +117,8 @@ export struct CanvasBoard {
   private readonly renderedStrokeIndexById: Map<string, number> = new Map<string, number>();
   private readonly strokeSpatialIndex: StrokeSpatialHashIndex = new StrokeSpatialHashIndex();
   private lastAppliedRenderInvalidationSequence: number = 0;
-  private activePreviewSession: IncrementalPreviewSession | null = null;
+  private forceFullCommittedRedrawOnNextCanvasRefresh: boolean = false;
+  private activePreviewSession: InProgressStrokeRenderSession | null = null;
   private viewportZoomScale: number = MIN_ZOOM_SCALE;
   private viewportOffsetX: number = 0;
   private viewportOffsetY: number = 0;
@@ -348,7 +352,11 @@ export struct CanvasBoard {
       viewModel.appendDebugEvent('CanvasBoard', `canvasRefresh version=${this.canvasVersion}`);
     }
     this.notifyCanvasMetricsChanged();
-    if (!this.tryApplyLatestRenderInvalidation()) {
+    if (this.forceFullCommittedRedrawOnNextCanvasRefresh) {
+      this.redrawCommittedLayer();
+      this.consumeLatestRenderInvalidationSequence();
+      this.forceFullCommittedRedrawOnNextCanvasRefresh = false;
+    } else if (!this.tryApplyLatestRenderInvalidation()) {
       this.redrawCommittedLayer();
     }
     this.redrawOverlayLayer();
@@ -730,6 +738,7 @@ export struct CanvasBoard {
       return;
     }
 
+    const redrawStartedAt = Date.now();
     const shouldRebuildRenderCache = !useFastRendering;
     if (shouldRebuildRenderCache) {
       this.clearRenderedStrokeState();
@@ -768,10 +777,17 @@ export struct CanvasBoard {
     }
 
     this.drawPageBorder(this.committedContext2D, transform);
+    const viewModel = this.getViewModel();
+    EditorPerformanceTrace.record(
+      'committed.fullRedraw',
+      Date.now() - redrawStartedAt,
+      `fast=${useFastRendering} visible=${visibleRegion === null ? 'false' : 'true'} strokes=${viewModel === null ? 0 : viewModel.getStrokesForRendering().length}`,
+      useFastRendering ? 10 : 14
+    );
   }
 
   private redrawOverlayLayer(): void {
-    if (!this.isOverlayLayerReady || !this.isStablePreviewLayerReady) {
+    if (!this.isOverlayLayerReady) {
       return;
     }
 
@@ -836,6 +852,15 @@ export struct CanvasBoard {
   private clearPreviewLayers(): void {
     this.clearStablePreviewLayer();
     this.clearOverlayLayer();
+  }
+
+  private clearCommittedLayer(): void {
+    if (!this.isCommittedLayerReady) {
+      return;
+    }
+
+    const size = this.getCanvasSize(this.committedContext2D);
+    this.committedContext2D.clearRect(0, 0, size.width, size.height);
   }
 
   private clearStablePreviewRegion(region: BoundingBox): void {
@@ -1225,7 +1250,7 @@ export struct CanvasBoard {
   }
 
   private drawPreviewStroke(context: CanvasRenderingContext2D, stroke: Stroke): void {
-    StrokeRenderer.drawPreviewStrokeFast(context, stroke);
+    StrokeRenderer.drawPreviewStroke(context, stroke);
   }
 
   private getPageViewportTransform(size: CanvasSize): PageViewportTransform {
@@ -1507,57 +1532,89 @@ export struct CanvasBoard {
   private drawPreviewStrokeOnViewport(context: CanvasRenderingContext2D, stroke: Stroke): void {
     const size = this.getCanvasSize(context);
     const transform = this.getPageViewportTransform(size);
-    const visibleRegion = this.getVisiblePageRegion(transform);
-    if (visibleRegion === null || !this.isStrokeVisible(stroke, visibleRegion)) {
-      return;
-    }
-
     context.save();
     this.applyPageTransformAndClip(context, transform);
     this.drawPreviewStroke(context, stroke);
     context.restore();
   }
 
+  private appendPreviewStrokeOnViewport(
+    context: CanvasRenderingContext2D,
+    stroke: Stroke,
+    previousSession: InProgressStrokeRenderSession | null
+  ): InProgressStrokeRenderSession {
+    const size = this.getCanvasSize(context);
+    const transform = this.getPageViewportTransform(size);
+    context.save();
+    this.applyPageTransformAndClip(context, transform);
+    const nextSession = StrokeRenderer.appendInProgressStroke(context, stroke, previousSession);
+    context.restore();
+    return nextSession;
+  }
+
   private renderActiveStrokePreview(stroke: Stroke): void {
-    if (!this.isOverlayLayerReady || !this.isStablePreviewLayerReady) {
+    if (!this.isOverlayLayerReady) {
       return;
     }
 
-    const update = StrokeRenderer.buildIncrementalPreviewUpdate(stroke, this.activePreviewSession);
-    if (!update.shouldDraw) {
-      return;
-    }
-
-    if (update.requiresFullRedraw || update.dirtyRect === null) {
+    const renderStartedAt = Date.now();
+    const previousSession = this.activePreviewSession;
+    if (previousSession === null || !this.canContinueActivePreviewSession(stroke)) {
       this.rebuildActivePreviewLayers(stroke);
+      EditorPerformanceTrace.record(
+        'preview.render',
+        Date.now() - renderStartedAt,
+        `mode=full points=${stroke.points.length}`,
+        6
+      );
       return;
     }
 
-    if (update.promoteStroke !== null && update.promoteDirtyRect !== null) {
-      this.clearStablePreviewRegion(update.promoteDirtyRect);
-      this.drawClippedPreviewStroke(this.stablePreviewContext2D, update.promoteDirtyRect, update.promoteStroke);
-    }
-
-    this.clearOverlayRegion(update.dirtyRect);
-    this.drawClippedPreviewStroke(this.overlayContext2D, update.dirtyRect, update.renderStroke);
-    this.activePreviewSession = update.nextSession;
+    const previousPointCount = previousSession.processedPointCount;
+    this.activePreviewSession = this.appendPreviewStrokeOnViewport(this.overlayContext2D, stroke, previousSession);
+    EditorPerformanceTrace.record(
+      'preview.render',
+      Date.now() - renderStartedAt,
+      `mode=append points=${stroke.points.length} added=${Math.max(0, stroke.points.length - previousPointCount)}`,
+      6
+    );
   }
 
   private rebuildActivePreviewLayers(stroke: Stroke): void {
+    const rebuildStartedAt = Date.now();
     this.clearPreviewLayers();
-
-    const stableStroke = StrokeRenderer.buildStablePreviewStroke(stroke);
-    if (stableStroke !== null && stableStroke.points.length > 0) {
-      this.drawPreviewStrokeOnViewport(this.stablePreviewContext2D, stableStroke);
-    }
-
-    const renderUpdate = StrokeRenderer.buildIncrementalPreviewUpdate(stroke, null);
-    this.drawPreviewStrokeOnViewport(this.overlayContext2D, renderUpdate.renderStroke);
-    this.activePreviewSession = renderUpdate.nextSession;
+    this.activePreviewSession = this.appendPreviewStrokeOnViewport(this.overlayContext2D, stroke, null);
+    EditorPerformanceTrace.record(
+      'preview.rebuild',
+      Date.now() - rebuildStartedAt,
+      `points=${stroke.points.length}`,
+      6
+    );
   }
 
   private resetActivePreviewSession(): void {
     this.activePreviewSession = null;
+  }
+
+  private consumeLatestRenderInvalidationSequence(): void {
+    const viewModel = this.getViewModel();
+    if (viewModel === null) {
+      return;
+    }
+
+    const invalidation = viewModel.getRenderInvalidation();
+    if (invalidation !== null) {
+      this.lastAppliedRenderInvalidationSequence = invalidation.sequence;
+    }
+  }
+
+  private canContinueActivePreviewSession(stroke: Stroke): boolean {
+    if (this.activePreviewSession === null) {
+      return false;
+    }
+
+    return this.activePreviewSession.strokeId === stroke.id &&
+      this.activePreviewSession.processedPointCount <= stroke.points.length;
   }
 
   private tryApplyLatestRenderInvalidation(): boolean {
@@ -1589,6 +1646,7 @@ export struct CanvasBoard {
   }
 
   private applyPartialRenderInvalidation(invalidation: RenderInvalidation): boolean {
+    const redrawStartedAt = Date.now();
     this.applyRenderedStrokeMutation(invalidation);
     const dirtyRects = this.clipDirtyRectsToPage(invalidation.dirtyRects);
     if (dirtyRects.length === 0) {
@@ -1604,7 +1662,8 @@ export struct CanvasBoard {
 
     const visibleBounds = this.toBoundingBox(visibleRegion);
     let hasRedrawnTile = false;
-    for (const tileBounds of this.buildCommittedTileBoundsForDirtyRects(dirtyRects)) {
+    const tileBoundsList = this.buildCommittedTileBoundsForDirtyRects(dirtyRects);
+    for (const tileBounds of tileBoundsList) {
       if (this.redrawCommittedTile(tileBounds, transform, visibleBounds)) {
         hasRedrawnTile = true;
       }
@@ -1613,6 +1672,13 @@ export struct CanvasBoard {
     if (hasRedrawnTile) {
       this.drawPageBorder(this.committedContext2D, transform);
     }
+
+    EditorPerformanceTrace.record(
+      'committed.partialRedraw',
+      Date.now() - redrawStartedAt,
+      `reason=${invalidation.reason} dirtyRects=${dirtyRects.length} tiles=${tileBoundsList.length} removed=${invalidation.removedStrokeIds.length} added=${invalidation.addedRecords.length}`,
+      8
+    );
 
     return true;
   }
@@ -1711,24 +1777,26 @@ export struct CanvasBoard {
     transform: PageViewportTransform,
     visibleBounds: BoundingBox
   ): boolean {
+    const redrawStartedAt = Date.now();
     const tileRegion = this.intersectBoundingBoxes(tileBounds, visibleBounds);
     if (tileRegion === null) {
       return false;
     }
 
-    this.clearCommittedRegion(tileRegion, transform);
+    const redrawRegion = this.expandCommittedTileRegion(tileRegion, transform);
+    this.clearCommittedRegion(redrawRegion, transform);
 
-    const candidateStrokeIds = this.strokeSpatialIndex.queryStrokeIds(tileBounds)
+    const candidateStrokeIds = this.strokeSpatialIndex.queryStrokeIds(redrawRegion)
       .sort((left: string, right: string) => this.getRenderedStrokeIndex(left) - this.getRenderedStrokeIndex(right));
 
     this.committedContext2D.save();
     this.applyPageTransformAndClip(this.committedContext2D, transform);
     this.committedContext2D.beginPath();
     this.committedContext2D.rect(
-      tileRegion.minX,
-      tileRegion.minY,
-      tileRegion.maxX - tileRegion.minX,
-      tileRegion.maxY - tileRegion.minY
+      redrawRegion.minX,
+      redrawRegion.minY,
+      redrawRegion.maxX - redrawRegion.minX,
+      redrawRegion.maxY - redrawRegion.minY
     );
     this.committedContext2D.clip();
     PageTemplateRenderer.drawTemplateBackground(
@@ -1738,10 +1806,10 @@ export struct CanvasBoard {
       transform.pageHeight,
       this.paperBackgroundColor,
       {
-        x: tileRegion.minX,
-        y: tileRegion.minY,
-        width: tileRegion.maxX - tileRegion.minX,
-        height: tileRegion.maxY - tileRegion.minY
+        x: redrawRegion.minX,
+        y: redrawRegion.minY,
+        width: redrawRegion.maxX - redrawRegion.minX,
+        height: redrawRegion.maxY - redrawRegion.minY
       }
     );
 
@@ -1752,12 +1820,18 @@ export struct CanvasBoard {
       }
 
       const strokeBounds = this.strokeSpatialIndex.getBounds(strokeId);
-      if (strokeBounds !== null && doBoundingBoxesIntersect(strokeBounds, tileRegion)) {
+      if (strokeBounds !== null && doBoundingBoxesIntersect(strokeBounds, redrawRegion)) {
         this.drawStroke(this.committedContext2D, stroke);
       }
     }
 
     this.committedContext2D.restore();
+    EditorPerformanceTrace.record(
+      'committed.tile',
+      Date.now() - redrawStartedAt,
+      `candidateStrokes=${candidateStrokeIds.length} region=${this.describeBoundingBox(redrawRegion)}`,
+      4
+    );
     return true;
   }
 
@@ -1816,6 +1890,12 @@ export struct CanvasBoard {
     );
   }
 
+  private expandCommittedTileRegion(region: BoundingBox, transform: PageViewportTransform): BoundingBox {
+    const pagePadding = Math.max(1, PARTIAL_REDRAW_OVERDRAW_VIEWPORT_PX / Math.max(0.01, transform.scale));
+    const expandedRegion = expandBoundingBox(region, pagePadding);
+    return clampBoundingBox(expandedRegion, transform.pageWidth, transform.pageHeight) ?? region;
+  }
+
   private toViewportBoundingBox(bounds: BoundingBox, transform: PageViewportTransform): BoundingBox | null {
     return clampBoundingBox({
       minX: bounds.minX * transform.scale + transform.offsetX,
@@ -1841,6 +1921,14 @@ export struct CanvasBoard {
       maxX,
       maxY
     };
+  }
+
+  private describeBoundingBox(bounds: BoundingBox | null): string {
+    if (bounds === null) {
+      return 'none';
+    }
+
+    return `${Math.round(bounds.minX)},${Math.round(bounds.minY)}-${Math.round(bounds.maxX)},${Math.round(bounds.maxY)}`;
   }
 
   private drawErasePreview(context: CanvasRenderingContext2D, path: StrokePoint[], width: number): void {
@@ -1916,8 +2004,10 @@ export struct CanvasBoard {
     this.resetInlineTextEditFrame();
     this.clearLastEditTap();
     this.resetViewportTransform();
+    this.clearCommittedLayer();
     this.clearRenderedStrokeState();
     this.lastAppliedRenderInvalidationSequence = 0;
+    this.forceFullCommittedRedrawOnNextCanvasRefresh = true;
     this.clearPreviewLayers();
     this.resetActivePreviewSession();
     this.resolveViewModel();
@@ -1961,8 +2051,10 @@ export struct CanvasBoard {
   private resolveViewModel(): void {
     if (this.pageId.length === 0) {
       this.viewModel = null;
+      this.clearCommittedLayer();
       this.clearRenderedStrokeState();
       this.lastAppliedRenderInvalidationSequence = 0;
+      this.forceFullCommittedRedrawOnNextCanvasRefresh = true;
       this.clearPreviewLayers();
       this.resetActivePreviewSession();
       return;

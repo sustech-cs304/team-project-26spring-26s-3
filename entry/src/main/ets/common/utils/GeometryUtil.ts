@@ -5,12 +5,18 @@ const SINGLE_POINT_OFFSET = 0.1;
 const DEFAULT_STROKE_SAMPLING_STEP = 2;
 const DEFAULT_RENDER_BOUNDS_PADDING = 12;
 const RENDER_BOUNDS_WIDTH_FACTOR = 2.5;
+const ERASE_SEGMENT_WARMUP_POINT_WINDOW = 8;
 
 export interface BoundingBox {
   minX: number;
   minY: number;
   maxX: number;
   maxY: number;
+}
+
+export interface ErasedStrokeSegment {
+  points: StrokePoint[];
+  renderWarmupPoints: StrokePoint[];
 }
 
 export function getDistance(left: StrokePoint, right: StrokePoint): number {
@@ -234,45 +240,74 @@ export function eraseStrokePointsWithPath(
   eraserPath: StrokePoint[],
   radius: number,
   samplingStep: number = DEFAULT_STROKE_SAMPLING_STEP
-): StrokePoint[][] {
+): ErasedStrokeSegment[] {
   if (points.length === 0) {
     return [];
   }
 
   if (eraserPath.length === 0) {
-    return [points.map((point: StrokePoint) => clonePoint(point))];
+    return [{
+      points: points.map((point: StrokePoint) => clonePoint(point)),
+      renderWarmupPoints: []
+    }];
   }
 
   const sampledPoints = sampleStrokePoints(points, samplingStep);
-  const remainingSegments: StrokePoint[][] = [];
+  const remainingSegments: ErasedStrokeSegment[] = [];
   let currentSegment: StrokePoint[] = [];
+  let currentSegmentStartIndex = -1;
   let hasErasedPoint = false;
 
-  for (const point of sampledPoints) {
+  for (let pointIndex = 0; pointIndex < sampledPoints.length; pointIndex += 1) {
+    const point = sampledPoints[pointIndex];
     if (isPointWithinPathRadius(point, eraserPath, radius)) {
       hasErasedPoint = true;
       if (currentSegment.length > 0) {
-        remainingSegments.push(currentSegment);
+        remainingSegments.push(buildErasedStrokeSegment(sampledPoints, currentSegment, currentSegmentStartIndex));
         currentSegment = [];
+        currentSegmentStartIndex = -1;
       }
       continue;
     }
 
+    if (currentSegment.length === 0) {
+      currentSegmentStartIndex = pointIndex;
+    }
     currentSegment.push(clonePoint(point));
   }
 
   if (currentSegment.length > 0) {
-    remainingSegments.push(currentSegment);
+    remainingSegments.push(buildErasedStrokeSegment(sampledPoints, currentSegment, currentSegmentStartIndex));
   }
 
   if (!hasErasedPoint) {
-    return [points.map((point: StrokePoint) => clonePoint(point))];
+    return [{
+      points: points.map((point: StrokePoint) => clonePoint(point)),
+      renderWarmupPoints: []
+    }];
   }
 
-  return remainingSegments
-    .map((segment: StrokePoint[]) => normalizePoints(segment, 0.05))
-    .map((segment: StrokePoint[]) => (segment.length === 1 ? ensureRenderablePoints(segment) : segment))
-    .filter((segment: StrokePoint[]) => segment.length > 0);
+  return remainingSegments.filter((segment: ErasedStrokeSegment) => segment.points.length > 0);
+}
+
+function buildErasedStrokeSegment(
+  sampledPoints: StrokePoint[],
+  segmentPoints: StrokePoint[],
+  startIndex: number
+): ErasedStrokeSegment {
+  const normalizedSegmentPoints = normalizePoints(segmentPoints, 0.05);
+  const visiblePoints = normalizedSegmentPoints.length === 1
+    ? ensureRenderablePoints(normalizedSegmentPoints)
+    : normalizedSegmentPoints;
+  const warmupStartIndex = Math.max(0, startIndex - ERASE_SEGMENT_WARMUP_POINT_WINDOW);
+  const renderWarmupPoints = sampledPoints
+    .slice(warmupStartIndex, Math.max(warmupStartIndex, startIndex))
+    .map((point: StrokePoint) => clonePoint(point));
+
+  return {
+    points: visiblePoints.map((point: StrokePoint) => clonePoint(point)),
+    renderWarmupPoints
+  };
 }
 
 function interpolatePoint(start: StrokePoint, end: StrokePoint, ratio: number): StrokePoint {

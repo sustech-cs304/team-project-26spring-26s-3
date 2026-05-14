@@ -533,6 +533,8 @@ export class EditorRepositoryImpl implements EditorRepository {
   private parseStroke(value: Object, pageId: string): Stroke | null {
     const candidate = value as Record<string, Object>;
     const id = typeof candidate.id === 'string' ? candidate.id : '';
+    const renderKey = typeof candidate.renderKey === 'string' ? candidate.renderKey : '';
+    const renderWarmupPoints = this.parsePoints(candidate.renderWarmupPoints);
     const createdAt = Number(candidate.createdAt);
     const updatedAt = Number(candidate.updatedAt);
     const points = this.parsePoints(candidate.points);
@@ -545,6 +547,8 @@ export class EditorRepositoryImpl implements EditorRepository {
     return {
       id,
       pageId,
+      renderKey: renderKey.length > 0 ? renderKey : id,
+      renderWarmupPoints,
       points,
       style,
       createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),

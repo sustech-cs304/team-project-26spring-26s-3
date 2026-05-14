@@ -12,9 +12,12 @@ export class StrokeController {
     }
 
     const timestamp = now();
+    const strokeId = createId('stroke');
     this.activeStroke = {
-      id: createId('stroke'),
+      id: strokeId,
       pageId,
+      renderKey: strokeId,
+      renderWarmupPoints: [],
       points: [this.clonePoint(point)],
       style: this.cloneStyle(style),
       createdAt: timestamp,
@@ -56,6 +59,8 @@ export class StrokeController {
     const completedStroke: Stroke = {
       id: this.activeStroke.id,
       pageId: this.activeStroke.pageId,
+      renderKey: this.activeStroke.renderKey,
+      renderWarmupPoints: this.activeStroke.renderWarmupPoints?.map((point: StrokePoint) => this.clonePoint(point)) ?? [],
       points: renderablePoints.map((point: StrokePoint) => this.clonePoint(point)),
       style: this.cloneStyle(this.activeStroke.style),
       createdAt: this.activeStroke.createdAt,
@@ -81,6 +86,8 @@ export class StrokeController {
     return {
       id: this.activeStroke.id,
       pageId: this.activeStroke.pageId,
+      renderKey: this.activeStroke.renderKey,
+      renderWarmupPoints: this.activeStroke.renderWarmupPoints?.map((point: StrokePoint) => this.clonePoint(point)) ?? [],
       points: renderablePoints.map((point: StrokePoint) => this.clonePoint(point)),
       style: this.cloneStyle(this.activeStroke.style),
       createdAt: this.activeStroke.createdAt,
@@ -100,6 +107,8 @@ export class StrokeController {
     return {
       id: stroke.id,
       pageId: stroke.pageId,
+      renderKey: stroke.renderKey,
+      renderWarmupPoints: stroke.renderWarmupPoints?.map((point: StrokePoint) => this.clonePoint(point)) ?? [],
       points: stroke.points.map((point: StrokePoint) => this.clonePoint(point)),
       style: this.cloneStyle(stroke.style),
       createdAt: stroke.createdAt,

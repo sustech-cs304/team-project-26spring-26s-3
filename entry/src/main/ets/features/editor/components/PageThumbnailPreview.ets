@@ -296,6 +296,15 @@ export struct PageThumbnailPreview {
     return {
       id: stroke.id,
       pageId: stroke.pageId,
+      renderKey: stroke.renderKey,
+      renderWarmupPoints: stroke.renderWarmupPoints?.map((point: StrokePoint): StrokePoint => {
+        return {
+          x: point.x,
+          y: point.y,
+          t: point.t,
+          pressure: point.pressure
+        };
+      }) ?? [],
       points: stroke.points.map((point: StrokePoint): StrokePoint => {
         return {
           x: point.x,

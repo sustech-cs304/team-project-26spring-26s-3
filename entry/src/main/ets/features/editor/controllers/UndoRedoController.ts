@@ -67,7 +67,7 @@ export class UndoRedoController {
     const operation = this.undoStack.pop();
     if (!operation) {
       return {
-        strokes: currentStrokes.slice(),
+        strokes: currentStrokes,
         removed: [],
         added: []
       };
@@ -81,7 +81,7 @@ export class UndoRedoController {
     const operation = this.redoStack.pop();
     if (!operation) {
       return {
-        strokes: currentStrokes.slice(),
+        strokes: currentStrokes,
         removed: [],
         added: []
       };
@@ -140,7 +140,7 @@ export class UndoRedoController {
       case 'append_stroke': {
         const nextStrokes = currentStrokes.slice();
         const addedStroke = this.cloneStroke(operation.stroke);
-        nextStrokes.push(this.cloneStroke(operation.stroke));
+        nextStrokes.push(addedStroke);
         return {
           strokes: nextStrokes,
           removed: [],
@@ -154,7 +154,7 @@ export class UndoRedoController {
         return this.applyDelta(currentStrokes, operation.removed, operation.added);
       default:
         return {
-          strokes: currentStrokes.slice(),
+          strokes: currentStrokes,
           removed: [],
           added: []
         };
@@ -169,7 +169,7 @@ export class UndoRedoController {
         return this.applyDelta(currentStrokes, operation.added, operation.removed);
       default:
         return {
-          strokes: currentStrokes.slice(),
+          strokes: currentStrokes,
           removed: [],
           added: []
         };
@@ -267,6 +267,8 @@ export class UndoRedoController {
     return {
       id: stroke.id,
       pageId: stroke.pageId,
+      renderKey: stroke.renderKey,
+      renderWarmupPoints: stroke.renderWarmupPoints?.map((point: StrokePoint) => this.clonePoint(point)) ?? [],
       points: stroke.points.map((point: StrokePoint) => this.clonePoint(point)),
       style: this.cloneStyle(stroke.style),
       createdAt: stroke.createdAt,

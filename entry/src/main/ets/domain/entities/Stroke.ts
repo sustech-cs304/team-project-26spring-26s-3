@@ -17,8 +17,18 @@ export interface StrokeStyle {
 export interface Stroke {
   id: string;
   pageId: string;
+  renderKey?: string;
+  renderWarmupPoints?: StrokePoint[];
   points: StrokePoint[];
   style: StrokeStyle;
   createdAt: number;
   updatedAt: number;
+}
+
+export function getStrokeRenderKey(stroke: Stroke): string {
+  if (typeof stroke.renderKey === 'string' && stroke.renderKey.length > 0) {
+    return stroke.renderKey;
+  }
+
+  return stroke.id;
 }
