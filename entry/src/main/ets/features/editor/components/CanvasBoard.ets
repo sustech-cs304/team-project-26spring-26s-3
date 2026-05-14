@@ -63,6 +63,7 @@ interface ExtendedTouchObject extends TouchObject {
 
 const COMMITTED_TILE_SIZE = 256;
 const PARTIAL_REDRAW_OVERDRAW_VIEWPORT_PX = 2;
+const RECENT_COMMITTED_STROKE_LIMIT = 6;
 const VIEWPORT_PAGE_MARGIN = 36;
 const VIEWPORT_EDGE_MARGIN = 42;
 const MIN_ZOOM_SCALE = 1;
@@ -104,10 +105,13 @@ export struct CanvasBoard {
   private viewModel: DrawingEditorViewModel | null = null;
 
   private readonly committedRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
+  private readonly recentCommittedRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
   private readonly stablePreviewRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
   private readonly overlayRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
   private readonly committedContext2D: CanvasRenderingContext2D =
     new CanvasRenderingContext2D(this.committedRenderingSettings);
+  private readonly recentCommittedContext2D: CanvasRenderingContext2D =
+    new CanvasRenderingContext2D(this.recentCommittedRenderingSettings);
   private readonly stablePreviewContext2D: CanvasRenderingContext2D =
     new CanvasRenderingContext2D(this.stablePreviewRenderingSettings);
   private readonly overlayContext2D: CanvasRenderingContext2D =
@@ -118,6 +122,7 @@ export struct CanvasBoard {
   private readonly strokeSpatialIndex: StrokeSpatialHashIndex = new StrokeSpatialHashIndex();
   private lastAppliedRenderInvalidationSequence: number = 0;
   private forceFullCommittedRedrawOnNextCanvasRefresh: boolean = false;
+  private flattenedCommittedStrokeCount: number = 0;
   private activePreviewSession: InProgressStrokeRenderSession | null = null;
   private viewportZoomScale: number = MIN_ZOOM_SCALE;
   private viewportOffsetX: number = 0;
@@ -143,6 +148,7 @@ export struct CanvasBoard {
   private lastEditTapY: number = 0;
 
   @State private isCommittedLayerReady: boolean = false;
+  @State private isRecentCommittedLayerReady: boolean = false;
   @State private isStablePreviewLayerReady: boolean = false;
   @State private isOverlayLayerReady: boolean = false;
   @State private elementLayerPageWidth: number = NotebookPageCanvasEntity.DEFAULT_WIDTH;
@@ -173,6 +179,16 @@ export struct CanvasBoard {
         .backgroundColor('#00000000')
         .onReady(() => {
           this.isCommittedLayerReady = true;
+          this.notifyCanvasMetricsChanged();
+          this.redrawCommittedLayer();
+        })
+
+      Canvas(this.recentCommittedContext2D)
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#00000000')
+        .onReady(() => {
+          this.isRecentCommittedLayerReady = true;
           this.notifyCanvasMetricsChanged();
           this.redrawCommittedLayer();
         })
@@ -708,9 +724,13 @@ export struct CanvasBoard {
       if (!this.tryApplyLatestRenderInvalidation()) {
         this.redrawCommittedLayer();
       }
-    } else if (completedStroke !== null && this.isCommittedLayerReady) {
-      this.drawStrokeOnViewport(this.committedContext2D, completedStroke);
+    } else if (completedStroke !== null && this.areCommittedLayersReady()) {
       this.appendRenderedStroke(completedStroke);
+      if (this.canAppendToRecentCommittedLayer()) {
+        this.drawStrokeOnViewport(this.recentCommittedContext2D, completedStroke, false);
+      } else {
+        this.redrawCommittedLayer();
+      }
     }
     this.clearPreviewLayers();
     this.resetActivePreviewSession();
@@ -733,24 +753,32 @@ export struct CanvasBoard {
     };
   }
 
-  private redrawCommittedLayer(useFastRendering: boolean = false): void {
-    if (!this.isCommittedLayerReady) {
+  private redrawCommittedLayer(useFastRendering: boolean = false, preserveRecentSplit: boolean = false): void {
+    if (!this.areCommittedLayersReady()) {
       return;
     }
 
     const redrawStartedAt = Date.now();
-    const shouldRebuildRenderCache = !useFastRendering;
-    if (shouldRebuildRenderCache) {
-      this.clearRenderedStrokeState();
+    const viewModel = this.getViewModel();
+    const strokes = viewModel ? viewModel.getStrokesForRendering() : [];
+    let flattenedStrokeCount = preserveRecentSplit
+      ? Math.max(0, Math.min(this.flattenedCommittedStrokeCount, strokes.length))
+      : strokes.length;
+    if (strokes.length - flattenedStrokeCount > RECENT_COMMITTED_STROKE_LIMIT) {
+      flattenedStrokeCount = strokes.length;
     }
+    this.flattenedCommittedStrokeCount = flattenedStrokeCount;
+    this.rebuildRenderedStrokeCache(strokes);
 
     const size = this.getCanvasSize(this.committedContext2D);
     const transform = this.getPageViewportTransform(size);
     this.syncElementLayerTransform(transform);
     const visibleRegion = this.getVisiblePageRegion(transform);
     this.committedContext2D.clearRect(0, 0, size.width, size.height);
+    this.clearRecentCommittedLayer();
 
     if (visibleRegion !== null) {
+      const visibleBounds = this.toBoundingBox(visibleRegion);
       this.committedContext2D.save();
       this.applyPageTransformAndClip(this.committedContext2D, transform);
       PageTemplateRenderer.drawTemplateBackground(
@@ -761,27 +789,29 @@ export struct CanvasBoard {
         this.paperBackgroundColor,
         visibleRegion
       );
-
-      const viewModel = this.getViewModel();
-      if (viewModel) {
-        this.drawVisibleStrokes(
-          this.committedContext2D,
-          viewModel.getStrokesForRendering(),
-          visibleRegion,
-          useFastRendering,
-          shouldRebuildRenderCache
-        );
-      }
-
+      this.drawStrokeRange(this.committedContext2D, strokes, 0, flattenedStrokeCount, visibleBounds, useFastRendering);
       this.committedContext2D.restore();
+
+      if (flattenedStrokeCount < strokes.length) {
+        this.recentCommittedContext2D.save();
+        this.applyPageTransformAndClip(this.recentCommittedContext2D, transform);
+        this.drawStrokeRange(
+          this.recentCommittedContext2D,
+          strokes,
+          flattenedStrokeCount,
+          strokes.length,
+          visibleBounds,
+          useFastRendering
+        );
+        this.recentCommittedContext2D.restore();
+      }
     }
 
     this.drawPageBorder(this.committedContext2D, transform);
-    const viewModel = this.getViewModel();
     EditorPerformanceTrace.record(
       'committed.fullRedraw',
       Date.now() - redrawStartedAt,
-      `fast=${useFastRendering} visible=${visibleRegion === null ? 'false' : 'true'} strokes=${viewModel === null ? 0 : viewModel.getStrokesForRendering().length}`,
+      `fast=${useFastRendering} visible=${visibleRegion === null ? 'false' : 'true'} flattened=${flattenedStrokeCount} recent=${Math.max(0, strokes.length - flattenedStrokeCount)} strokes=${strokes.length}`,
       useFastRendering ? 10 : 14
     );
   }
@@ -854,6 +884,15 @@ export struct CanvasBoard {
     this.clearOverlayLayer();
   }
 
+  private clearRecentCommittedLayer(): void {
+    if (!this.isRecentCommittedLayerReady) {
+      return;
+    }
+
+    const size = this.getCanvasSize(this.recentCommittedContext2D);
+    this.recentCommittedContext2D.clearRect(0, 0, size.width, size.height);
+  }
+
   private clearCommittedLayer(): void {
     if (!this.isCommittedLayerReady) {
       return;
@@ -861,6 +900,8 @@ export struct CanvasBoard {
 
     const size = this.getCanvasSize(this.committedContext2D);
     this.committedContext2D.clearRect(0, 0, size.width, size.height);
+    this.clearRecentCommittedLayer();
+    this.flattenedCommittedStrokeCount = 0;
   }
 
   private clearStablePreviewRegion(region: BoundingBox): void {
@@ -1138,7 +1179,11 @@ export struct CanvasBoard {
     StrokeRenderer.drawStroke(context, stroke);
   }
 
-  private drawStrokeOnViewport(context: CanvasRenderingContext2D, stroke: Stroke): void {
+  private drawStrokeOnViewport(
+    context: CanvasRenderingContext2D,
+    stroke: Stroke,
+    drawBorder: boolean = true
+  ): void {
     const size = this.getCanvasSize(context);
     const transform = this.getPageViewportTransform(size);
     const visibleRegion = this.getVisiblePageRegion(transform);
@@ -1148,7 +1193,9 @@ export struct CanvasBoard {
       this.drawStroke(context, stroke);
       context.restore();
     }
-    this.drawPageBorder(context, transform);
+    if (drawBorder) {
+      this.drawPageBorder(context, transform);
+    }
   }
 
   private drawVisibleStrokes(
@@ -1484,7 +1531,7 @@ export struct CanvasBoard {
       return;
     }
 
-    this.redrawCommittedLayer(useFastRendering);
+    this.redrawCommittedLayer(useFastRendering, true);
     this.redrawOverlayLayer();
   }
 
@@ -1647,7 +1694,30 @@ export struct CanvasBoard {
 
   private applyPartialRenderInvalidation(invalidation: RenderInvalidation): boolean {
     const redrawStartedAt = Date.now();
+    const previousRecentStrokeIds = this.getRecentCommittedStrokeIdSet();
     this.applyRenderedStrokeMutation(invalidation);
+    if (this.canUseRecentCommittedFastPath(invalidation, previousRecentStrokeIds)) {
+      this.redrawRecentCommittedLayer(false);
+      EditorPerformanceTrace.record(
+        'committed.partialRedraw',
+        Date.now() - redrawStartedAt,
+        `reason=${invalidation.reason} dirtyRects=0 tiles=0 mode=recent removed=${invalidation.removedStrokeIds.length} added=${invalidation.addedRecords.length}`,
+        8
+      );
+      return true;
+    }
+
+    if (this.requiresFullCommittedRedrawWithRecentLayer(invalidation, previousRecentStrokeIds)) {
+      this.redrawCommittedLayer(false, true);
+      EditorPerformanceTrace.record(
+        'committed.partialRedraw',
+        Date.now() - redrawStartedAt,
+        `reason=${invalidation.reason} dirtyRects=0 tiles=0 mode=fullRecent removed=${invalidation.removedStrokeIds.length} added=${invalidation.addedRecords.length}`,
+        8
+      );
+      return true;
+    }
+
     const dirtyRects = this.clipDirtyRectsToPage(invalidation.dirtyRects);
     if (dirtyRects.length === 0) {
       return true;
@@ -1661,6 +1731,24 @@ export struct CanvasBoard {
     }
 
     const visibleBounds = this.toBoundingBox(visibleRegion);
+    if (this.shouldUseUnifiedCommittedRedraw(invalidation, dirtyRects)) {
+      const mergedDirtyRegion = this.mergeBoundingBoxes(dirtyRects);
+      if (mergedDirtyRegion !== null) {
+        const hasRedrawnRegion = this.redrawCommittedRegion(mergedDirtyRegion, transform, visibleBounds);
+        if (hasRedrawnRegion) {
+          this.drawPageBorder(this.committedContext2D, transform);
+        }
+
+        EditorPerformanceTrace.record(
+          'committed.partialRedraw',
+          Date.now() - redrawStartedAt,
+          `reason=${invalidation.reason} dirtyRects=${dirtyRects.length} tiles=0 mode=region removed=${invalidation.removedStrokeIds.length} added=${invalidation.addedRecords.length}`,
+          8
+        );
+        return true;
+      }
+    }
+
     let hasRedrawnTile = false;
     const tileBoundsList = this.buildCommittedTileBoundsForDirtyRects(dirtyRects);
     for (const tileBounds of tileBoundsList) {
@@ -1681,6 +1769,24 @@ export struct CanvasBoard {
     );
 
     return true;
+  }
+
+  private shouldUseUnifiedCommittedRedraw(
+    invalidation: RenderInvalidation,
+    dirtyRects: BoundingBox[]
+  ): boolean {
+    if (dirtyRects.length === 0) {
+      return false;
+    }
+
+    switch (invalidation.reason) {
+      case 'undo':
+      case 'redo':
+      case 'clear':
+        return true;
+      default:
+        return dirtyRects.length === 1;
+    }
   }
 
   private applyRenderedStrokeMutation(invalidation: RenderInvalidation): void {
@@ -1717,6 +1823,13 @@ export struct CanvasBoard {
     this.cacheRenderedStrokeState(stroke);
     this.renderedStrokeOrder.push(stroke.id);
     this.renderedStrokeIndexById.set(stroke.id, this.renderedStrokeOrder.length - 1);
+  }
+
+  private rebuildRenderedStrokeCache(strokes: Stroke[]): void {
+    this.clearRenderedStrokeState();
+    for (const stroke of strokes) {
+      this.appendRenderedStroke(stroke);
+    }
   }
 
   private cacheRenderedStrokeState(stroke: Stroke): void {
@@ -1784,48 +1897,7 @@ export struct CanvasBoard {
     }
 
     const redrawRegion = this.expandCommittedTileRegion(tileRegion, transform);
-    this.clearCommittedRegion(redrawRegion, transform);
-
-    const candidateStrokeIds = this.strokeSpatialIndex.queryStrokeIds(redrawRegion)
-      .sort((left: string, right: string) => this.getRenderedStrokeIndex(left) - this.getRenderedStrokeIndex(right));
-
-    this.committedContext2D.save();
-    this.applyPageTransformAndClip(this.committedContext2D, transform);
-    this.committedContext2D.beginPath();
-    this.committedContext2D.rect(
-      redrawRegion.minX,
-      redrawRegion.minY,
-      redrawRegion.maxX - redrawRegion.minX,
-      redrawRegion.maxY - redrawRegion.minY
-    );
-    this.committedContext2D.clip();
-    PageTemplateRenderer.drawTemplateBackground(
-      this.committedContext2D,
-      this.templateType,
-      transform.pageWidth,
-      transform.pageHeight,
-      this.paperBackgroundColor,
-      {
-        x: redrawRegion.minX,
-        y: redrawRegion.minY,
-        width: redrawRegion.maxX - redrawRegion.minX,
-        height: redrawRegion.maxY - redrawRegion.minY
-      }
-    );
-
-    for (const strokeId of candidateStrokeIds) {
-      const stroke = this.renderedStrokesById.get(strokeId);
-      if (stroke === undefined) {
-        continue;
-      }
-
-      const strokeBounds = this.strokeSpatialIndex.getBounds(strokeId);
-      if (strokeBounds !== null && doBoundingBoxesIntersect(strokeBounds, redrawRegion)) {
-        this.drawStroke(this.committedContext2D, stroke);
-      }
-    }
-
-    this.committedContext2D.restore();
+    const candidateStrokeIds = this.redrawCommittedRegionCore(redrawRegion, transform);
     EditorPerformanceTrace.record(
       'committed.tile',
       Date.now() - redrawStartedAt,
@@ -1833,6 +1905,70 @@ export struct CanvasBoard {
       4
     );
     return true;
+  }
+
+  private redrawCommittedRegion(
+    region: BoundingBox,
+    transform: PageViewportTransform,
+    visibleBounds: BoundingBox
+  ): boolean {
+    const clippedRegion = this.intersectBoundingBoxes(region, visibleBounds);
+    if (clippedRegion === null) {
+      return false;
+    }
+
+    const redrawStartedAt = Date.now();
+    const redrawRegion = this.expandCommittedTileRegion(clippedRegion, transform);
+    const candidateStrokeIds = this.redrawCommittedRegionCore(redrawRegion, transform);
+    EditorPerformanceTrace.record(
+      'committed.region',
+      Date.now() - redrawStartedAt,
+      `candidateStrokes=${candidateStrokeIds.length} region=${this.describeBoundingBox(redrawRegion)}`,
+      4
+    );
+    return true;
+  }
+
+  private redrawRecentCommittedLayer(useFastRendering: boolean): void {
+    if (!this.areCommittedLayersReady()) {
+      return;
+    }
+
+    const redrawStartedAt = Date.now();
+    const viewModel = this.getViewModel();
+    const strokes = viewModel ? viewModel.getStrokesForRendering() : [];
+    this.clearRecentCommittedLayer();
+    if (this.flattenedCommittedStrokeCount >= strokes.length) {
+      EditorPerformanceTrace.record('committed.recentRedraw', Date.now() - redrawStartedAt, 'strokes=0', 4);
+      return;
+    }
+
+    const size = this.getCanvasSize(this.recentCommittedContext2D);
+    const transform = this.getPageViewportTransform(size);
+    const visibleRegion = this.getVisiblePageRegion(transform);
+    if (visibleRegion === null) {
+      EditorPerformanceTrace.record('committed.recentRedraw', Date.now() - redrawStartedAt, 'visible=false', 4);
+      return;
+    }
+
+    const visibleBounds = this.toBoundingBox(visibleRegion);
+    this.recentCommittedContext2D.save();
+    this.applyPageTransformAndClip(this.recentCommittedContext2D, transform);
+    this.drawStrokeRange(
+      this.recentCommittedContext2D,
+      strokes,
+      this.flattenedCommittedStrokeCount,
+      strokes.length,
+      visibleBounds,
+      useFastRendering
+    );
+    this.recentCommittedContext2D.restore();
+    EditorPerformanceTrace.record(
+      'committed.recentRedraw',
+      Date.now() - redrawStartedAt,
+      `strokes=${Math.max(0, strokes.length - this.flattenedCommittedStrokeCount)}`,
+      4
+    );
   }
 
   private buildCommittedTileBoundsForDirtyRects(dirtyRects: BoundingBox[]): BoundingBox[] {
@@ -1872,6 +2008,75 @@ export struct CanvasBoard {
     }
 
     return tileBoundsList;
+  }
+
+  private redrawCommittedRegionCore(
+    redrawRegion: BoundingBox,
+    transform: PageViewportTransform
+  ): string[] {
+    this.clearCommittedRegion(redrawRegion, transform);
+
+    const candidateStrokeIds = this.strokeSpatialIndex.queryStrokeIds(redrawRegion)
+      .sort((left: string, right: string) => this.getRenderedStrokeIndex(left) - this.getRenderedStrokeIndex(right));
+
+    this.committedContext2D.save();
+    this.applyPageTransformAndClip(this.committedContext2D, transform);
+    this.committedContext2D.beginPath();
+    this.committedContext2D.rect(
+      redrawRegion.minX,
+      redrawRegion.minY,
+      redrawRegion.maxX - redrawRegion.minX,
+      redrawRegion.maxY - redrawRegion.minY
+    );
+    this.committedContext2D.clip();
+    PageTemplateRenderer.drawTemplateBackground(
+      this.committedContext2D,
+      this.templateType,
+      transform.pageWidth,
+      transform.pageHeight,
+      this.paperBackgroundColor,
+      {
+        x: redrawRegion.minX,
+        y: redrawRegion.minY,
+        width: redrawRegion.maxX - redrawRegion.minX,
+        height: redrawRegion.maxY - redrawRegion.minY
+      }
+    );
+
+    for (const strokeId of candidateStrokeIds) {
+      const stroke = this.renderedStrokesById.get(strokeId);
+      if (stroke === undefined) {
+        continue;
+      }
+
+      if (this.shouldSkipRecentCommittedStrokeInBaseLayer(strokeId)) {
+        continue;
+      }
+
+      const strokeBounds = this.strokeSpatialIndex.getBounds(strokeId);
+      if (strokeBounds !== null && doBoundingBoxesIntersect(strokeBounds, redrawRegion)) {
+        this.drawStroke(this.committedContext2D, stroke);
+      }
+    }
+
+    this.committedContext2D.restore();
+    return candidateStrokeIds;
+  }
+
+  private drawStrokeRange(
+    context: CanvasRenderingContext2D,
+    strokes: Stroke[],
+    startIndex: number,
+    endIndex: number,
+    visibleBounds: BoundingBox,
+    useFastRendering: boolean
+  ): void {
+    for (let index = startIndex; index < endIndex; index += 1) {
+      const stroke = strokes[index];
+      if (this.isStrokeBoundsVisible(stroke, visibleBounds)) {
+        this.drawStroke(context, stroke, useFastRendering);
+      }
+    }
   }
 
   private clearPageRegionFromContext(context: CanvasRenderingContext2D, region: BoundingBox): void {
@@ -1921,6 +2126,130 @@ export struct CanvasBoard {
       maxX,
       maxY
     };
+  }
+
+  private mergeBoundingBoxes(boundsList: BoundingBox[]): BoundingBox | null {
+    if (boundsList.length === 0) {
+      return null;
+    }
+
+    let mergedBounds: BoundingBox = {
+      minX: boundsList[0].minX,
+      minY: boundsList[0].minY,
+      maxX: boundsList[0].maxX,
+      maxY: boundsList[0].maxY
+    };
+
+    for (let index = 1; index < boundsList.length; index += 1) {
+      const nextBounds = boundsList[index];
+      mergedBounds = {
+        minX: Math.min(mergedBounds.minX, nextBounds.minX),
+        minY: Math.min(mergedBounds.minY, nextBounds.minY),
+        maxX: Math.max(mergedBounds.maxX, nextBounds.maxX),
+        maxY: Math.max(mergedBounds.maxY, nextBounds.maxY)
+      };
+    }
+
+    return mergedBounds;
+  }
+
+  private getRecentCommittedStrokeIdSet(): Set<string> {
+    const recentStrokeIds = new Set<string>();
+    for (let index = this.flattenedCommittedStrokeCount; index < this.renderedStrokeOrder.length; index += 1) {
+      recentStrokeIds.add(this.renderedStrokeOrder[index]);
+    }
+
+    return recentStrokeIds;
+  }
+
+  private canUseRecentCommittedFastPath(
+    invalidation: RenderInvalidation,
+    previousRecentStrokeIds: Set<string>
+  ): boolean {
+    if (invalidation.reason !== 'undo' && invalidation.reason !== 'redo') {
+      return false;
+    }
+
+    const viewModel = this.getViewModel();
+    if (viewModel === null) {
+      return false;
+    }
+
+    const strokes = viewModel.getStrokesForRendering();
+    if (this.flattenedCommittedStrokeCount > strokes.length) {
+      return false;
+    }
+
+    if (strokes.length - this.flattenedCommittedStrokeCount > RECENT_COMMITTED_STROKE_LIMIT) {
+      return false;
+    }
+
+    for (const strokeId of invalidation.removedStrokeIds) {
+      if (!previousRecentStrokeIds.has(strokeId)) {
+        return false;
+      }
+    }
+
+    for (const record of invalidation.addedRecords) {
+      if (record.index < this.flattenedCommittedStrokeCount) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  private requiresFullCommittedRedrawWithRecentLayer(
+    invalidation: RenderInvalidation,
+    previousRecentStrokeIds: Set<string>
+  ): boolean {
+    if (!this.hasActiveRecentCommittedLayer()) {
+      return false;
+    }
+
+    if (invalidation.reason === 'clear') {
+      return true;
+    }
+
+    for (const strokeId of invalidation.removedStrokeIds) {
+      if (previousRecentStrokeIds.has(strokeId)) {
+        return true;
+      }
+    }
+
+    for (const record of invalidation.addedRecords) {
+      if (record.index >= this.flattenedCommittedStrokeCount) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private canAppendToRecentCommittedLayer(): boolean {
+    const viewModel = this.getViewModel();
+    if (viewModel === null) {
+      return false;
+    }
+
+    return viewModel.getStrokesForRendering().length - this.flattenedCommittedStrokeCount <= RECENT_COMMITTED_STROKE_LIMIT;
+  }
+
+  private hasActiveRecentCommittedLayer(): boolean {
+    return this.flattenedCommittedStrokeCount < this.renderedStrokeOrder.length;
+  }
+
+  private shouldSkipRecentCommittedStrokeInBaseLayer(strokeId: string): boolean {
+    if (!this.hasActiveRecentCommittedLayer()) {
+      return false;
+    }
+
+    const strokeIndex = this.getRenderedStrokeIndex(strokeId);
+    return strokeIndex >= this.flattenedCommittedStrokeCount;
+  }
+
+  private areCommittedLayersReady(): boolean {
+    return this.isCommittedLayerReady && this.isRecentCommittedLayerReady;
   }
 
   private describeBoundingBox(bounds: BoundingBox | null): string {
