@@ -2102,7 +2102,7 @@ export class DrawingEditorViewModel {
       removedStrokeIds: removed.map((record: IndexedStrokeRecord) => record.stroke.id),
       addedRecords: added.map((record: IndexedStrokeRecord): IndexedStrokeRecord => ({
         index: record.index,
-        stroke: this.cloneStroke(record.stroke)
+        stroke: record.stroke
       }))
     };
   }
@@ -2195,7 +2195,7 @@ export class DrawingEditorViewModel {
       removedStrokeIds: [...invalidation.removedStrokeIds],
       addedRecords: invalidation.addedRecords.map((record: IndexedStrokeRecord): IndexedStrokeRecord => ({
         index: record.index,
-        stroke: this.cloneStroke(record.stroke)
+        stroke: record.stroke
       }))
     };
   }

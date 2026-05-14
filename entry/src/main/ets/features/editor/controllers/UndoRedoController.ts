@@ -1,4 +1,4 @@
-import { Stroke, StrokePoint, StrokeStyle } from '../../../domain/entities/Stroke';
+import { Stroke } from '../../../domain/entities/Stroke';
 
 const DEFAULT_HISTORY_LIMIT = 50;
 
@@ -46,7 +46,7 @@ export class UndoRedoController {
   recordAppendStroke(stroke: Stroke): void {
     this.pushUndoOperation({
       type: 'append_stroke',
-      stroke: this.cloneStroke(stroke)
+      stroke
     });
   }
 
@@ -57,8 +57,8 @@ export class UndoRedoController {
 
     this.pushUndoOperation({
       type: 'replace_page_delta',
-      removed: removed.map((record: IndexedStrokeRecord) => this.cloneIndexedStrokeRecord(record)),
-      added: added.map((record: IndexedStrokeRecord) => this.cloneIndexedStrokeRecord(record)),
+      removed: removed.map((record: IndexedStrokeRecord) => this.copyIndexedStrokeRecord(record)),
+      added: added.map((record: IndexedStrokeRecord) => this.copyIndexedStrokeRecord(record)),
       label
     });
   }
@@ -73,7 +73,7 @@ export class UndoRedoController {
       };
     }
 
-    this.redoStack.push(this.cloneOperation(operation));
+    this.redoStack.push(operation);
     return this.applyInverse(operation, currentStrokes);
   }
 
@@ -87,7 +87,7 @@ export class UndoRedoController {
       };
     }
 
-    this.undoStack.push(this.cloneOperation(operation));
+    this.undoStack.push(operation);
     return this.applyForward(operation, currentStrokes);
   }
 
@@ -110,14 +110,14 @@ export class UndoRedoController {
 
   createSnapshot(): UndoRedoSnapshot {
     return {
-      undoStack: this.undoStack.map((operation: EditorOperation) => this.cloneOperation(operation)),
-      redoStack: this.redoStack.map((operation: EditorOperation) => this.cloneOperation(operation))
+      undoStack: this.undoStack.slice(),
+      redoStack: this.redoStack.slice()
     };
   }
 
   restoreSnapshot(snapshot: UndoRedoSnapshot): void {
-    this.undoStack = snapshot.undoStack.map((operation: EditorOperation) => this.cloneOperation(operation));
-    this.redoStack = snapshot.redoStack.map((operation: EditorOperation) => this.cloneOperation(operation));
+    this.undoStack = snapshot.undoStack.slice();
+    this.redoStack = snapshot.redoStack.slice();
   }
 
   getDebugState(): UndoRedoDebugState {
@@ -128,7 +128,8 @@ export class UndoRedoController {
   }
 
   private pushUndoOperation(operation: EditorOperation): void {
-    this.undoStack.push(this.cloneOperation(operation));
+    // Completed strokes are treated as immutable records after they enter history.
+    this.undoStack.push(operation);
     if (this.undoStack.length > this.historyLimit) {
       this.undoStack.shift();
     }
@@ -139,7 +140,7 @@ export class UndoRedoController {
     switch (operation.type) {
       case 'append_stroke': {
         const nextStrokes = currentStrokes.slice();
-        const addedStroke = this.cloneStroke(operation.stroke);
+        const addedStroke = operation.stroke;
         nextStrokes.push(addedStroke);
         return {
           strokes: nextStrokes,
@@ -181,6 +182,14 @@ export class UndoRedoController {
     removed: IndexedStrokeRecord[],
     added: IndexedStrokeRecord[]
   ): UndoRedoApplyResult {
+    if (removed.length === 0 && added.length === 0) {
+      return {
+        strokes: currentStrokes,
+        removed,
+        added
+      };
+    }
+
     const nextStrokes = currentStrokes.slice();
     const removedIds = new Set<string>();
 
@@ -194,23 +203,35 @@ export class UndoRedoController {
       }
     }
 
-    const sortedAdded = added
-      .map((record: IndexedStrokeRecord) => this.cloneIndexedStrokeRecord(record))
-      .sort((left: IndexedStrokeRecord, right: IndexedStrokeRecord) => left.index - right.index);
+    const sortedAdded = added.length < 2
+      ? added
+      : added.slice().sort((left: IndexedStrokeRecord, right: IndexedStrokeRecord) => left.index - right.index);
 
     for (const record of sortedAdded) {
       const insertionIndex = Math.max(0, Math.min(record.index, nextStrokes.length));
-      nextStrokes.splice(insertionIndex, 0, this.cloneStroke(record.stroke));
+      nextStrokes.splice(insertionIndex, 0, record.stroke);
     }
 
     return {
       strokes: nextStrokes,
-      removed: removed.map((record: IndexedStrokeRecord) => this.cloneIndexedStrokeRecord(record)),
-      added: added.map((record: IndexedStrokeRecord) => this.cloneIndexedStrokeRecord(record))
+      removed,
+      added
     };
   }
 
   private removeStrokeById(strokes: Stroke[], strokeId: string): UndoRedoApplyResult {
+    const lastIndex = strokes.length - 1;
+    if (lastIndex >= 0 && strokes[lastIndex].id === strokeId) {
+      return {
+        strokes: strokes.slice(0, lastIndex),
+        removed: [{
+          index: lastIndex,
+          stroke: strokes[lastIndex]
+        }],
+        added: []
+      };
+    }
+
     const nextStrokes = strokes.slice();
     let removedRecord: IndexedStrokeRecord | null = null;
 
@@ -218,7 +239,7 @@ export class UndoRedoController {
       if (nextStrokes[index].id === strokeId) {
         removedRecord = {
           index,
-          stroke: this.cloneStroke(nextStrokes[index])
+          stroke: nextStrokes[index]
         };
         nextStrokes.splice(index, 1);
         break;
@@ -232,65 +253,10 @@ export class UndoRedoController {
     };
   }
 
-  private cloneOperation(operation: EditorOperation): EditorOperation {
-    switch (operation.type) {
-      case 'append_stroke':
-        return {
-          type: 'append_stroke',
-          stroke: this.cloneStroke(operation.stroke)
-        };
-      case 'replace_page_delta':
-        return {
-          type: 'replace_page_delta',
-          removed: operation.removed.map((record: IndexedStrokeRecord) => this.cloneIndexedStrokeRecord(record)),
-          added: operation.added.map((record: IndexedStrokeRecord) => this.cloneIndexedStrokeRecord(record)),
-          label: operation.label
-        };
-      default:
-        return {
-          type: 'replace_page_delta',
-          removed: [],
-          added: [],
-          label: 'clear'
-        };
-    }
-  }
-
-  private cloneIndexedStrokeRecord(record: IndexedStrokeRecord): IndexedStrokeRecord {
+  private copyIndexedStrokeRecord(record: IndexedStrokeRecord): IndexedStrokeRecord {
     return {
       index: record.index,
-      stroke: this.cloneStroke(record.stroke)
-    };
-  }
-
-  private cloneStroke(stroke: Stroke): Stroke {
-    return {
-      id: stroke.id,
-      pageId: stroke.pageId,
-      renderKey: stroke.renderKey,
-      renderWarmupPoints: stroke.renderWarmupPoints?.map((point: StrokePoint) => this.clonePoint(point)) ?? [],
-      points: stroke.points.map((point: StrokePoint) => this.clonePoint(point)),
-      style: this.cloneStyle(stroke.style),
-      createdAt: stroke.createdAt,
-      updatedAt: stroke.updatedAt
-    };
-  }
-
-  private clonePoint(point: StrokePoint): StrokePoint {
-    return {
-      x: point.x,
-      y: point.y,
-      t: point.t,
-      pressure: point.pressure
-    };
-  }
-
-  private cloneStyle(style: StrokeStyle): StrokeStyle {
-    return {
-      tool: style.tool,
-      color: style.color,
-      width: style.width,
-      opacity: style.opacity
+      stroke: record.stroke
     };
   }
 }
