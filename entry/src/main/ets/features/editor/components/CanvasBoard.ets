@@ -15,15 +15,17 @@ import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
 import { ToolSetting, ToolType } from '../../../domain/entities/ToolSetting';
 import { PageTemplateRenderer } from '../controllers/PageTemplateRenderer';
 import { InProgressStrokeRenderSession, StrokeRenderer } from '../controllers/StrokeRenderer';
+import { SelectionDashRenderer } from '../controllers/SelectionDashRenderer';
 import { ShapeRenderer } from '../controllers/ShapeRenderer';
 import { IndexedStrokeRecord } from '../controllers/UndoRedoController';
 import { StrokeSpatialHashIndex } from '../controllers/StrokeSpatialHashIndex';
 import { EditorDebugSnapshot } from '../viewmodels/EditorDebugSnapshot';
-import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
+import { DrawingEditorViewModel, SelectedStrokeGroup } from '../viewmodels/DrawingEditorViewModel';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
 import { RenderInvalidation } from '../viewmodels/RenderInvalidation';
 import { EditorPerformanceTrace } from '../utils/EditorPerformanceTrace';
 import { ElementLayer } from './ElementLayer';
+import { StrokeSelectionOverlay } from './StrokeSelectionOverlay';
 
 interface CanvasSize {
   width: number;
@@ -76,6 +78,11 @@ const TEXT_EDIT_DOUBLE_TAP_MS = 360;
 const TEXT_EDIT_DOUBLE_TAP_DISTANCE = 18;
 const INLINE_TEXT_LINE_HEIGHT_FACTOR = 1.35;
 const INLINE_TEXT_MAX_LINES = 1000;
+const LASSO_HIT_TOLERANCE_SCREEN_PX = 10;
+const MIN_LASSO_HIT_TOLERANCE_PAGE = 4;
+const MAX_LASSO_HIT_TOLERANCE_PAGE = 12;
+const LASSO_OVERLAY_REDRAW_INTERVAL_MS = 24;
+const SELECTION_OVERLAY_RESUME_DELAY_MS = 220;
 export type CanvasBoardContentChangeKind = 'stroke' | 'element';
 
 @Component
@@ -139,6 +146,7 @@ export struct CanvasBoard {
   private lastPageHeight: number = 0;
   private isViewportTransformReady: boolean = false;
   private isDrawingGestureActive: boolean = false;
+  private isLassoGestureActive: boolean = false;
   private isWorkspacePanActive: boolean = false;
   private isViewportGestureActive: boolean = false;
   private lastWorkspacePanX: number = 0;
@@ -154,6 +162,9 @@ export struct CanvasBoard {
   private lastEditTapElementId: string = '';
   private lastEditTapX: number = 0;
   private lastEditTapY: number = 0;
+  private lastSelectionVersion: number = -1;
+  private lastLassoOverlayRedrawTime: number = 0;
+  private selectionOverlayResumeTimerId: number = -1;
 
   @State private isCommittedLayerReady: boolean = false;
   @State private isRecentCommittedLayerReady: boolean = false;
@@ -170,12 +181,16 @@ export struct CanvasBoard {
   @State private inlineTextEditY: number = 0;
   @State private inlineTextEditWidth: number = 1;
   @State private inlineTextEditHeight: number = 1;
+  @State private selectedStrokeGroups: SelectedStrokeGroup[] = [];
+  @State private selectionOverlayRefreshVersion: number = 0;
+  @State private isSelectionOverlayPaused: boolean = false;
 
   aboutToAppear(): void {
     this.resolveViewModel();
   }
 
   aboutToDisappear(): void {
+    this.clearSelectionOverlayResumeTimer();
     this.commitInlineTextEdit(true);
   }
 
@@ -215,6 +230,14 @@ export struct CanvasBoard {
           pageId: this.pageId,
           refreshVersion: this.elementVersion,
           editingElementId: this.getInlineTextEditElementId()
+        })
+          .width('100%')
+          .height('100%')
+
+        StrokeSelectionOverlay({
+          groups: this.selectedStrokeGroups,
+          refreshVersion: this.selectionOverlayRefreshVersion,
+          paused: this.isSelectionOverlayPaused
         })
           .width('100%')
           .height('100%')
@@ -404,6 +427,11 @@ export struct CanvasBoard {
     const activeTool = toolSetting.tool;
     const touch = event.changedTouches.length > 0 ? event.changedTouches[0] : event.touches[0];
     if (!touch) {
+      if (activeTool === 'lasso') {
+        this.finishLassoGestureWithoutPoint(viewModel, event.type);
+        return;
+      }
+
       if (activeTool === 'shape') {
         viewModel.cancelShapeDraft();
         this.syncEditorSnapshot();
@@ -488,6 +516,11 @@ export struct CanvasBoard {
 
     if (this.inlineTextEditElement !== null) {
       this.commitInlineTextEdit(true);
+    }
+
+    if (activeTool === 'lasso') {
+      this.handleLassoTouch(event, touch, viewModel);
+      return;
     }
 
     if (activeTool === 'text') {
@@ -670,10 +703,81 @@ export struct CanvasBoard {
     return true;
   }
 
+  private handleLassoTouch(event: TouchEvent, touch: TouchObject, viewModel: DrawingEditorViewModel): void {
+    if (event.type === TouchType.Down) {
+      const point = this.buildPoint(touch, false);
+      if (point === null) {
+        this.beginWorkspacePan(touch);
+        return;
+      }
+
+      this.isLassoGestureActive = true;
+      this.pauseSelectionOverlay();
+      viewModel.beginLassoSelection(point);
+      this.syncEditorSnapshot();
+      this.requestLassoOverlayRedraw(true);
+      this.onContentChanged(false, 'element');
+      return;
+    }
+
+    if (event.type === TouchType.Move) {
+      if (this.isWorkspacePanActive) {
+        this.updateWorkspacePan(touch);
+        return;
+      }
+
+      if (!this.isLassoGestureActive) {
+        return;
+      }
+
+      const point = this.buildPoint(touch, true);
+      if (point === null) {
+        return;
+      }
+
+      viewModel.updateLassoSelection(point);
+      this.requestLassoOverlayRedraw(false);
+      return;
+    }
+
+    if (event.type === TouchType.Up) {
+      if (this.isWorkspacePanActive) {
+        this.endWorkspacePan(true);
+        return;
+      }
+
+      if (!this.isLassoGestureActive) {
+        return;
+      }
+
+      const point = this.buildPoint(touch, true);
+      if (point !== null) {
+        viewModel.updateLassoSelection(point);
+      }
+      this.isLassoGestureActive = false;
+      viewModel.finishLassoSelection(this.getLassoHitToleranceInPage());
+      this.scheduleSelectionOverlayResume();
+      this.syncEditorSnapshot();
+      this.redrawOverlayLayer();
+      this.onContentChanged(false, 'element');
+      return;
+    }
+
+    if (event.type === TouchType.Cancel) {
+      if (this.isWorkspacePanActive) {
+        this.endWorkspacePan(true);
+        return;
+      }
+
+      this.cancelLassoGesture(viewModel);
+    }
+  }
+
   private handleViewportTouch(event: TouchEvent, viewModel: DrawingEditorViewModel): boolean {
     const activeTouches: TouchObject[] = this.getActiveTouches(event);
     if (activeTouches.length >= 2) {
       this.cancelDrawingGesture(viewModel);
+      this.cancelLassoGesture(viewModel);
       this.endWorkspacePan(false);
       const pairMetrics: TouchPairMetrics = this.getTouchPairMetrics(activeTouches[0], activeTouches[1]);
       if (!this.isViewportGestureActive || event.type === TouchType.Down) {
@@ -700,6 +804,23 @@ export struct CanvasBoard {
     }
 
     return false;
+  }
+
+  private finishLassoGestureWithoutPoint(viewModel: DrawingEditorViewModel, touchType: TouchType): void {
+    if (!this.isLassoGestureActive) {
+      return;
+    }
+
+    if (touchType === TouchType.Up) {
+      viewModel.finishLassoSelection(this.getLassoHitToleranceInPage());
+    } else {
+      viewModel.cancelLassoSelection();
+    }
+    this.isLassoGestureActive = false;
+    this.scheduleSelectionOverlayResume();
+    this.syncEditorSnapshot();
+    this.redrawOverlayLayer();
+    this.onContentChanged(false, 'element');
   }
 
   private getActiveTouches(event: TouchEvent): TouchObject[] {
@@ -732,6 +853,19 @@ export struct CanvasBoard {
     this.isDrawingGestureActive = false;
     this.redrawOverlayLayer();
     this.syncEditorSnapshot();
+  }
+
+  private cancelLassoGesture(viewModel: DrawingEditorViewModel): void {
+    if (!this.isLassoGestureActive) {
+      return;
+    }
+
+    viewModel.cancelLassoSelection();
+    this.isLassoGestureActive = false;
+    this.scheduleSelectionOverlayResume();
+    this.redrawOverlayLayer();
+    this.syncEditorSnapshot();
+    this.onContentChanged(false, 'element');
   }
 
   private async finishStrokeAndRedraw(activeTool: string): Promise<void> {
@@ -854,6 +988,7 @@ export struct CanvasBoard {
     if (!viewModel) {
       return;
     }
+    this.syncSelectionOverlayState(viewModel);
 
     if (viewModel.hasActiveEraseGesture()) {
       const size = this.getCanvasSize(this.overlayContext2D);
@@ -872,6 +1007,18 @@ export struct CanvasBoard {
       const transform = this.getPageViewportTransform(size);
       this.syncElementLayerTransform(transform);
       this.rebuildActivePreviewLayers(activeStroke);
+      return;
+    }
+
+    const lassoDraftPath = viewModel.getLassoDraftPath();
+    if (lassoDraftPath.length > 0) {
+      const size = this.getCanvasSize(this.overlayContext2D);
+      const transform = this.getPageViewportTransform(size);
+      this.syncElementLayerTransform(transform);
+      this.overlayContext2D.save();
+      this.applyPageTransformAndClip(this.overlayContext2D, transform);
+      this.drawLassoDraft(this.overlayContext2D, lassoDraftPath);
+      this.overlayContext2D.restore();
       return;
     }
 
@@ -945,6 +1092,74 @@ export struct CanvasBoard {
     }
 
     this.editorSnapshot = viewModel.getDebugSnapshot();
+    this.syncSelectionOverlayState(viewModel);
+  }
+
+  private syncSelectionOverlayState(viewModel: DrawingEditorViewModel): void {
+    const selectionVersion = viewModel.getSelectionVersion();
+    if (selectionVersion === this.lastSelectionVersion) {
+      return;
+    }
+
+    this.lastSelectionVersion = selectionVersion;
+    this.selectedStrokeGroups = viewModel.getSelectedStrokeGroups();
+    this.selectionOverlayRefreshVersion += 1;
+  }
+
+  private pauseSelectionOverlay(): void {
+    this.clearSelectionOverlayResumeTimer();
+    if (!this.isSelectionOverlayPaused) {
+      this.isSelectionOverlayPaused = true;
+    }
+  }
+
+  private scheduleSelectionOverlayResume(): void {
+    if (!this.isSelectionOverlayPaused && this.selectionOverlayResumeTimerId < 0) {
+      return;
+    }
+
+    this.clearSelectionOverlayResumeTimer();
+    this.selectionOverlayResumeTimerId = setTimeout(() => {
+      this.selectionOverlayResumeTimerId = -1;
+      if (this.hasSelectionOverlayPauseSource()) {
+        this.scheduleSelectionOverlayResume();
+        return;
+      }
+
+      if (this.isSelectionOverlayPaused) {
+        this.isSelectionOverlayPaused = false;
+      }
+    }, SELECTION_OVERLAY_RESUME_DELAY_MS);
+  }
+
+  private resumeSelectionOverlayImmediately(): void {
+    this.clearSelectionOverlayResumeTimer();
+    if (this.isSelectionOverlayPaused) {
+      this.isSelectionOverlayPaused = false;
+    }
+  }
+
+  private hasSelectionOverlayPauseSource(): boolean {
+    return this.isLassoGestureActive || this.isWorkspacePanActive || this.isViewportGestureActive;
+  }
+
+  private clearSelectionOverlayResumeTimer(): void {
+    if (this.selectionOverlayResumeTimerId < 0) {
+      return;
+    }
+
+    clearTimeout(this.selectionOverlayResumeTimerId);
+    this.selectionOverlayResumeTimerId = -1;
+  }
+
+  private requestLassoOverlayRedraw(force: boolean): void {
+    const now = Date.now();
+    if (!force && now - this.lastLassoOverlayRedrawTime < LASSO_OVERLAY_REDRAW_INTERVAL_MS) {
+      return;
+    }
+
+    this.lastLassoOverlayRedrawTime = now;
+    this.redrawOverlayLayer();
   }
 
   private beginInlineTextEdit(element: TextCanvasElement): void {
@@ -1167,6 +1382,13 @@ export struct CanvasBoard {
     return Math.max(3, 10 / Math.max(0.01, transform.scale));
   }
 
+  private getLassoHitToleranceInPage(): number {
+    const size = this.getCanvasSize(this.overlayContext2D);
+    const transform = this.getPageViewportTransform(size);
+    const scaledTolerance = LASSO_HIT_TOLERANCE_SCREEN_PX / Math.max(0.01, transform.scale);
+    return this.clamp(scaledTolerance, MIN_LASSO_HIT_TOLERANCE_PAGE, MAX_LASSO_HIT_TOLERANCE_PAGE);
+  }
+
   private syncElementLayerTransform(transform: PageViewportTransform): void {
     if (this.elementLayerPageWidth !== transform.pageWidth) {
       this.elementLayerPageWidth = transform.pageWidth;
@@ -1371,6 +1593,7 @@ export struct CanvasBoard {
     this.endViewportGesture(false);
     this.endWorkspacePan(false);
     this.isDrawingGestureActive = false;
+    this.isLassoGestureActive = false;
   }
 
   private getViewportTotalScale(size: CanvasSize): number {
@@ -1453,6 +1676,7 @@ export struct CanvasBoard {
 
   private beginWorkspacePan(touch: TouchObject): void {
     this.isWorkspacePanActive = true;
+    this.pauseSelectionOverlay();
     this.lastWorkspacePanX = touch.x;
     this.lastWorkspacePanY = touch.y;
   }
@@ -1472,6 +1696,9 @@ export struct CanvasBoard {
   private endWorkspacePan(redrawFinal: boolean = false): void {
     const wasPanning = this.isWorkspacePanActive;
     this.isWorkspacePanActive = false;
+    if (wasPanning) {
+      this.scheduleSelectionOverlayResume();
+    }
     if (redrawFinal && wasPanning) {
       this.redrawViewportLayers(false);
     }
@@ -1482,6 +1709,7 @@ export struct CanvasBoard {
     const transform = this.getPageViewportTransform(size);
 
     this.isViewportGestureActive = true;
+    this.pauseSelectionOverlay();
     this.viewportGestureStartDistance = Math.max(1, pairMetrics.distance);
     this.viewportGestureStartZoomScale = this.viewportZoomScale;
     this.viewportGestureStartPageX = (pairMetrics.centerX - transform.offsetX) / transform.scale;
@@ -1512,6 +1740,9 @@ export struct CanvasBoard {
   private endViewportGesture(redrawFinal: boolean = false): void {
     const wasGesturing = this.isViewportGestureActive;
     this.isViewportGestureActive = false;
+    if (wasGesturing) {
+      this.scheduleSelectionOverlayResume();
+    }
     if (wasGesturing && this.isDocumentCanvasGestureEnabled()) {
       this.onDocumentViewportGestureEnd();
       return;
@@ -2397,6 +2628,16 @@ export struct CanvasBoard {
     context.globalAlpha = 1;
   }
 
+  private drawLassoDraft(context: CanvasRenderingContext2D, path: StrokePoint[]): void {
+    if (path.length === 0) {
+      return;
+    }
+
+    context.save();
+    SelectionDashRenderer.drawPath(context, path, false, 0);
+    context.restore();
+  }
+
   private resolveTouchTimestamp(touch: ExtendedTouchObject): number {
     const candidate = this.getNumericValue(touch.timestamp, touch.eventTime, touch.t);
     if (candidate === undefined) {
@@ -2439,6 +2680,10 @@ export struct CanvasBoard {
     this.inlineTextEditContent = '';
     this.resetInlineTextEditFrame();
     this.clearLastEditTap();
+    this.selectedStrokeGroups = [];
+    this.lastSelectionVersion = -1;
+    this.selectionOverlayRefreshVersion += 1;
+    this.resumeSelectionOverlayImmediately();
     this.resetViewportTransform();
     this.clearCommittedLayer();
     this.clearRenderedStrokeState();

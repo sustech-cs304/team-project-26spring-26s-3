@@ -7,8 +7,10 @@ import {
   eraseStrokePointsWithPath,
   expandBoundingBox,
   getBoundingBox,
+  getPointToSegmentDistance,
   getStrokeRenderBoundingBox,
   mergeBoundingBoxes,
+  sampleStrokePoints,
   isSamePoint
 } from '../../../common/utils/GeometryUtil';
 import {
@@ -65,6 +67,25 @@ interface ShapeDraft {
   currentPoint: StrokePoint;
 }
 
+export interface SelectedStrokeGroup {
+  id: string;
+  strokeIds: string[];
+  bounds: BoundingBox;
+  outline: StrokePoint[];
+}
+
+interface BoundaryEdge {
+  startColumn: number;
+  startRow: number;
+  endColumn: number;
+  endRow: number;
+}
+
+interface BoundaryStartEdge {
+  edge: BoundaryEdge | null;
+  startKeyIndex: number;
+}
+
 type ElementEditGestureKind =
   'move' |
   'resizeTopLeft' |
@@ -111,6 +132,16 @@ const MIN_SHAPE_ELEMENT_SIZE = 8;
 const MAX_IMAGE_INSERT_WIDTH = 420;
 const MAX_IMAGE_INSERT_HEIGHT = 320;
 const IMAGE_CANVAS_FILL_RATIO = 0.6;
+const MIN_LASSO_POINT_DISTANCE = 2;
+const MIN_LASSO_POINT_COUNT = 3;
+const STROKE_SELECTION_MASK_CELL_SIZE = 4;
+const STROKE_SELECTION_OUTLINE_PADDING = 24;
+const STROKE_SELECTION_OUTLINE_SIMPLIFY_DISTANCE = 8;
+const STROKE_SELECTION_MAX_MASK_CELLS = 180000;
+const STROKE_SELECTION_MAX_EDGE_COUNT = 16000;
+const LASSO_STROKE_MIN_INSIDE_RATIO = 0.2;
+const LASSO_STROKE_MIN_INSIDE_COUNT = 2;
+const LASSO_STROKE_SHORT_SAMPLE_COUNT = 3;
 let nextEditorViewModelInstanceId = 1;
 
 export class DrawingEditorViewModel {
@@ -143,8 +174,12 @@ export class DrawingEditorViewModel {
   private renderInvalidationSequence: number = 0;
   private lastRenderInvalidation: RenderInvalidation | null = null;
   private hasLoadedPageSnapshot: boolean = false;
+  private selectionVersion: number = 0;
   private shapeDraft: ShapeDraft | null = null;
   private selectedElementId: string = '';
+  private selectedElementIds: string[] = [];
+  private selectedStrokeGroups: SelectedStrokeGroup[] = [];
+  private lassoDraftPath: StrokePoint[] = [];
   private elementEditGesture: ElementEditGesture | null = null;
   private readonly instanceId: number = nextEditorViewModelInstanceId++;
 
@@ -237,6 +272,8 @@ export class DrawingEditorViewModel {
     const nextStrokes = this.strokes.slice();
     nextStrokes.push(completedStroke);
     this.strokes = nextStrokes;
+    this.clearStrokeSelection();
+    this.lassoDraftPath = [];
     this.strokeSpatialIndex.upsertStroke(completedStroke);
     this.undoRedoController.recordAppendStroke(completedStroke);
     this.changeSequence += 1;
@@ -286,6 +323,8 @@ export class DrawingEditorViewModel {
 
     const applyStartedAt = Date.now();
     this.strokes = undoResult.strokes;
+    this.clearStrokeSelection();
+    this.lassoDraftPath = [];
     this.applyStrokeSpatialIndexMutation(undoResult.removed, undoResult.added);
     this.markPartialRenderInvalidation('undo', undoResult.removed, undoResult.added);
     this.changeSequence += 1;
@@ -332,6 +371,8 @@ export class DrawingEditorViewModel {
 
     const applyStartedAt = Date.now();
     this.strokes = redoResult.strokes;
+    this.clearStrokeSelection();
+    this.lassoDraftPath = [];
     this.applyStrokeSpatialIndexMutation(redoResult.removed, redoResult.added);
     this.markPartialRenderInvalidation('redo', redoResult.removed, redoResult.added);
     this.changeSequence += 1;
@@ -370,6 +411,8 @@ export class DrawingEditorViewModel {
     this.appendDebugEvent('clear', `requested count=${sourceSnapshot.length} history=${this.describeHistoryState()}`);
     const applyStartedAt = Date.now();
     this.strokes = [];
+    this.clearStrokeSelection();
+    this.lassoDraftPath = [];
     this.strokeSpatialIndex.clear();
     this.undoRedoController.recordDelta(
       sourceSnapshot.map((stroke: Stroke, index: number): IndexedStrokeRecord => ({
@@ -405,6 +448,7 @@ export class DrawingEditorViewModel {
       this.cancelStroke();
     }
     this.cancelShapeDraft();
+    this.cancelLassoSelection();
     if (nextSetting.tool !== 'edit') {
       this.clearElementSelection();
     }
@@ -447,6 +491,22 @@ export class DrawingEditorViewModel {
     return this.selectedElementId;
   }
 
+  getSelectedElementIds(): string[] {
+    return [...this.selectedElementIds];
+  }
+
+  getSelectedStrokeGroups(): SelectedStrokeGroup[] {
+    return this.cloneSelectedStrokeGroups(this.selectedStrokeGroups);
+  }
+
+  getSelectionVersion(): number {
+    return this.selectionVersion;
+  }
+
+  getLassoDraftPath(): StrokePoint[] {
+    return this.lassoDraftPath.map((point: StrokePoint): StrokePoint => this.clonePoint(point));
+  }
+
   getSelectedElement(): CanvasElement | null {
     const selectedElement = this.elements.find((element: CanvasElement): boolean => element.id === this.selectedElementId);
     return selectedElement === undefined ? null : this.cloneElement(selectedElement);
@@ -465,6 +525,9 @@ export class DrawingEditorViewModel {
     }
 
     this.selectedElementId = selectedElement.id;
+    this.selectedElementIds = [selectedElement.id];
+    this.selectedStrokeGroups = [];
+    this.selectionVersion += 1;
     this.appendDebugEvent('selectElement', `element=${selectedElement.id} type=${selectedElement.type}`);
     return this.cloneElement(selectedElement);
   }
@@ -478,6 +541,9 @@ export class DrawingEditorViewModel {
     }
 
     this.selectedElementId = selectedElement.id;
+    this.selectedElementIds = [selectedElement.id];
+    this.selectedStrokeGroups = [];
+    this.selectionVersion += 1;
     this.appendDebugEvent(
       'selectElementAt',
       `element=${selectedElement.id} type=${selectedElement.type} x=${Math.round(point.x)} y=${Math.round(point.y)}`
@@ -491,24 +557,30 @@ export class DrawingEditorViewModel {
     }
     this.elementEditGesture = null;
     this.selectedElementId = '';
+    this.selectedElementIds = [];
+    this.selectedStrokeGroups = [];
+    this.selectionVersion += 1;
   }
 
   hasSelectedElement(): boolean {
-    return this.selectedElementId.length > 0 &&
-      this.elements.some((element: CanvasElement): boolean => element.id === this.selectedElementId);
+    return this.selectedElementIds.length > 0 &&
+      this.elements.some((element: CanvasElement): boolean => this.selectedElementIds.includes(element.id));
   }
 
   isSelectedElementDeleteHit(point: StrokePoint, hitTolerance: number): boolean {
-    const selectedElement = this.getElementById(this.selectedElementId);
-    if (selectedElement === null) {
-      return false;
+    const radius = Math.max(12, hitTolerance);
+    const selectedElements = this.getSelectedElementsInZOrderDescending();
+    for (const selectedElement of selectedElements) {
+      const center = this.getDeleteButtonCenter(selectedElement);
+      const deltaX = point.x - center.x;
+      const deltaY = point.y - center.y;
+      if (Math.sqrt(deltaX * deltaX + deltaY * deltaY) <= radius) {
+        this.selectedElementId = selectedElement.id;
+        return true;
+      }
     }
 
-    const center = this.getDeleteButtonCenter(selectedElement);
-    const radius = Math.max(12, hitTolerance);
-    const deltaX = point.x - center.x;
-    const deltaY = point.y - center.y;
-    return Math.sqrt(deltaX * deltaX + deltaY * deltaY) <= radius;
+    return false;
   }
 
   deleteSelectedElement(): CanvasElement | null {
@@ -519,14 +591,70 @@ export class DrawingEditorViewModel {
     }
 
     this.elements = this.elements.filter((element: CanvasElement): boolean => element.id !== selectedElement.id);
-    this.selectedElementId = '';
+    this.selectedElementIds = this.selectedElementIds.filter((elementId: string): boolean => elementId !== selectedElement.id);
+    this.selectedElementId = this.selectedElementIds.length > 0 ? this.selectedElementIds[0] : '';
     this.elementEditGesture = null;
+    this.selectionVersion += 1;
     this.changeSequence += 1;
     this.persistenceStatus = 'pending element delete save';
     this.schedulePersistCurrentStrokes('elementDelete', 0);
     this.errorMessage = '';
     this.appendDebugEvent('deleteElement', `element=${selectedElement.id} type=${selectedElement.type}`);
     return this.cloneElement(selectedElement);
+  }
+
+  beginLassoSelection(point: StrokePoint): void {
+    if (this.pageId.length === 0) {
+      return;
+    }
+
+    this.cancelStroke();
+    this.cancelShapeDraft();
+    this.clearEraseState();
+    this.elementEditGesture = null;
+    this.lassoDraftPath = [this.clonePoint(point)];
+    this.appendDebugEvent('lasso', `start x=${Math.round(point.x)} y=${Math.round(point.y)}`);
+  }
+
+  updateLassoSelection(point: StrokePoint): void {
+    if (this.lassoDraftPath.length === 0) {
+      return;
+    }
+
+    const lastPoint = this.lassoDraftPath[this.lassoDraftPath.length - 1];
+    if (this.getPointDistance(lastPoint, point) < MIN_LASSO_POINT_DISTANCE) {
+      return;
+    }
+
+    this.lassoDraftPath.push(this.clonePoint(point));
+  }
+
+  finishLassoSelection(hitTolerance: number = 0): boolean {
+    if (this.lassoDraftPath.length < MIN_LASSO_POINT_COUNT) {
+      this.cancelLassoSelection();
+      return false;
+    }
+
+    const lassoPath = this.lassoDraftPath.map((point: StrokePoint): StrokePoint => this.clonePoint(point));
+    this.lassoDraftPath = [];
+    const selectedStrokes = this.getStrokesInsideLasso(lassoPath, hitTolerance);
+    this.selectedStrokeGroups = this.buildSelectedStrokeGroups(selectedStrokes);
+    this.selectedElementIds = this.getElementIdsInsideLasso(lassoPath);
+    this.selectedElementId = this.selectedElementIds.length > 0 ? this.selectedElementIds[0] : '';
+    this.elementEditGesture = null;
+    this.selectionVersion += 1;
+    this.appendDebugEvent(
+      'lasso',
+      `finish strokes=${selectedStrokes.length} groups=${this.selectedStrokeGroups.length} elements=${this.selectedElementIds.length}`
+    );
+    return this.selectedStrokeGroups.length > 0 || this.selectedElementIds.length > 0;
+  }
+
+  cancelLassoSelection(): void {
+    if (this.lassoDraftPath.length > 0) {
+      this.appendDebugEvent('lasso', 'cancelled');
+    }
+    this.lassoDraftPath = [];
   }
 
   beginElementEditGesture(point: StrokePoint, bounds: ElementBounds, hitTolerance: number): boolean {
@@ -537,10 +665,11 @@ export class DrawingEditorViewModel {
     this.cancelStroke();
     this.cancelShapeDraft();
 
-    const selectedElement = this.getElementById(this.selectedElementId);
-    if (selectedElement !== null) {
+    const selectedElements = this.getSelectedElementsInZOrderDescending();
+    for (const selectedElement of selectedElements) {
       const handleKind = this.hitTestElementEditHandle(point, selectedElement, hitTolerance);
       if (handleKind !== null) {
+        this.selectedElementId = selectedElement.id;
         this.elementEditGesture = {
           elementId: selectedElement.id,
           kind: handleKind,
@@ -560,6 +689,11 @@ export class DrawingEditorViewModel {
     }
 
     this.selectedElementId = hitElement.id;
+    if (!this.selectedElementIds.includes(hitElement.id)) {
+      this.selectedElementIds = [hitElement.id];
+      this.selectedStrokeGroups = [];
+      this.selectionVersion += 1;
+    }
     this.elementEditGesture = {
       elementId: hitElement.id,
       kind: 'move',
@@ -1019,6 +1153,8 @@ export class DrawingEditorViewModel {
 
     const applyStartedAt = Date.now();
     this.strokes = eraseResult.strokes;
+    this.clearStrokeSelection();
+    this.lassoDraftPath = [];
     this.applyStrokeSpatialIndexMutation(eraseResult.removed, eraseResult.added);
     this.undoRedoController.recordDelta(eraseResult.removed, eraseResult.added, 'erase');
     this.markPartialRenderInvalidation('erase', eraseResult.removed, eraseResult.added);
@@ -1052,6 +1188,15 @@ export class DrawingEditorViewModel {
     this.clearEraseState();
     this.shapeDraft = null;
     this.selectedElementId = '';
+    this.selectedElementIds = [];
+    this.selectedStrokeGroups = [];
+    this.lassoDraftPath = [];
+    this.selectionVersion += 1;
+  }
+
+  private clearStrokeSelection(): void {
+    this.selectedStrokeGroups = [];
+    this.selectionVersion += 1;
   }
 
   private schedulePersistCurrentStrokes(reason: string, delayMs: number = SAVE_DEBOUNCE_MS): void {
@@ -1746,6 +1891,658 @@ export class DrawingEditorViewModel {
     this.elements = this.elements.map((element: CanvasElement): CanvasElement => {
       return element.id === nextElement.id ? this.cloneElement(nextElement) : element;
     });
+  }
+
+  private getStrokesInsideLasso(lassoPath: StrokePoint[], hitTolerance: number): Stroke[] {
+    const lassoBounds = getBoundingBox(lassoPath);
+    if (lassoBounds === null) {
+      return [];
+    }
+
+    const selectedStrokes: Stroke[] = [];
+    for (const stroke of this.strokes) {
+      const strokeBounds = this.getStrokeLassoCandidateBounds(stroke, hitTolerance);
+      if (strokeBounds === null || !doBoundingBoxesIntersect(strokeBounds, lassoBounds)) {
+        continue;
+      }
+
+      if (this.doesStrokeIntersectLasso(stroke, lassoPath, hitTolerance)) {
+        selectedStrokes.push(this.cloneStroke(stroke));
+      }
+    }
+
+    return selectedStrokes;
+  }
+
+  private doesStrokeIntersectLasso(stroke: Stroke, lassoPath: StrokePoint[], hitTolerance: number): boolean {
+    const sampledPoints = sampleStrokePoints(stroke.points, Math.max(1, stroke.style.width / 2));
+    let insideCount = 0;
+    for (const point of sampledPoints) {
+      if (this.isPointInsidePolygon(point, lassoPath)) {
+        insideCount += 1;
+      }
+    }
+
+    if (this.hasEnoughStrokeSamplesInsideLasso(insideCount, sampledPoints.length)) {
+      return true;
+    }
+
+    const edgeTolerance = stroke.style.width / 2 + Math.max(0, hitTolerance);
+    return this.doesStrokeEdgeIntersectLasso(stroke, lassoPath, edgeTolerance);
+  }
+
+  private hasEnoughStrokeSamplesInsideLasso(insideCount: number, totalCount: number): boolean {
+    if (totalCount <= 0) {
+      return false;
+    }
+
+    if (totalCount <= LASSO_STROKE_SHORT_SAMPLE_COUNT) {
+      return insideCount >= 1;
+    }
+
+    return insideCount >= LASSO_STROKE_MIN_INSIDE_COUNT &&
+      insideCount / totalCount >= LASSO_STROKE_MIN_INSIDE_RATIO;
+  }
+
+  private doesStrokeEdgeIntersectLasso(stroke: Stroke, lassoPath: StrokePoint[], edgeTolerance: number): boolean {
+    for (let strokeIndex = 1; strokeIndex < stroke.points.length; strokeIndex += 1) {
+      const strokeStart = stroke.points[strokeIndex - 1];
+      const strokeEnd = stroke.points[strokeIndex];
+      for (let lassoIndex = 0; lassoIndex < lassoPath.length; lassoIndex += 1) {
+        const lassoStart = lassoPath[lassoIndex];
+        const lassoEnd = lassoPath[(lassoIndex + 1) % lassoPath.length];
+        if (this.doSegmentsIntersect(strokeStart, strokeEnd, lassoStart, lassoEnd) ||
+          this.getSegmentToSegmentDistance(strokeStart, strokeEnd, lassoStart, lassoEnd) <= edgeTolerance) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  private getStrokeLassoCandidateBounds(stroke: Stroke, hitTolerance: number): BoundingBox | null {
+    const bounds = getBoundingBox(stroke.points);
+    if (bounds === null) {
+      return null;
+    }
+
+    const padding = stroke.style.width / 2 + Math.max(0, hitTolerance);
+    return expandBoundingBox(bounds, padding);
+  }
+
+  private getElementIdsInsideLasso(lassoPath: StrokePoint[]): string[] {
+    const selectedIds: string[] = [];
+    const lassoBounds = getBoundingBox(lassoPath);
+    if (lassoBounds === null) {
+      return selectedIds;
+    }
+
+    for (const element of this.elements) {
+      const elementBounds = this.getElementBoundingBox(element);
+      if (!doBoundingBoxesIntersect(elementBounds, lassoBounds)) {
+        continue;
+      }
+
+      if (this.doesElementIntersectLasso(element, lassoPath)) {
+        selectedIds.push(element.id);
+      }
+    }
+
+    return selectedIds;
+  }
+
+  private doesElementIntersectLasso(element: CanvasElement, lassoPath: StrokePoint[]): boolean {
+    const bounds = this.getElementBoundingBox(element);
+    const corners: StrokePoint[] = [
+      { x: bounds.minX, y: bounds.minY, t: 0 },
+      { x: bounds.maxX, y: bounds.minY, t: 0 },
+      { x: bounds.maxX, y: bounds.maxY, t: 0 },
+      { x: bounds.minX, y: bounds.maxY, t: 0 }
+    ];
+    const center: StrokePoint = {
+      x: (bounds.minX + bounds.maxX) / 2,
+      y: (bounds.minY + bounds.maxY) / 2,
+      t: 0
+    };
+
+    if (this.isPointInsidePolygon(center, lassoPath)) {
+      return true;
+    }
+
+    for (const corner of corners) {
+      if (this.isPointInsidePolygon(corner, lassoPath)) {
+        return true;
+      }
+    }
+
+    for (const point of lassoPath) {
+      if (this.isPointInsideBoundingBox(point, bounds)) {
+        return true;
+      }
+    }
+
+    for (let cornerIndex = 0; cornerIndex < corners.length; cornerIndex += 1) {
+      const rectStart = corners[cornerIndex];
+      const rectEnd = corners[(cornerIndex + 1) % corners.length];
+      for (let lassoIndex = 0; lassoIndex < lassoPath.length; lassoIndex += 1) {
+        const lassoStart = lassoPath[lassoIndex];
+        const lassoEnd = lassoPath[(lassoIndex + 1) % lassoPath.length];
+        if (this.doSegmentsIntersect(rectStart, rectEnd, lassoStart, lassoEnd)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  private buildSelectedStrokeGroups(strokes: Stroke[]): SelectedStrokeGroup[] {
+    const bounds = this.getStrokeSelectionMaskBounds(strokes);
+    if (bounds === null) {
+      return [];
+    }
+
+    const strokeIds = strokes.map((stroke: Stroke): string => stroke.id);
+    return this.buildStrokeSelectionOutlinePaths(strokes, bounds).map(
+      (outline: StrokePoint[], index: number): SelectedStrokeGroup => {
+        const outlineBounds = getBoundingBox(outline);
+        return {
+          id: `stroke_group_${index}_${strokeIds.join('_')}`,
+          strokeIds: [...strokeIds],
+          bounds: outlineBounds === null ? bounds : outlineBounds,
+          outline
+        };
+      }
+    );
+  }
+
+  private getStrokeSelectionMaskBounds(strokes: Stroke[]): BoundingBox | null {
+    let bounds: BoundingBox | null = null;
+    for (const stroke of strokes) {
+      const strokeBounds = getBoundingBox(stroke.points);
+      if (strokeBounds === null) {
+        continue;
+      }
+
+      const padding = stroke.style.width / 2 + STROKE_SELECTION_OUTLINE_PADDING + STROKE_SELECTION_MASK_CELL_SIZE;
+      bounds = mergeBoundingBoxes(bounds, expandBoundingBox(strokeBounds, padding));
+    }
+
+    return bounds;
+  }
+
+  private buildStrokeSelectionOutlinePaths(strokes: Stroke[], bounds: BoundingBox): StrokePoint[][] {
+    const cellSize = this.getStrokeSelectionMaskCellSize(bounds);
+    const originX = bounds.minX;
+    const originY = bounds.minY;
+    const columnCount = Math.max(1, Math.ceil((bounds.maxX - bounds.minX) / cellSize) + 2);
+    const rowCount = Math.max(1, Math.ceil((bounds.maxY - bounds.minY) / cellSize) + 2);
+    const mask: boolean[] = new Array<boolean>(columnCount * rowCount).fill(false);
+
+    for (const stroke of strokes) {
+      const radius = Math.max(cellSize, stroke.style.width / 2 + STROKE_SELECTION_OUTLINE_PADDING);
+      const sampledPoints = sampleStrokePoints(stroke.points, Math.max(1, cellSize / 2));
+      for (const point of sampledPoints) {
+        this.markMaskCircle(mask, columnCount, rowCount, originX, originY, cellSize, point, radius);
+      }
+    }
+
+    const outlines = this.traceExteriorMaskBoundaryPaths(mask, columnCount, rowCount, originX, originY, cellSize);
+    if (outlines.length === 0) {
+      outlines.push(this.buildBoundsOutline(bounds));
+    }
+
+    return outlines;
+  }
+
+  private getStrokeSelectionMaskCellSize(bounds: BoundingBox): number {
+    const width = Math.max(1, bounds.maxX - bounds.minX);
+    const height = Math.max(1, bounds.maxY - bounds.minY);
+    let cellSize = STROKE_SELECTION_MASK_CELL_SIZE;
+    let columnCount = Math.max(1, Math.ceil(width / cellSize) + 2);
+    let rowCount = Math.max(1, Math.ceil(height / cellSize) + 2);
+
+    while (columnCount * rowCount > STROKE_SELECTION_MAX_MASK_CELLS) {
+      cellSize *= 1.5;
+      columnCount = Math.max(1, Math.ceil(width / cellSize) + 2);
+      rowCount = Math.max(1, Math.ceil(height / cellSize) + 2);
+    }
+
+    return cellSize;
+  }
+
+  private markMaskCircle(
+    mask: boolean[],
+    columnCount: number,
+    rowCount: number,
+    originX: number,
+    originY: number,
+    cellSize: number,
+    point: StrokePoint,
+    radius: number
+  ): void {
+    const centerColumn = Math.floor((point.x - originX) / cellSize);
+    const centerRow = Math.floor((point.y - originY) / cellSize);
+    const cellRadius = Math.ceil(radius / cellSize);
+    const radiusSquared = radius * radius;
+
+    for (let row = centerRow - cellRadius; row <= centerRow + cellRadius; row += 1) {
+      if (row < 0 || row >= rowCount) {
+        continue;
+      }
+
+      for (let column = centerColumn - cellRadius; column <= centerColumn + cellRadius; column += 1) {
+        if (column < 0 || column >= columnCount) {
+          continue;
+        }
+
+        const cellCenterX = originX + (column + 0.5) * cellSize;
+        const cellCenterY = originY + (row + 0.5) * cellSize;
+        const deltaX = cellCenterX - point.x;
+        const deltaY = cellCenterY - point.y;
+        if (deltaX * deltaX + deltaY * deltaY <= radiusSquared) {
+          mask[row * columnCount + column] = true;
+        }
+      }
+    }
+  }
+
+  private traceExteriorMaskBoundaryPaths(
+    mask: boolean[],
+    columnCount: number,
+    rowCount: number,
+    originX: number,
+    originY: number,
+    cellSize: number
+  ): StrokePoint[][] {
+    const exteriorMask = this.buildExteriorEmptyMask(mask, columnCount, rowCount);
+    const edges: BoundaryEdge[] = [];
+    for (let row = 0; row < rowCount; row += 1) {
+      for (let column = 0; column < columnCount; column += 1) {
+        if (!this.isMaskFilled(mask, columnCount, rowCount, column, row)) {
+          continue;
+        }
+
+        if (this.isExteriorEmptyCell(exteriorMask, columnCount, rowCount, column, row - 1)) {
+          edges.push({ startColumn: column, startRow: row, endColumn: column + 1, endRow: row });
+        }
+        if (this.isExteriorEmptyCell(exteriorMask, columnCount, rowCount, column + 1, row)) {
+          edges.push({ startColumn: column + 1, startRow: row, endColumn: column + 1, endRow: row + 1 });
+        }
+        if (this.isExteriorEmptyCell(exteriorMask, columnCount, rowCount, column, row + 1)) {
+          edges.push({ startColumn: column + 1, startRow: row + 1, endColumn: column, endRow: row + 1 });
+        }
+        if (this.isExteriorEmptyCell(exteriorMask, columnCount, rowCount, column - 1, row)) {
+          edges.push({ startColumn: column, startRow: row + 1, endColumn: column, endRow: row });
+        }
+      }
+    }
+
+    if (edges.length > STROKE_SELECTION_MAX_EDGE_COUNT) {
+      return [];
+    }
+
+    return this.buildBoundaryPaths(edges).map((pathEdges: BoundaryEdge[]): StrokePoint[] => {
+      return this.convertBoundaryPathToPoints(pathEdges, originX, originY, cellSize);
+    });
+  }
+
+  private buildExteriorEmptyMask(mask: boolean[], columnCount: number, rowCount: number): boolean[] {
+    const exteriorMask: boolean[] = new Array<boolean>(columnCount * rowCount).fill(false);
+    const queue: number[] = [];
+
+    for (let column = 0; column < columnCount; column += 1) {
+      this.enqueueExteriorEmptyCell(mask, exteriorMask, queue, columnCount, rowCount, column, 0);
+      this.enqueueExteriorEmptyCell(mask, exteriorMask, queue, columnCount, rowCount, column, rowCount - 1);
+    }
+
+    for (let row = 0; row < rowCount; row += 1) {
+      this.enqueueExteriorEmptyCell(mask, exteriorMask, queue, columnCount, rowCount, 0, row);
+      this.enqueueExteriorEmptyCell(mask, exteriorMask, queue, columnCount, rowCount, columnCount - 1, row);
+    }
+
+    let queueIndex = 0;
+    while (queueIndex < queue.length) {
+      const currentIndex = queue[queueIndex];
+      queueIndex += 1;
+      const column = currentIndex % columnCount;
+      const row = Math.floor(currentIndex / columnCount);
+      this.enqueueExteriorEmptyCell(mask, exteriorMask, queue, columnCount, rowCount, column + 1, row);
+      this.enqueueExteriorEmptyCell(mask, exteriorMask, queue, columnCount, rowCount, column - 1, row);
+      this.enqueueExteriorEmptyCell(mask, exteriorMask, queue, columnCount, rowCount, column, row + 1);
+      this.enqueueExteriorEmptyCell(mask, exteriorMask, queue, columnCount, rowCount, column, row - 1);
+    }
+
+    return exteriorMask;
+  }
+
+  private enqueueExteriorEmptyCell(
+    mask: boolean[],
+    exteriorMask: boolean[],
+    queue: number[],
+    columnCount: number,
+    rowCount: number,
+    column: number,
+    row: number
+  ): void {
+    if (column < 0 || column >= columnCount || row < 0 || row >= rowCount) {
+      return;
+    }
+
+    const index = row * columnCount + column;
+    if (mask[index] || exteriorMask[index]) {
+      return;
+    }
+
+    exteriorMask[index] = true;
+    queue.push(index);
+  }
+
+  private isExteriorEmptyCell(
+    exteriorMask: boolean[],
+    columnCount: number,
+    rowCount: number,
+    column: number,
+    row: number
+  ): boolean {
+    if (column < 0 || column >= columnCount || row < 0 || row >= rowCount) {
+      return true;
+    }
+
+    return exteriorMask[row * columnCount + column];
+  }
+
+  private buildBoundaryPaths(edges: BoundaryEdge[]): BoundaryEdge[][] {
+    const edgeBuckets: Map<string, BoundaryEdge[]> = new Map<string, BoundaryEdge[]>();
+    const startKeys: string[] = [];
+    const paths: BoundaryEdge[][] = [];
+
+    for (const edge of edges) {
+      const key = this.getBoundaryPointKey(edge.startColumn, edge.startRow);
+      let bucket = edgeBuckets.get(key);
+      if (bucket === undefined) {
+        bucket = [];
+        edgeBuckets.set(key, bucket);
+        startKeys.push(key);
+      }
+      bucket.push(edge);
+    }
+
+    let remainingEdgeCount = edges.length;
+    let startKeyIndex = 0;
+    while (remainingEdgeCount > 0) {
+      const startEdge = this.takeNextBoundaryEdge(edgeBuckets, startKeys, startKeyIndex);
+      if (startEdge.edge === null) {
+        break;
+      }
+
+      startKeyIndex = startEdge.startKeyIndex;
+      remainingEdgeCount -= 1;
+
+      const path: BoundaryEdge[] = [startEdge.edge];
+      while (path.length <= edges.length) {
+        const tail = path[path.length - 1];
+        const head = path[0];
+        if (tail.endColumn === head.startColumn && tail.endRow === head.startRow) {
+          break;
+        }
+
+        const bucket = edgeBuckets.get(this.getBoundaryPointKey(tail.endColumn, tail.endRow));
+        if (bucket === undefined || bucket.length === 0) {
+          break;
+        }
+
+        path.push(bucket.pop() as BoundaryEdge);
+        remainingEdgeCount -= 1;
+      }
+
+      if (path.length > 0) {
+        paths.push(path);
+      }
+    }
+
+    return paths;
+  }
+
+  private takeNextBoundaryEdge(
+    edgeBuckets: Map<string, BoundaryEdge[]>,
+    startKeys: string[],
+    startKeyIndex: number
+  ): BoundaryStartEdge {
+    for (let index = startKeyIndex; index < startKeys.length; index += 1) {
+      const bucket = edgeBuckets.get(startKeys[index]);
+      if (bucket !== undefined && bucket.length > 0) {
+        return {
+          edge: bucket.pop() as BoundaryEdge,
+          startKeyIndex: index
+        };
+      }
+    }
+
+    return {
+      edge: null,
+      startKeyIndex: startKeys.length
+    };
+  }
+
+  private getBoundaryPointKey(column: number, row: number): string {
+    return `${column}:${row}`;
+  }
+
+  private convertBoundaryPathToPoints(
+    pathEdges: BoundaryEdge[],
+    originX: number,
+    originY: number,
+    cellSize: number
+  ): StrokePoint[] {
+    if (pathEdges.length === 0) {
+      return [];
+    }
+
+    const points: StrokePoint[] = [{
+      x: originX + pathEdges[0].startColumn * cellSize,
+      y: originY + pathEdges[0].startRow * cellSize,
+      t: 0
+    }];
+
+    for (const edge of pathEdges) {
+      points.push({
+        x: originX + edge.endColumn * cellSize,
+        y: originY + edge.endRow * cellSize,
+        t: 0
+      });
+    }
+
+    return this.smoothClosedOutline(points);
+  }
+
+  private smoothClosedOutline(points: StrokePoint[]): StrokePoint[] {
+    const outline = this.removeClosingDuplicatePoint(points);
+    if (outline.length < 4) {
+      return outline;
+    }
+
+    return this.simplifyClosedOutline(outline, STROKE_SELECTION_OUTLINE_SIMPLIFY_DISTANCE);
+  }
+
+  private removeClosingDuplicatePoint(points: StrokePoint[]): StrokePoint[] {
+    if (points.length < 2) {
+      return points;
+    }
+
+    const first = points[0];
+    const last = points[points.length - 1];
+    if (this.getPointDistance(first, last) < 0.001) {
+      return points.slice(0, points.length - 1);
+    }
+
+    return points;
+  }
+
+  private simplifyClosedOutline(points: StrokePoint[], minDistance: number): StrokePoint[] {
+    const simplified: StrokePoint[] = [points[0]];
+    let lastKept = points[0];
+    for (let index = 1; index < points.length; index += 1) {
+      const point = points[index];
+      if (this.getPointDistance(lastKept, point) >= minDistance) {
+        simplified.push(point);
+        lastKept = point;
+      }
+    }
+
+    if (simplified.length >= 4 && this.getPointDistance(simplified[0], simplified[simplified.length - 1]) < minDistance) {
+      simplified.pop();
+    }
+
+    return simplified.length >= 4 ? simplified : points;
+  }
+
+  private isMaskFilled(
+    mask: boolean[],
+    columnCount: number,
+    rowCount: number,
+    column: number,
+    row: number
+  ): boolean {
+    if (column < 0 || column >= columnCount || row < 0 || row >= rowCount) {
+      return false;
+    }
+
+    return mask[row * columnCount + column];
+  }
+
+  private buildBoundsOutline(bounds: BoundingBox): StrokePoint[] {
+    return [
+      { x: bounds.minX, y: bounds.minY, t: 0 },
+      { x: bounds.maxX, y: bounds.minY, t: 0 },
+      { x: bounds.maxX, y: bounds.maxY, t: 0 },
+      { x: bounds.minX, y: bounds.maxY, t: 0 },
+      { x: bounds.minX, y: bounds.minY, t: 0 }
+    ];
+  }
+
+  private cloneSelectedStrokeGroups(groups: SelectedStrokeGroup[]): SelectedStrokeGroup[] {
+    return groups.map((group: SelectedStrokeGroup): SelectedStrokeGroup => {
+      return {
+        id: group.id,
+        strokeIds: [...group.strokeIds],
+        bounds: { ...group.bounds },
+        outline: group.outline.map((point: StrokePoint): StrokePoint => this.clonePoint(point))
+      };
+    });
+  }
+
+  private getSelectedElementsInZOrderDescending(): CanvasElement[] {
+    return this.elements
+      .filter((element: CanvasElement): boolean => this.selectedElementIds.includes(element.id))
+      .sort((left: CanvasElement, right: CanvasElement): number => right.zIndex - left.zIndex);
+  }
+
+  private getElementBoundingBox(element: CanvasElement): BoundingBox {
+    if (element.type === 'shape' && element.shapeType === 'line' && element.geometry.points.length >= 2) {
+      const startPoint = element.geometry.points[0];
+      const endPoint = element.geometry.points[1];
+      return expandBoundingBox({
+        minX: Math.min(startPoint.x, endPoint.x),
+        minY: Math.min(startPoint.y, endPoint.y),
+        maxX: Math.max(startPoint.x, endPoint.x),
+        maxY: Math.max(startPoint.y, endPoint.y)
+      }, Math.max(ELEMENT_LINE_HIT_TOLERANCE, element.strokeWidth));
+    }
+
+    return {
+      minX: element.x,
+      minY: element.y,
+      maxX: element.x + element.width,
+      maxY: element.y + element.height
+    };
+  }
+
+  private isPointInsideBoundingBox(point: StrokePoint, bounds: BoundingBox): boolean {
+    return point.x >= bounds.minX && point.x <= bounds.maxX && point.y >= bounds.minY && point.y <= bounds.maxY;
+  }
+
+  private isPointInsidePolygon(point: StrokePoint, polygon: StrokePoint[]): boolean {
+    if (polygon.length < 3) {
+      return false;
+    }
+
+    let isInside = false;
+    let previousIndex = polygon.length - 1;
+    for (let currentIndex = 0; currentIndex < polygon.length; currentIndex += 1) {
+      const current = polygon[currentIndex];
+      const previous = polygon[previousIndex];
+      const intersects = ((current.y > point.y) !== (previous.y > point.y)) &&
+        (point.x < (previous.x - current.x) * (point.y - current.y) / (previous.y - current.y) + current.x);
+      if (intersects) {
+        isInside = !isInside;
+      }
+      previousIndex = currentIndex;
+    }
+
+    return isInside;
+  }
+
+  private doSegmentsIntersect(
+    firstStart: StrokePoint,
+    firstEnd: StrokePoint,
+    secondStart: StrokePoint,
+    secondEnd: StrokePoint
+  ): boolean {
+    const firstDirection = this.getSegmentOrientation(firstStart, firstEnd, secondStart);
+    const secondDirection = this.getSegmentOrientation(firstStart, firstEnd, secondEnd);
+    const thirdDirection = this.getSegmentOrientation(secondStart, secondEnd, firstStart);
+    const fourthDirection = this.getSegmentOrientation(secondStart, secondEnd, firstEnd);
+
+    if (firstDirection !== secondDirection && thirdDirection !== fourthDirection) {
+      return true;
+    }
+
+    return (firstDirection === 0 && this.isPointOnSegment(secondStart, firstStart, firstEnd)) ||
+      (secondDirection === 0 && this.isPointOnSegment(secondEnd, firstStart, firstEnd)) ||
+      (thirdDirection === 0 && this.isPointOnSegment(firstStart, secondStart, secondEnd)) ||
+      (fourthDirection === 0 && this.isPointOnSegment(firstEnd, secondStart, secondEnd));
+  }
+
+  private getSegmentToSegmentDistance(
+    firstStart: StrokePoint,
+    firstEnd: StrokePoint,
+    secondStart: StrokePoint,
+    secondEnd: StrokePoint
+  ): number {
+    if (this.doSegmentsIntersect(firstStart, firstEnd, secondStart, secondEnd)) {
+      return 0;
+    }
+
+    return Math.min(
+      getPointToSegmentDistance(firstStart, secondStart, secondEnd),
+      getPointToSegmentDistance(firstEnd, secondStart, secondEnd),
+      getPointToSegmentDistance(secondStart, firstStart, firstEnd),
+      getPointToSegmentDistance(secondEnd, firstStart, firstEnd)
+    );
+  }
+
+  private getSegmentOrientation(first: StrokePoint, second: StrokePoint, third: StrokePoint): number {
+    const value = (second.y - first.y) * (third.x - second.x) - (second.x - first.x) * (third.y - second.y);
+    if (Math.abs(value) < 0.0001) {
+      return 0;
+    }
+
+    return value > 0 ? 1 : 2;
+  }
+
+  private isPointOnSegment(point: StrokePoint, segmentStart: StrokePoint, segmentEnd: StrokePoint): boolean {
+    return point.x <= Math.max(segmentStart.x, segmentEnd.x) + 0.0001 &&
+      point.x >= Math.min(segmentStart.x, segmentEnd.x) - 0.0001 &&
+      point.y <= Math.max(segmentStart.y, segmentEnd.y) + 0.0001 &&
+      point.y >= Math.min(segmentStart.y, segmentEnd.y) - 0.0001;
+  }
+
+  private getPointDistance(left: StrokePoint, right: StrokePoint): number {
+    const deltaX = left.x - right.x;
+    const deltaY = left.y - right.y;
+    return Math.sqrt(deltaX * deltaX + deltaY * deltaY);
   }
 
   private getElementById(elementId: string): CanvasElement | null {

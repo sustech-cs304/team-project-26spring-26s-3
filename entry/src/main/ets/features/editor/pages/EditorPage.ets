@@ -42,7 +42,7 @@ const DOCUMENT_PAGE_SURFACE_MIN_WIDTH = 320;
 const DOCUMENT_PAGE_RENDER_WINDOW_PADDING_FACTOR = 1.25;
 const DOCUMENT_ZOOM_MIN_SCALE = 0.72;
 const DOCUMENT_ZOOM_MAX_SCALE = 2.2;
-const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser', 'text', 'shape', 'edit'];
+const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser', 'lasso', 'text', 'shape', 'edit'];
 const SHAPE_TOOL_OPTIONS: ShapeType[] = ['rectangle', 'circle', 'line'];
 const PAGE_TEMPLATE_OPTIONS: NotebookPageTemplateType[] = [
   NotebookPageTemplateType.BLANK,
@@ -2374,7 +2374,7 @@ struct EditorPage {
       return;
     }
 
-    if (tool === 'edit') {
+    if (tool === 'edit' || tool === 'lasso') {
       this.handleWorkspaceToolChange(tool);
       this.closeTransientDropdowns();
       return;
@@ -2479,6 +2479,8 @@ struct EditorPage {
         return 'Highlight';
       case 'eraser':
         return 'Eraser';
+      case 'lasso':
+        return 'Lasso';
       case 'text':
         return 'Text';
       case 'shape':
