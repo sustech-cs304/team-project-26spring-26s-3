@@ -752,13 +752,15 @@ export struct CanvasBoard {
       this.appendRenderedStroke(completedStroke);
       if (this.canAppendToRecentCommittedLayer()) {
         this.drawStrokeOnViewport(this.recentCommittedContext2D, completedStroke, false);
+      } else if (this.trimRecentCommittedLayerIntoBase()) {
+        this.redrawRecentCommittedLayer(false);
       } else {
         this.redrawCommittedLayer();
       }
     }
     this.clearPreviewLayers();
     this.resetActivePreviewSession();
-    this.onContentChanged(true, 'stroke');
+    this.onContentChanged(false, 'stroke');
     viewModel.appendDebugEvent('CanvasBoard', 'finishStroke done');
   }
 
@@ -1655,6 +1657,11 @@ export struct CanvasBoard {
       return;
     }
 
+    if (this.shouldUseWholeStrokePreviewRebuild(stroke)) {
+      this.rebuildActivePreviewLayers(stroke);
+      return;
+    }
+
     const renderStartedAt = Date.now();
     const previousSession = this.activePreviewSession;
     if (previousSession === null || !this.canContinueActivePreviewSession(stroke)) {
@@ -1681,7 +1688,12 @@ export struct CanvasBoard {
   private rebuildActivePreviewLayers(stroke: Stroke): void {
     const rebuildStartedAt = Date.now();
     this.clearPreviewLayers();
-    this.activePreviewSession = this.appendPreviewStrokeOnViewport(this.overlayContext2D, stroke, null);
+    if (this.shouldUseWholeStrokePreviewRebuild(stroke)) {
+      this.drawPreviewStrokeOnViewport(this.overlayContext2D, stroke);
+      this.activePreviewSession = null;
+    } else {
+      this.activePreviewSession = this.appendPreviewStrokeOnViewport(this.overlayContext2D, stroke, null);
+    }
     EditorPerformanceTrace.record(
       'preview.rebuild',
       Date.now() - rebuildStartedAt,
@@ -1692,6 +1704,10 @@ export struct CanvasBoard {
 
   private resetActivePreviewSession(): void {
     this.activePreviewSession = null;
+  }
+
+  private shouldUseWholeStrokePreviewRebuild(stroke: Stroke): boolean {
+    return stroke.style.tool === 'highlighter' || stroke.style.tool === 'pencil';
   }
 
   private consumeLatestRenderInvalidationSequence(): void {
@@ -2022,6 +2038,42 @@ export struct CanvasBoard {
     );
   }
 
+  private trimRecentCommittedLayerIntoBase(): boolean {
+    if (!this.areCommittedLayersReady()) {
+      return false;
+    }
+
+    const trimStartedAt = Date.now();
+    let bakedStrokeCount = 0;
+    while (this.getRecentCommittedStrokeCount() > RECENT_COMMITTED_STROKE_LIMIT) {
+      const strokeId = this.renderedStrokeOrder[this.flattenedCommittedStrokeCount];
+      if (strokeId === undefined) {
+        return false;
+      }
+
+      const stroke = this.renderedStrokesById.get(strokeId);
+      if (stroke === undefined) {
+        return false;
+      }
+
+      this.drawStrokeOnViewport(this.committedContext2D, stroke, false);
+      this.flattenedCommittedStrokeCount += 1;
+      bakedStrokeCount += 1;
+    }
+
+    if (bakedStrokeCount === 0) {
+      return false;
+    }
+
+    EditorPerformanceTrace.record(
+      'committed.recentBake',
+      Date.now() - trimStartedAt,
+      `baked=${bakedStrokeCount} flattened=${this.flattenedCommittedStrokeCount} recent=${this.getRecentCommittedStrokeCount()}`,
+      4
+    );
+    return true;
+  }
+
   private buildCommittedTileBoundsForDirtyRects(dirtyRects: BoundingBox[]): BoundingBox[] {
     const tileBoundsList: BoundingBox[] = [];
     const tileKeySet = new Set<string>();
@@ -2284,6 +2336,10 @@ export struct CanvasBoard {
     }
 
     return viewModel.getStrokesForRendering().length - this.flattenedCommittedStrokeCount <= RECENT_COMMITTED_STROKE_LIMIT;
+  }
+
+  private getRecentCommittedStrokeCount(): number {
+    return Math.max(0, this.renderedStrokeOrder.length - this.flattenedCommittedStrokeCount);
   }
 
   private hasActiveRecentCommittedLayer(): boolean {

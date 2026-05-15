@@ -88,14 +88,14 @@ const PEN_PROFILE: BrushProfile = {
 };
 
 const PENCIL_PROFILE: BrushProfile = {
-  minWidthFactor: 0.42,
-  maxWidthFactor: 1.04,
-  pressureFactor: 0.68,
-  velocityFactor: 1.7,
-  resampleSpacingFactor: 0.18,
-  widthBlend: 0.34,
-  velocityBlend: 0.22,
-  baseAlpha: 0.34
+  minWidthFactor: 0.34,
+  maxWidthFactor: 0.88,
+  pressureFactor: 0.76,
+  velocityFactor: 0.96,
+  resampleSpacingFactor: 0.14,
+  widthBlend: 0.2,
+  velocityBlend: 0.14,
+  baseAlpha: 0.18
 };
 
 const HIGHLIGHTER_PROFILE: BrushProfile = {
@@ -115,10 +115,11 @@ const PEN_PASSES: BrushPass[] = [
 ];
 
 const PENCIL_PASSES: BrushPass[] = [
-  { widthScale: 0.86, alphaScale: 0.8, jitter: 0.03, widthJitter: 0.08, alphaJitter: 0.12, normalOffsetFactor: 0 },
-  { widthScale: 0.58, alphaScale: 0.64, jitter: 0.05, widthJitter: 0.14, alphaJitter: 0.16, normalOffsetFactor: 0.06 },
-  { widthScale: 0.46, alphaScale: 0.52, jitter: 0.07, widthJitter: 0.18, alphaJitter: 0.2, normalOffsetFactor: -0.08 },
-  { widthScale: 0.24, alphaScale: 0.34, jitter: 0.12, widthJitter: 0.28, alphaJitter: 0.28, normalOffsetFactor: 0.14 }
+  { widthScale: 0.78, alphaScale: 0.66, jitter: 0.05, widthJitter: 0.14, alphaJitter: 0.18, normalOffsetFactor: 0 },
+  { widthScale: 0.6, alphaScale: 0.54, jitter: 0.1, widthJitter: 0.22, alphaJitter: 0.26, normalOffsetFactor: 0.1 },
+  { widthScale: 0.44, alphaScale: 0.42, jitter: 0.14, widthJitter: 0.3, alphaJitter: 0.34, normalOffsetFactor: -0.14 },
+  { widthScale: 0.3, alphaScale: 0.24, jitter: 0.18, widthJitter: 0.38, alphaJitter: 0.42, normalOffsetFactor: 0.2 },
+  { widthScale: 0.18, alphaScale: 0.16, jitter: 0.24, widthJitter: 0.46, alphaJitter: 0.5, normalOffsetFactor: -0.24 }
 ];
 
 const HIGHLIGHTER_PASSES: BrushPass[] = [
@@ -132,7 +133,9 @@ const PREVIEW_PEN_PASSES: BrushPass[] = [
 ];
 
 const PREVIEW_PENCIL_PASSES: BrushPass[] = [
-  { widthScale: 0.86, alphaScale: 1.9, jitter: 0, widthJitter: 0, alphaJitter: 0, normalOffsetFactor: 0 }
+  { widthScale: 0.76, alphaScale: 0.9, jitter: 0, widthJitter: 0, alphaJitter: 0, normalOffsetFactor: 0 },
+  { widthScale: 0.54, alphaScale: 0.42, jitter: 0, widthJitter: 0, alphaJitter: 0, normalOffsetFactor: 0.08 },
+  { widthScale: 0.42, alphaScale: 0.24, jitter: 0, widthJitter: 0, alphaJitter: 0, normalOffsetFactor: -0.1 }
 ];
 
 const PREVIEW_HIGHLIGHTER_PASSES: BrushPass[] = [
@@ -152,6 +155,16 @@ const INCREMENTAL_PREVIEW_REPAIR_OVERLAP_POINTS = 12;
 const INCREMENTAL_PREVIEW_STABLE_PROMOTION_STEP = 4;
 export class StrokeRenderer {
   static drawStrokeFast(context: CanvasRenderingContext2D, stroke: Stroke): void {
+    if (stroke.style.tool === 'highlighter') {
+      this.drawHighlighterStroke(context, stroke);
+      return;
+    }
+
+    if (stroke.style.tool === 'pencil') {
+      this.drawFastPencilStroke(context, stroke);
+      return;
+    }
+
     this.drawRawPolyline(context, stroke);
   }
 
@@ -160,6 +173,16 @@ export class StrokeRenderer {
   }
 
   static drawStroke(context: CanvasRenderingContext2D, stroke: Stroke): void {
+    if (stroke.style.tool === 'highlighter') {
+      this.drawHighlighterStroke(context, stroke);
+      return;
+    }
+
+    if (stroke.style.tool === 'pencil') {
+      this.drawDetailedPencilStroke(context, stroke);
+      return;
+    }
+
     const samples = this.buildVisibleSamplesForStroke(stroke);
     if (samples.length === 0) {
       return;
@@ -171,6 +194,16 @@ export class StrokeRenderer {
   }
 
   static drawPreviewStroke(context: CanvasRenderingContext2D, stroke: Stroke): void {
+    if (stroke.style.tool === 'highlighter') {
+      this.drawHighlighterStroke(context, stroke);
+      return;
+    }
+
+    if (stroke.style.tool === 'pencil') {
+      this.drawFastPencilStroke(context, stroke);
+      return;
+    }
+
     this.drawStroke(context, stroke);
   }
 
@@ -506,9 +539,258 @@ export class StrokeRenderer {
       return;
     }
 
+    if (stroke.style.tool === 'highlighter') {
+      this.drawHighlighterSamples(context, stroke, samples);
+      return;
+    }
+
     const strokeSeed = this.hashString(getStrokeRenderKey(stroke));
     const passes = this.getBrushPasses(stroke.style.tool);
     this.drawBrushPasses(context, stroke.style.tool, stroke.style.color, stroke.style.opacity, strokeSeed, samples, passes);
+  }
+
+  private static drawHighlighterStroke(context: CanvasRenderingContext2D, stroke: Stroke): void {
+    const points = this.buildHighlighterPathPoints(stroke.points, stroke.style.width);
+    if (points.length === 0) {
+      return;
+    }
+
+    const lineWidth = Math.max(MIN_RENDER_WIDTH, stroke.style.width * 1.02);
+    const alpha = this.clamp(stroke.style.opacity * 0.3, 0.08, 0.42);
+
+    context.strokeStyle = stroke.style.color;
+    context.lineCap = 'butt';
+    context.lineJoin = 'round';
+    context.lineWidth = lineWidth;
+    context.globalAlpha = alpha;
+    context.beginPath();
+    this.traceHighlighterPoints(context, points);
+    context.stroke();
+    context.globalAlpha = 1;
+  }
+
+  private static drawHighlighterSamples(
+    context: CanvasRenderingContext2D,
+    stroke: Stroke,
+    samples: RenderSample[]
+  ): void {
+    if (samples.length === 0) {
+      return;
+    }
+
+    const lineWidth = Math.max(MIN_RENDER_WIDTH, stroke.style.width * 1.02);
+    const alpha = this.clamp(stroke.style.opacity * 0.3, 0.08, 0.42);
+
+    context.strokeStyle = stroke.style.color;
+    context.lineCap = 'butt';
+    context.lineJoin = 'round';
+    context.lineWidth = lineWidth;
+    context.globalAlpha = alpha;
+    context.beginPath();
+    this.traceHighlighterPath(context, samples);
+    context.stroke();
+    context.globalAlpha = 1;
+  }
+
+  private static traceHighlighterPath(
+    context: CanvasRenderingContext2D,
+    samples: RenderSample[]
+  ): void {
+    const firstSample = samples[0];
+    context.moveTo(firstSample.x, firstSample.y);
+
+    if (samples.length === 1) {
+      context.lineTo(firstSample.x + 0.01, firstSample.y + 0.01);
+      return;
+    }
+
+    if (samples.length === 2) {
+      const lastSample = samples[1];
+      context.lineTo(lastSample.x, lastSample.y);
+      return;
+    }
+
+    for (let index = 1; index < samples.length - 1; index += 1) {
+      const currentSample = samples[index];
+      const nextSample = samples[index + 1];
+      const midpointX = (currentSample.x + nextSample.x) / 2;
+      const midpointY = (currentSample.y + nextSample.y) / 2;
+      context.quadraticCurveTo(currentSample.x, currentSample.y, midpointX, midpointY);
+    }
+
+    const tailSample = samples[samples.length - 1];
+    context.lineTo(tailSample.x, tailSample.y);
+  }
+
+  private static buildHighlighterPathPoints(points: StrokePoint[], width: number): StrokePoint[] {
+    if (points.length <= 2) {
+      return points;
+    }
+
+    const minimumDistance = Math.max(1.5, width * 0.45);
+    const simplified: StrokePoint[] = [points[0]];
+    let lastPoint = points[0];
+
+    for (let index = 1; index < points.length - 1; index += 1) {
+      const point = points[index];
+      if (getDistance(lastPoint, point) >= minimumDistance) {
+        simplified.push(point);
+        lastPoint = point;
+      }
+    }
+
+    const finalPoint = points[points.length - 1];
+    if (simplified[simplified.length - 1] !== finalPoint) {
+      simplified.push(finalPoint);
+    }
+    return simplified;
+  }
+
+  private static traceHighlighterPoints(
+    context: CanvasRenderingContext2D,
+    points: StrokePoint[]
+  ): void {
+    const firstPoint = points[0];
+    context.moveTo(firstPoint.x, firstPoint.y);
+
+    if (points.length === 1) {
+      context.lineTo(firstPoint.x + 0.01, firstPoint.y + 0.01);
+      return;
+    }
+
+    if (points.length === 2) {
+      const lastPoint = points[1];
+      context.lineTo(lastPoint.x, lastPoint.y);
+      return;
+    }
+
+    for (let index = 1; index < points.length - 1; index += 1) {
+      const currentPoint = points[index];
+      const nextPoint = points[index + 1];
+      const midpointX = (currentPoint.x + nextPoint.x) / 2;
+      const midpointY = (currentPoint.y + nextPoint.y) / 2;
+      context.quadraticCurveTo(currentPoint.x, currentPoint.y, midpointX, midpointY);
+    }
+
+    const tailPoint = points[points.length - 1];
+    context.lineTo(tailPoint.x, tailPoint.y);
+  }
+
+  private static drawFastPencilStroke(context: CanvasRenderingContext2D, stroke: Stroke): void {
+    if (stroke.points.length === 0) {
+      return;
+    }
+
+    const points = this.buildPencilPathPoints(stroke.points, stroke.style.width, 0.22);
+    context.lineCap = 'round';
+    context.lineJoin = 'round';
+
+    const passes = [
+      { widthScale: 0.74, alpha: this.clamp(stroke.style.opacity * 0.34, 0.05, 0.52), offsetX: 0, offsetY: 0 },
+      { widthScale: 0.5, alpha: this.clamp(stroke.style.opacity * 0.16, 0.03, 0.24), offsetX: 0.35, offsetY: -0.25 },
+      { widthScale: 0.38, alpha: this.clamp(stroke.style.opacity * 0.1, 0.02, 0.16), offsetX: -0.3, offsetY: 0.3 }
+    ];
+
+    for (const pass of passes) {
+      context.strokeStyle = stroke.style.color;
+      context.lineWidth = Math.max(MIN_RENDER_WIDTH, stroke.style.width * pass.widthScale);
+      context.globalAlpha = pass.alpha;
+      context.beginPath();
+      this.traceOffsetStrokePoints(context, points, pass.offsetX, pass.offsetY);
+      context.stroke();
+    }
+
+    context.globalAlpha = 1;
+  }
+
+  private static drawDetailedPencilStroke(context: CanvasRenderingContext2D, stroke: Stroke): void {
+    if (stroke.points.length === 0) {
+      return;
+    }
+
+    const points = this.buildPencilPathPoints(stroke.points, stroke.style.width, 0.14);
+    context.lineCap = 'round';
+    context.lineJoin = 'round';
+
+    const passes = [
+      { widthScale: 0.82, alpha: this.clamp(stroke.style.opacity * 0.26, 0.06, 0.42), offsetX: 0, offsetY: 0 },
+      { widthScale: 0.68, alpha: this.clamp(stroke.style.opacity * 0.19, 0.04, 0.28), offsetX: 0.18, offsetY: -0.14 },
+      { widthScale: 0.56, alpha: this.clamp(stroke.style.opacity * 0.14, 0.03, 0.22), offsetX: -0.16, offsetY: 0.18 },
+      { widthScale: 0.44, alpha: this.clamp(stroke.style.opacity * 0.1, 0.02, 0.16), offsetX: 0.34, offsetY: 0.1 },
+      { widthScale: 0.32, alpha: this.clamp(stroke.style.opacity * 0.07, 0.02, 0.12), offsetX: -0.28, offsetY: -0.2 }
+    ];
+
+    for (const pass of passes) {
+      context.strokeStyle = stroke.style.color;
+      context.lineWidth = Math.max(MIN_RENDER_WIDTH, stroke.style.width * pass.widthScale);
+      context.globalAlpha = pass.alpha;
+      context.beginPath();
+      this.traceOffsetStrokePoints(context, points, pass.offsetX, pass.offsetY);
+      context.stroke();
+    }
+
+    context.globalAlpha = 1;
+  }
+
+  private static buildPencilPathPoints(points: StrokePoint[], width: number, spacingFactor: number): StrokePoint[] {
+    if (points.length <= 2) {
+      return points;
+    }
+
+    const minimumDistance = Math.max(1.2, width * spacingFactor);
+    const simplified: StrokePoint[] = [points[0]];
+    let lastPoint = points[0];
+
+    for (let index = 1; index < points.length - 1; index += 1) {
+      const point = points[index];
+      if (getDistance(lastPoint, point) >= minimumDistance) {
+        simplified.push(point);
+        lastPoint = point;
+      }
+    }
+
+    const finalPoint = points[points.length - 1];
+    if (simplified[simplified.length - 1] !== finalPoint) {
+      simplified.push(finalPoint);
+    }
+    return simplified;
+  }
+
+  private static traceOffsetStrokePoints(
+    context: CanvasRenderingContext2D,
+    points: StrokePoint[],
+    offsetX: number,
+    offsetY: number
+  ): void {
+    const firstPoint = points[0];
+    context.moveTo(firstPoint.x + offsetX, firstPoint.y + offsetY);
+
+    if (points.length === 1) {
+      context.lineTo(firstPoint.x + offsetX + 0.01, firstPoint.y + offsetY + 0.01);
+      return;
+    }
+
+    if (points.length === 2) {
+      const lastPoint = points[1];
+      context.lineTo(lastPoint.x + offsetX, lastPoint.y + offsetY);
+      return;
+    }
+
+    for (let index = 1; index < points.length - 1; index += 1) {
+      const currentPoint = points[index];
+      const nextPoint = points[index + 1];
+      const midpointX = (currentPoint.x + nextPoint.x) / 2;
+      const midpointY = (currentPoint.y + nextPoint.y) / 2;
+      context.quadraticCurveTo(
+        currentPoint.x + offsetX,
+        currentPoint.y + offsetY,
+        midpointX + offsetX,
+        midpointY + offsetY
+      );
+    }
+
+    const tailPoint = points[points.length - 1];
+    context.lineTo(tailPoint.x + offsetX, tailPoint.y + offsetY);
   }
 
   private static filterCausalPoint(
@@ -716,7 +998,7 @@ export class StrokeRenderer {
     }
 
     if (tool === 'pencil') {
-      return this.clamp(opacity * 0.72, 0.12, 1);
+      return this.clamp(opacity * 0.46, 0.05, 0.72);
     }
 
     return this.clamp(opacity, 0.12, 1);

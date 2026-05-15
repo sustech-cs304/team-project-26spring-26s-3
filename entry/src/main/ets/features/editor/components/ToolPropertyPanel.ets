@@ -6,7 +6,16 @@ import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
 
 const COLOR_OPTIONS: string[] = ['#111827', '#2563EB', '#16A34A', '#DC2626', '#F59E0B'];
 const TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser'];
-const WIDTH_OPTIONS: number[] = [2, 4, 8, 12, 20];
+const PEN_WIDTH_OPTIONS: number[] = [2, 3, 5, 7, 10];
+const PENCIL_WIDTH_OPTIONS: number[] = [3, 4, 6, 8, 11];
+const HIGHLIGHTER_WIDTH_OPTIONS: number[] = [8, 12, 18, 24, 32];
+const ERASER_WIDTH_OPTIONS: number[] = [8, 12, 18, 26, 36];
+
+interface WidthRange {
+  min: number;
+  max: number;
+  step: number;
+}
 
 @Component
 export struct ToolPropertyPanel {
@@ -37,7 +46,7 @@ export struct ToolPropertyPanel {
   @Builder
   private buildSummaryCard(): void {
     Row() {
-      Text(`${this.getToolLabel(this.getToolSetting().tool)}  ${this.getToolSetting().width}px`)
+      Text(`${this.getToolLabel(this.getToolSetting().tool)}  ${this.formatWidthValue(this.getToolSetting().width)}px`)
         .fontSize(14)
         .fontWeight(FontWeight.Medium)
         .fontColor('#111827')
@@ -166,12 +175,12 @@ export struct ToolPropertyPanel {
   @Builder
   private buildWidthSelector(): void {
     Column({ space: 6 }) {
-      Text('Width')
+      Text(`Width ${this.formatWidthValue(this.getToolSetting().width)}px`)
         .fontSize(12)
         .fontColor('#475569')
 
       Row({ space: 5 }) {
-        ForEach(WIDTH_OPTIONS, (width: number) => {
+        ForEach(this.getWidthOptionsForTool(this.getToolSetting().tool), (width: number) => {
           Button() {
             this.buildWidthGlyph(width)
           }
@@ -194,6 +203,23 @@ export struct ToolPropertyPanel {
         }, (width: number) => `${width}`)
       }
       .width('100%')
+
+      Slider({
+        value: this.getToolSetting().width,
+        min: this.getWidthRangeForTool(this.getToolSetting().tool).min,
+        max: this.getWidthRangeForTool(this.getToolSetting().tool).max,
+        step: this.getWidthRangeForTool(this.getToolSetting().tool).step,
+        style: SliderStyle.OutSet
+      })
+        .showTips(false)
+        .onChange((value: number) => {
+          this.updateToolSetting({
+            tool: this.getToolSetting().tool,
+            color: this.getToolSetting().color,
+            width: Math.round(value),
+            opacity: this.getToolSetting().opacity
+          });
+        })
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
@@ -394,6 +420,10 @@ export struct ToolPropertyPanel {
       .borderRadius(6)
   }
 
+  private formatWidthValue(width: number): string {
+    return `${Math.round(width)}`;
+  }
+
   private isSelectedWidth(width: number): boolean {
     return this.getToolSetting().width === width;
   }
@@ -437,6 +467,36 @@ export struct ToolPropertyPanel {
     }
 
     return toolSetting.opacity;
+  }
+
+  private getWidthOptionsForTool(tool: ToolType): number[] {
+    switch (tool) {
+      case 'pen':
+        return PEN_WIDTH_OPTIONS;
+      case 'pencil':
+        return PENCIL_WIDTH_OPTIONS;
+      case 'highlighter':
+        return HIGHLIGHTER_WIDTH_OPTIONS;
+      case 'eraser':
+        return ERASER_WIDTH_OPTIONS;
+      default:
+        return PEN_WIDTH_OPTIONS;
+    }
+  }
+
+  private getWidthRangeForTool(tool: ToolType): WidthRange {
+    switch (tool) {
+      case 'pen':
+        return { min: 1, max: 12, step: 1 };
+      case 'pencil':
+        return { min: 2, max: 14, step: 1 };
+      case 'highlighter':
+        return { min: 6, max: 36, step: 1 };
+      case 'eraser':
+        return { min: 4, max: 48, step: 1 };
+      default:
+        return { min: 1, max: 12, step: 1 };
+    }
   }
 
   private cloneToolSetting(toolSetting: ToolSetting): ToolSetting {

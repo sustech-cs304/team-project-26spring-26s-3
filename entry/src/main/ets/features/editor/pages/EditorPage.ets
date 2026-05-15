@@ -34,6 +34,7 @@ const DOCUMENT_PAGE_HORIZONTAL_PADDING = 12;
 const DOCUMENT_PAGE_HEADER_HEIGHT = 28;
 const DOCUMENT_PAGE_SURFACE_MAX_WIDTH = 980;
 const DOCUMENT_PAGE_SURFACE_MIN_WIDTH = 320;
+const DOCUMENT_PAGE_RENDER_WINDOW_PADDING_FACTOR = 1.25;
 const DOCUMENT_ZOOM_MIN_SCALE = 0.72;
 const DOCUMENT_ZOOM_MAX_SCALE = 2.2;
 const DOCUMENT_ZOOM_STEP = 0.08;
@@ -81,15 +82,19 @@ struct EditorPage {
   @State private isPageTemplateDropdownVisible: boolean = false;
   @State private isCanvasPanModeEnabled: boolean = false;
   @State private workspaceViewportWidth: number = 0;
+  @State private workspaceViewportHeight: number = 0;
   @State private documentZoomScale: number = 1;
   @State private documentHorizontalOffset: number = 0;
+  @State private documentScrollOffsetY: number = 0;
+  @State private documentGesturePreviewScale: number = 1;
+  @State private documentGesturePreviewOffsetX: number = 0;
   private readonly pageCanvasRenderSizeMap: Map<string, PageCanvasRenderSize> = new Map<string, PageCanvasRenderSize>();
   private readonly documentScroller: Scroller = new Scroller();
   private thumbnailRefreshTimerId: number = -1;
   private lastThumbnailRefreshTime: number = 0;
   private documentGestureStartZoomScale: number = 1;
-  private workspaceViewportHeight: number = 0;
-  private documentScrollOffsetY: number = 0;
+  private documentGestureTargetZoomScale: number = 1;
+  private documentGestureTargetHorizontalOffset: number = 0;
   private editorViewModel?: EditorViewModel;
   private drawingViewModel: DrawingEditorViewModel | null = null;
   private currentDrawingPageId: string = '';
@@ -997,8 +1002,14 @@ struct EditorPage {
       })
       .alignItems(HorizontalAlign.Center)
       .offset({
-        x: this.documentHorizontalOffset,
+        x: this.getDocumentVisualOffsetX(),
         y: 0
+      })
+      .scale({
+        x: this.documentGesturePreviewScale,
+        y: this.documentGesturePreviewScale,
+        centerX: Math.max(0, this.workspaceViewportWidth / 2),
+        centerY: 0
       })
     }
     .width('100%')
@@ -1108,7 +1119,7 @@ struct EditorPage {
           })
             .width('100%')
             .height('100%')
-        } else {
+        } else if (this.shouldRenderDocumentPagePreview(page.id)) {
           PageThumbnailPreview({
             pageId: page.id,
             isActive: false,
@@ -1952,10 +1963,14 @@ struct EditorPage {
   }
 
   private getDocumentPageSurfaceWidth(): number {
+    return this.getDocumentPageSurfaceWidthForScale(this.documentZoomScale);
+  }
+
+  private getDocumentPageSurfaceWidthForScale(scale: number): number {
     const availableWidth = this.workspaceViewportWidth > 0
       ? this.workspaceViewportWidth - DOCUMENT_PAGE_HORIZONTAL_PADDING * 2
       : DOCUMENT_PAGE_SURFACE_MAX_WIDTH;
-    const scaledWidth = Math.round(availableWidth * this.documentZoomScale);
+    const scaledWidth = Math.round(availableWidth * scale);
     return Math.max(DOCUMENT_PAGE_SURFACE_MIN_WIDTH, scaledWidth);
   }
 
@@ -1985,6 +2000,20 @@ struct EditorPage {
     return this.isDocumentPageActive(pageId) && !this.isCanvasLoading && !this.isDocumentNavigationModeEnabled();
   }
 
+  private shouldRenderDocumentPagePreview(pageId: string): boolean {
+    return this.isDocumentPageActive(pageId) || this.isDocumentPageWithinRenderWindow(pageId);
+  }
+
+  private isDocumentPageWithinRenderWindow(pageId: string): boolean {
+    const viewportHeight = Math.max(1, this.workspaceViewportHeight);
+    const padding = viewportHeight * DOCUMENT_PAGE_RENDER_WINDOW_PADDING_FACTOR;
+    const renderWindowTop = Math.max(0, this.documentScrollOffsetY - padding);
+    const renderWindowBottom = this.documentScrollOffsetY + viewportHeight + padding;
+    const pageTop = this.getDocumentPageBlockTop(pageId);
+    const pageBottom = pageTop + this.getDocumentPageBlockHeight(pageId);
+    return pageBottom >= renderWindowTop && pageTop <= renderWindowBottom;
+  }
+
   private getDocumentScrollDirection(): ScrollDirection {
     return this.isContinuousDocumentViewEnabled() ? ScrollDirection.Vertical : ScrollDirection.None;
   }
@@ -2004,12 +2033,22 @@ struct EditorPage {
 
   private beginDocumentViewportGesture(): void {
     this.documentGestureStartZoomScale = this.documentZoomScale;
+    this.documentGestureTargetZoomScale = this.documentZoomScale;
+    this.documentGestureTargetHorizontalOffset = this.documentHorizontalOffset;
+    this.documentGesturePreviewScale = 1;
+    this.documentGesturePreviewOffsetX = 0;
     this.syncDocumentScrollOffsetFromScroller();
   }
 
   private updateDocumentViewportGesture(scaleRatio: number, deltaX: number, deltaY: number): void {
-    this.setDocumentZoomScale(this.documentGestureStartZoomScale * scaleRatio);
-    this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset + deltaX);
+    const nextZoomScale = this.clampDocumentZoomScale(this.documentGestureStartZoomScale * scaleRatio);
+    this.documentGestureTargetZoomScale = nextZoomScale;
+    this.documentGestureTargetHorizontalOffset = this.clampDocumentHorizontalOffsetForScale(
+      this.documentGestureTargetHorizontalOffset + deltaX,
+      nextZoomScale
+    );
+    this.documentGesturePreviewScale = nextZoomScale / Math.max(0.001, this.documentZoomScale);
+    this.documentGesturePreviewOffsetX = this.documentGestureTargetHorizontalOffset - this.documentHorizontalOffset;
     if (deltaY !== 0) {
       this.documentScroller.scrollBy(0, -deltaY);
       this.handleDocumentDidScroll();
@@ -2018,7 +2057,23 @@ struct EditorPage {
 
   private endDocumentViewportGesture(): void {
     this.syncDocumentScrollOffsetFromScroller();
-    this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset);
+    const previousZoomScale = this.documentZoomScale;
+    const nextZoomScale = this.documentGestureTargetZoomScale;
+    const zoomRatio = nextZoomScale / Math.max(0.001, previousZoomScale);
+    this.documentZoomScale = nextZoomScale;
+    this.documentHorizontalOffset = this.clampDocumentHorizontalOffsetForScale(
+      this.documentGestureTargetHorizontalOffset,
+      this.documentZoomScale
+    );
+    this.documentGesturePreviewScale = 1;
+    this.documentGesturePreviewOffsetX = 0;
+    const nextScrollOffset = Math.max(0, this.documentScrollOffsetY * zoomRatio);
+    this.documentScrollOffsetY = nextScrollOffset;
+    this.documentScroller.scrollTo({
+      xOffset: 0,
+      yOffset: nextScrollOffset,
+      animation: false
+    });
     void this.commitViewportCenteredPage();
   }
 
@@ -2031,15 +2086,27 @@ struct EditorPage {
     return this.getDocumentPageSurfaceWidth() + DOCUMENT_PAGE_HORIZONTAL_PADDING * 2;
   }
 
+  private getDocumentVisualOffsetX(): number {
+    return this.documentHorizontalOffset + this.documentGesturePreviewOffsetX;
+  }
+
   private clampDocumentHorizontalOffset(offset: number): number {
+    return this.clampDocumentHorizontalOffsetForScale(offset, this.documentZoomScale);
+  }
+
+  private clampDocumentHorizontalOffsetForScale(offset: number, scale: number): number {
     const viewportWidth = Math.max(1, this.workspaceViewportWidth);
-    const overflowWidth = Math.max(0, this.getDocumentContentWidth() - viewportWidth);
+    const overflowWidth = Math.max(0, this.getDocumentContentWidthForScale(scale) - viewportWidth);
     if (overflowWidth <= 0) {
       return 0;
     }
 
     const halfOverflow = overflowWidth / 2;
     return Math.max(-halfOverflow, Math.min(halfOverflow, offset));
+  }
+
+  private getDocumentContentWidthForScale(scale: number): number {
+    return this.getDocumentPageSurfaceWidthForScale(scale) + DOCUMENT_PAGE_HORIZONTAL_PADDING * 2;
   }
 
   private getDocumentScrollOffsetForPage(pageId: string): number {
@@ -2057,6 +2124,24 @@ struct EditorPage {
     }
 
     return Math.max(0, offset);
+  }
+
+  private getDocumentPageBlockTop(pageId: string): number {
+    let offset = DOCUMENT_PAGE_HORIZONTAL_PADDING;
+    for (const page of this.notebookPageList) {
+      if (page.id === pageId) {
+        return offset;
+      }
+
+      offset += this.getDocumentPageBlockHeight(page.id);
+      offset += DOCUMENT_PAGE_GAP;
+    }
+
+    return offset;
+  }
+
+  private getDocumentPageBlockHeight(pageId: string): number {
+    return DOCUMENT_PAGE_HEADER_HEIGHT + 10 + this.getDocumentPageSurfaceHeightForPage(pageId);
   }
 
   private scrollDocumentToPage(pageId: string, smooth: boolean): void {
