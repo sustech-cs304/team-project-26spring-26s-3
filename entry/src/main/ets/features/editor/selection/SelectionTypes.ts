@@ -3,7 +3,22 @@ import { StrokePoint } from '../../../domain/entities/Stroke';
 
 export type SelectionTargetKind = 'strokeGroup' | 'textElement' | 'shapeElement' | 'imageElement';
 export type SelectionContextMenuTarget = 'strokeGroup' | 'element';
-export type SelectionAction = 'delete' | 'copy';
+export type SelectionAction = 'delete' | 'copy' | 'resize';
+export type ResizeHandle =
+  'topLeft' |
+  'top' |
+  'topRight' |
+  'right' |
+  'bottomRight' |
+  'bottom' |
+  'bottomLeft' |
+  'left';
+
+export interface ResizeHandlePoint {
+  handle: ResizeHandle;
+  x: number;
+  y: number;
+}
 
 export interface SelectionActionResult {
   changed: boolean;

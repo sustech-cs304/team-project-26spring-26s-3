@@ -1,6 +1,12 @@
 import { BoundingBox, expandBoundingBox } from '../../../common/utils/GeometryUtil';
 import { StrokePoint } from '../../../domain/entities/Stroke';
-import { SelectionContextMenuTarget, SelectionHitResult, SelectionTarget } from './SelectionTypes';
+import {
+  ResizeHandle,
+  ResizeHandlePoint,
+  SelectionContextMenuTarget,
+  SelectionHitResult,
+  SelectionTarget
+} from './SelectionTypes';
 
 export class SelectionController {
   static hitTestTargets(targets: SelectionTarget[], point: StrokePoint, hitTolerance: number): SelectionHitResult {
@@ -34,6 +40,37 @@ export class SelectionController {
 
   static getContextMenuTarget(target: SelectionTarget): SelectionContextMenuTarget {
     return target.kind === 'strokeGroup' ? 'strokeGroup' : 'element';
+  }
+
+  static getResizeHandlePoints(bounds: BoundingBox): ResizeHandlePoint[] {
+    const centerX = (bounds.minX + bounds.maxX) / 2;
+    const centerY = (bounds.minY + bounds.maxY) / 2;
+    return [
+      { handle: 'topLeft', x: bounds.minX, y: bounds.minY },
+      { handle: 'top', x: centerX, y: bounds.minY },
+      { handle: 'topRight', x: bounds.maxX, y: bounds.minY },
+      { handle: 'right', x: bounds.maxX, y: centerY },
+      { handle: 'bottomRight', x: bounds.maxX, y: bounds.maxY },
+      { handle: 'bottom', x: centerX, y: bounds.maxY },
+      { handle: 'bottomLeft', x: bounds.minX, y: bounds.maxY },
+      { handle: 'left', x: bounds.minX, y: centerY }
+    ];
+  }
+
+  static hitTestResizeHandle(bounds: BoundingBox, point: StrokePoint, hitTolerance: number): ResizeHandle | null {
+    for (const handlePoint of SelectionController.getResizeHandlePoints(bounds)) {
+      const deltaX = point.x - handlePoint.x;
+      const deltaY = point.y - handlePoint.y;
+      if (Math.sqrt(deltaX * deltaX + deltaY * deltaY) <= Math.max(1, hitTolerance)) {
+        return handlePoint.handle;
+      }
+    }
+
+    return null;
+  }
+
+  static isPointInTargetBounds(bounds: BoundingBox, point: StrokePoint, hitTolerance: number): boolean {
+    return SelectionController.isPointInBoundingBox(point, expandBoundingBox(bounds, hitTolerance));
   }
 
   private static findHitTarget(

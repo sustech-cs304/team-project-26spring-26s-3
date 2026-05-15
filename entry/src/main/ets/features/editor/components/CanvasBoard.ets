@@ -19,12 +19,21 @@ import { SelectionDashRenderer } from '../controllers/SelectionDashRenderer';
 import { ShapeRenderer } from '../controllers/ShapeRenderer';
 import { IndexedStrokeRecord } from '../controllers/UndoRedoController';
 import { StrokeSpatialHashIndex } from '../controllers/StrokeSpatialHashIndex';
+import { SelectionController } from '../selection/SelectionController';
+import {
+  ResizeHandle,
+  SelectionAction,
+  SelectionContextMenuTarget,
+  SelectionHitResult,
+  SelectionTarget
+} from '../selection/SelectionTypes';
 import { EditorDebugSnapshot } from '../viewmodels/EditorDebugSnapshot';
-import { DrawingEditorViewModel, SelectedStrokeGroup } from '../viewmodels/DrawingEditorViewModel';
+import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
 import { RenderInvalidation } from '../viewmodels/RenderInvalidation';
 import { EditorPerformanceTrace } from '../utils/EditorPerformanceTrace';
 import { ElementLayer } from './ElementLayer';
+import { SelectionTransformOverlay } from './SelectionTransformOverlay';
 import { StrokeSelectionOverlay } from './StrokeSelectionOverlay';
 
 interface CanvasSize {
@@ -66,6 +75,7 @@ interface ExtendedTouchObject extends TouchObject {
 const COMMITTED_TILE_SIZE = 256;
 const PARTIAL_REDRAW_OVERDRAW_VIEWPORT_PX = 2;
 const RECENT_COMMITTED_STROKE_LIMIT = 6;
+type StrokeResizeUiMode = 'none' | 'ready' | 'resizing' | 'moving';
 const VIEWPORT_PAGE_MARGIN = 36;
 const VIEWPORT_EDGE_MARGIN = 42;
 const MIN_ZOOM_SCALE = 1;
@@ -78,6 +88,7 @@ const TEXT_EDIT_DOUBLE_TAP_MS = 360;
 const TEXT_EDIT_DOUBLE_TAP_DISTANCE = 18;
 const INLINE_TEXT_LINE_HEIGHT_FACTOR = 1.35;
 const INLINE_TEXT_MAX_LINES = 1000;
+const EDIT_HANDLE_HIT_TOLERANCE_SCREEN_PX = 12;
 const LASSO_HIT_TOLERANCE_SCREEN_PX = 10;
 const MIN_LASSO_HIT_TOLERANCE_PAGE = 4;
 const MAX_LASSO_HIT_TOLERANCE_PAGE = 12;
@@ -88,6 +99,9 @@ const MIN_SELECTION_MOVE_HIT_TOLERANCE_PAGE = 2;
 const MAX_SELECTION_MOVE_HIT_TOLERANCE_PAGE = 8;
 const SELECTION_MOVE_START_THRESHOLD_SCREEN_PX = 4;
 const SELECTION_MOVE_REDRAW_INTERVAL_MS = 24;
+const SELECTION_CONTEXT_MENU_WIDTH = 128;
+const SELECTION_CONTEXT_MENU_ITEM_HEIGHT = 38;
+const SELECTION_CONTEXT_MENU_OFFSET = 8;
 export type CanvasBoardContentChangeKind = 'stroke' | 'element';
 
 @Component
@@ -155,12 +169,16 @@ export struct CanvasBoard {
   private isLassoGestureActive: boolean = false;
   private isSelectionMovePending: boolean = false;
   private isSelectionMoveGestureActive: boolean = false;
+  private pendingSelectionHitResult: SelectionHitResult | null = null;
   private isWorkspacePanActive: boolean = false;
   private isViewportGestureActive: boolean = false;
   private selectionMoveStartScreenX: number = 0;
   private selectionMoveStartScreenY: number = 0;
   private selectionMoveStartPageX: number = 0;
   private selectionMoveStartPageY: number = 0;
+  private lassoStartScreenX: number = 0;
+  private lassoStartScreenY: number = 0;
+  private shouldClearSelectionOnLassoTap: boolean = false;
   private lastWorkspacePanX: number = 0;
   private lastWorkspacePanY: number = 0;
   private viewportGestureStartDistance: number = 1;
@@ -194,9 +212,15 @@ export struct CanvasBoard {
   @State private inlineTextEditY: number = 0;
   @State private inlineTextEditWidth: number = 1;
   @State private inlineTextEditHeight: number = 1;
-  @State private selectedStrokeGroups: SelectedStrokeGroup[] = [];
+  @State private selectedStrokeTargets: SelectionTarget[] = [];
+  @State private strokeResizeUiMode: StrokeResizeUiMode = 'none';
+  @State private strokeResizeBounds: BoundingBox | null = null;
   @State private selectionOverlayRefreshVersion: number = 0;
   @State private isSelectionOverlayPaused: boolean = false;
+  @State private isSelectionContextMenuVisible: boolean = false;
+  @State private selectionContextMenuTarget: SelectionContextMenuTarget = 'strokeGroup';
+  @State private selectionContextMenuX: number = 0;
+  @State private selectionContextMenuY: number = 0;
 
   aboutToAppear(): void {
     this.resolveViewModel();
@@ -248,12 +272,20 @@ export struct CanvasBoard {
           .height('100%')
 
         StrokeSelectionOverlay({
-          groups: this.selectedStrokeGroups,
+          targets: this.isStrokeResizeModeVisible() ? [] : this.selectedStrokeTargets,
           refreshVersion: this.selectionOverlayRefreshVersion,
           paused: this.isSelectionOverlayPaused
         })
           .width('100%')
           .height('100%')
+
+        if (this.isStrokeResizeModeVisible() && this.strokeResizeBounds !== null) {
+          SelectionTransformOverlay({
+            bounds: this.strokeResizeBounds
+          })
+            .width('100%')
+            .height('100%')
+        }
       }
         .width(this.elementLayerPageWidth)
         .height(this.elementLayerPageHeight)
@@ -287,6 +319,10 @@ export struct CanvasBoard {
         this.buildInlineTextEditor(this.inlineTextEditElement)
       }
 
+      if (this.isSelectionContextMenuVisible) {
+        this.buildSelectionContextMenu()
+      }
+
     }
     .width('100%')
     .height('100%')
@@ -295,6 +331,56 @@ export struct CanvasBoard {
       this.notifyCanvasMetricsChanged();
       this.redrawViewportLayers(this.isViewportGestureActive);
     })
+  }
+
+  @Builder
+  private buildSelectionContextMenu(): void {
+    Column() {
+      if (this.selectionContextMenuTarget === 'strokeGroup') {
+        Button('拷贝')
+          .width('100%')
+          .height(SELECTION_CONTEXT_MENU_ITEM_HEIGHT)
+          .fontSize(14)
+          .fontColor('#111827')
+          .backgroundColor('#00000000')
+          .onClick(() => {
+            this.handleSelectionContextMenuAction('copy');
+          })
+
+        Button('调整大小')
+          .width('100%')
+          .height(SELECTION_CONTEXT_MENU_ITEM_HEIGHT)
+          .fontSize(14)
+          .fontColor('#111827')
+          .backgroundColor('#00000000')
+          .onClick(() => {
+            this.handleSelectionContextMenuAction('resize');
+          })
+
+        Button('删除')
+          .width('100%')
+          .height(SELECTION_CONTEXT_MENU_ITEM_HEIGHT)
+          .fontSize(14)
+          .fontColor('#DC2626')
+          .backgroundColor('#00000000')
+          .onClick(() => {
+            this.handleSelectionContextMenuAction('delete');
+          })
+      }
+    }
+      .width(SELECTION_CONTEXT_MENU_WIDTH)
+      .padding(4)
+      .backgroundColor('#FFFFFF')
+      .border({
+        width: 1,
+        color: '#CBD5E1'
+      })
+      .borderRadius(8)
+      .position({
+        x: this.selectionContextMenuX,
+        y: this.selectionContextMenuY
+      })
+      .zIndex(20)
   }
 
   @Builder
@@ -460,6 +546,14 @@ export struct CanvasBoard {
 
     if (this.handlePanModeTouch(event, touch)) {
       return;
+    }
+
+    if (this.isStrokeResizeModeVisible() && this.handleStrokeResizeTouch(event, touch, viewModel)) {
+      return;
+    }
+
+    if (event.type === TouchType.Down && activeTool !== 'lasso') {
+      this.hideSelectionContextMenu();
     }
 
     if (activeTool === 'edit') {
@@ -718,15 +812,18 @@ export struct CanvasBoard {
 
   private handleLassoTouch(event: TouchEvent, touch: TouchObject, viewModel: DrawingEditorViewModel): void {
     if (event.type === TouchType.Down) {
+      this.hideSelectionContextMenu();
       const point = this.buildPoint(touch, false);
       if (point === null) {
         this.beginWorkspacePan(touch);
         return;
       }
 
-      if (viewModel.hasSelectionMoveHit(point, this.getSelectionMoveHitToleranceInPage())) {
+      const hitResult = viewModel.hitTestSelection(point, this.getSelectionMoveHitToleranceInPage());
+      if (hitResult.canMove && hitResult.target !== null) {
         this.isSelectionMovePending = true;
         this.isSelectionMoveGestureActive = false;
+        this.pendingSelectionHitResult = hitResult;
         this.selectionMoveStartScreenX = touch.x;
         this.selectionMoveStartScreenY = touch.y;
         this.selectionMoveStartPageX = point.x;
@@ -736,6 +833,10 @@ export struct CanvasBoard {
         return;
       }
 
+      this.pendingSelectionHitResult = null;
+      this.lassoStartScreenX = touch.x;
+      this.lassoStartScreenY = touch.y;
+      this.shouldClearSelectionOnLassoTap = viewModel.getSelectionTargets().length > 0;
       this.isLassoGestureActive = true;
       this.pauseSelectionOverlay();
       viewModel.beginLassoSelection(point);
@@ -758,6 +859,10 @@ export struct CanvasBoard {
 
       if (!this.isLassoGestureActive) {
         return;
+      }
+
+      if (this.hasLassoTapExceededStartThreshold(touch)) {
+        this.shouldClearSelectionOnLassoTap = false;
       }
 
       const point = this.buildPoint(touch, true);
@@ -785,11 +890,24 @@ export struct CanvasBoard {
         return;
       }
 
+      if (this.shouldClearSelectionOnLassoTap && !this.hasLassoTapExceededStartThreshold(touch)) {
+        this.shouldClearSelectionOnLassoTap = false;
+        this.isLassoGestureActive = false;
+        viewModel.cancelLassoSelection();
+        viewModel.clearSelection();
+        this.scheduleSelectionOverlayResume();
+        this.syncEditorSnapshot();
+        this.redrawOverlayLayer();
+        this.onContentChanged(false, 'element');
+        return;
+      }
+
       const point = this.buildPoint(touch, true);
       if (point !== null) {
         viewModel.updateLassoSelection(point);
       }
       this.isLassoGestureActive = false;
+      this.shouldClearSelectionOnLassoTap = false;
       viewModel.finishLassoSelection(this.getLassoHitToleranceInPage());
       this.scheduleSelectionOverlayResume();
       this.syncEditorSnapshot();
@@ -810,6 +928,7 @@ export struct CanvasBoard {
       }
 
       this.cancelLassoGesture(viewModel);
+      this.shouldClearSelectionOnLassoTap = false;
     }
   }
 
@@ -819,6 +938,7 @@ export struct CanvasBoard {
       this.cancelDrawingGesture(viewModel);
       this.cancelLassoGesture(viewModel);
       this.cancelSelectionMoveGesture(viewModel);
+      this.cancelActiveStrokeResizeGesture(viewModel);
       this.endWorkspacePan(false);
       const pairMetrics: TouchPairMetrics = this.getTouchPairMetrics(activeTouches[0], activeTouches[1]);
       if (!this.isViewportGestureActive || event.type === TouchType.Down) {
@@ -847,6 +967,119 @@ export struct CanvasBoard {
     return false;
   }
 
+  private handleStrokeResizeTouch(event: TouchEvent, touch: TouchObject, viewModel: DrawingEditorViewModel): boolean {
+    const point = this.buildPoint(touch, event.type !== TouchType.Down);
+    if (event.type === TouchType.Down) {
+      if (point === null) {
+        return false;
+      }
+
+      const resizeBounds = viewModel.getSelectedStrokeResizeBounds();
+      if (resizeBounds === null) {
+        this.exitStrokeResizeMode(viewModel);
+        return true;
+      }
+
+      const hitTolerance = this.getEditHitToleranceInPage();
+      const handle = SelectionController.hitTestResizeHandle(resizeBounds, point, hitTolerance);
+      if (handle === null) {
+        if (!SelectionController.isPointInTargetBounds(resizeBounds, point, this.getSelectionMoveHitToleranceInPage())) {
+          this.clearSelectionAndExitStrokeResizeMode(viewModel);
+          this.onContentChanged(false, 'element');
+          return true;
+        }
+
+        if (!viewModel.beginSelectionMove(point)) {
+          return true;
+        }
+
+        this.hideSelectionContextMenu();
+        this.strokeResizeUiMode = 'moving';
+        this.beginSelectionMovePreview();
+        this.syncEditorSnapshot();
+        this.redrawOverlayLayer();
+        return true;
+      }
+
+      this.hideSelectionContextMenu();
+      if (!viewModel.beginStrokeResize(handle)) {
+        this.exitStrokeResizeMode(viewModel);
+        return true;
+      }
+
+      this.strokeResizeUiMode = 'resizing';
+      this.beginSelectionMovePreview();
+      this.syncEditorSnapshot();
+      this.redrawOverlayLayer();
+      return true;
+    }
+
+    if (event.type === TouchType.Move) {
+      if (!this.isStrokeResizeDragging() || point === null) {
+        return true;
+      }
+
+      const didUpdate = this.strokeResizeUiMode === 'moving' ?
+        viewModel.updateSelectionMove(point, this.getPageBounds()) :
+        viewModel.updateStrokeResize(point, this.getPageBounds());
+      if (didUpdate) {
+        this.syncEditorSnapshot();
+        if (this.requestSelectionMoveRedraw(false)) {
+          this.onContentChanged(false, 'element');
+        }
+      }
+      return true;
+    }
+
+    if (event.type === TouchType.Up) {
+      if (!this.isStrokeResizeDragging()) {
+        return true;
+      }
+
+      if (point !== null) {
+        if (this.strokeResizeUiMode === 'moving') {
+          viewModel.updateSelectionMove(point, this.getPageBounds());
+        } else {
+          viewModel.updateStrokeResize(point, this.getPageBounds());
+        }
+      }
+      this.syncEditorSnapshot();
+      this.redrawOverlayLayer();
+      const didChange = this.strokeResizeUiMode === 'moving' ?
+        viewModel.finishSelectionMove() :
+        viewModel.finishStrokeResize();
+      this.strokeResizeUiMode = 'ready';
+      this.syncEditorSnapshot();
+      this.finishSelectionMovePreview(didChange);
+      this.onContentChanged(didChange, 'stroke');
+      return true;
+    }
+
+    if (event.type === TouchType.Cancel) {
+      this.cancelActiveStrokeResizeGesture(viewModel);
+      return true;
+    }
+
+    return true;
+  }
+
+  private cancelActiveStrokeResizeGesture(viewModel: DrawingEditorViewModel): void {
+    if (!this.isStrokeResizeDragging()) {
+      return;
+    }
+
+    if (this.strokeResizeUiMode === 'moving') {
+      viewModel.cancelSelectionMove();
+    } else {
+      viewModel.cancelStrokeResize();
+    }
+    this.strokeResizeUiMode = 'ready';
+    this.hiddenStrokeIdsDuringSelectionMove.clear();
+    this.redrawCommittedLayer(false);
+    this.syncEditorSnapshot();
+    this.redrawOverlayLayer();
+  }
+
   private updateSelectionMoveGesture(touch: TouchObject, viewModel: DrawingEditorViewModel): void {
     const point = this.buildPoint(touch, true);
     if (point === null) {
@@ -865,17 +1098,17 @@ export struct CanvasBoard {
           y: this.selectionMoveStartPageY,
           t: point.t,
           pressure: point.pressure
-        },
-        this.getPageBounds(),
-        this.getSelectionMoveHitToleranceInPage()
+        }
       );
       if (!didBeginMove) {
         this.isSelectionMovePending = false;
+        this.pendingSelectionHitResult = null;
         this.scheduleSelectionOverlayResume();
         return;
       }
 
       this.isSelectionMovePending = false;
+      this.pendingSelectionHitResult = null;
       this.isSelectionMoveGestureActive = true;
       this.beginSelectionMovePreview();
       forceRedraw = true;
@@ -905,17 +1138,22 @@ export struct CanvasBoard {
       return;
     }
 
+    const pendingHitResult = this.pendingSelectionHitResult;
     this.isSelectionMovePending = false;
+    this.pendingSelectionHitResult = null;
     this.scheduleSelectionOverlayResume();
     this.syncEditorSnapshot();
     this.redrawOverlayLayer();
+    this.showSelectionContextMenu(pendingHitResult);
     this.onContentChanged(false, 'element');
   }
 
   private cancelSelectionMoveGesture(viewModel: DrawingEditorViewModel): void {
     const hadSelectionMove = this.isSelectionMovePending || this.isSelectionMoveGestureActive;
+    this.hideSelectionContextMenu();
     this.isSelectionMovePending = false;
     this.isSelectionMoveGestureActive = false;
+    this.pendingSelectionHitResult = null;
     viewModel.cancelSelectionMove();
     if (hadSelectionMove) {
       this.scheduleSelectionOverlayResume();
@@ -931,10 +1169,20 @@ export struct CanvasBoard {
     return Math.sqrt(deltaX * deltaX + deltaY * deltaY) >= SELECTION_MOVE_START_THRESHOLD_SCREEN_PX;
   }
 
+  private hasLassoTapExceededStartThreshold(touch: TouchObject): boolean {
+    const deltaX = touch.x - this.lassoStartScreenX;
+    const deltaY = touch.y - this.lassoStartScreenY;
+    return Math.sqrt(deltaX * deltaX + deltaY * deltaY) >= SELECTION_MOVE_START_THRESHOLD_SCREEN_PX;
+  }
+
   private beginSelectionMovePreview(): void {
     this.hiddenStrokeIdsDuringSelectionMove.clear();
-    for (const group of this.selectedStrokeGroups) {
-      for (const strokeId of group.strokeIds) {
+    for (const target of this.selectedStrokeTargets) {
+      if (target.kind !== 'strokeGroup') {
+        continue;
+      }
+
+      for (const strokeId of target.strokeIds) {
         this.hiddenStrokeIdsDuringSelectionMove.add(strokeId);
       }
     }
@@ -979,6 +1227,7 @@ export struct CanvasBoard {
       viewModel.cancelLassoSelection();
     }
     this.isLassoGestureActive = false;
+    this.shouldClearSelectionOnLassoTap = false;
     this.scheduleSelectionOverlayResume();
     this.syncEditorSnapshot();
     this.redrawOverlayLayer();
@@ -1024,6 +1273,7 @@ export struct CanvasBoard {
 
     viewModel.cancelLassoSelection();
     this.isLassoGestureActive = false;
+    this.shouldClearSelectionOnLassoTap = false;
     this.scheduleSelectionOverlayResume();
     this.redrawOverlayLayer();
     this.syncEditorSnapshot();
@@ -1152,7 +1402,7 @@ export struct CanvasBoard {
     }
     this.syncSelectionOverlayState(viewModel);
 
-    if (this.isSelectionMoveGestureActive) {
+    if (this.isSelectionMoveGestureActive || this.isStrokeResizeDragging()) {
       this.drawSelectionMovePreview(viewModel);
       return;
     }
@@ -1264,13 +1514,149 @@ export struct CanvasBoard {
 
   private syncSelectionOverlayState(viewModel: DrawingEditorViewModel): void {
     const selectionVersion = viewModel.getSelectionVersion();
-    if (selectionVersion === this.lastSelectionVersion) {
+    if (selectionVersion !== this.lastSelectionVersion) {
+      this.lastSelectionVersion = selectionVersion;
+      this.selectedStrokeTargets = viewModel.getSelectedStrokeTargets();
+      this.selectionOverlayRefreshVersion += 1;
+    }
+
+    this.strokeResizeBounds = this.isStrokeResizeModeVisible() ? viewModel.getSelectedStrokeResizeBounds() : null;
+  }
+
+  private showSelectionContextMenu(hitResult: SelectionHitResult | null): void {
+    if (hitResult === null || hitResult.target === null || !hitResult.canShowMenu) {
       return;
     }
 
-    this.lastSelectionVersion = selectionVersion;
-    this.selectedStrokeGroups = viewModel.getSelectedStrokeGroups();
+    this.selectionContextMenuTarget = SelectionController.getContextMenuTarget(hitResult.target);
+    const menuHeight = this.getSelectionContextMenuHeight();
+    const size = this.getCanvasSize(this.overlayContext2D);
+    const transform = this.getPageViewportTransform(size);
+    const screenX = transform.offsetX + this.selectionMoveStartPageX * transform.scale;
+    const screenY = transform.offsetY + this.selectionMoveStartPageY * transform.scale;
+    this.selectionContextMenuX = this.clamp(
+      screenX + SELECTION_CONTEXT_MENU_OFFSET,
+      4,
+      Math.max(4, size.width - SELECTION_CONTEXT_MENU_WIDTH - 4)
+    );
+    this.selectionContextMenuY = this.clamp(
+      screenY - menuHeight - SELECTION_CONTEXT_MENU_OFFSET,
+      4,
+      Math.max(4, size.height - menuHeight - 4)
+    );
+    this.isSelectionContextMenuVisible = true;
+  }
+
+  private hideSelectionContextMenu(): void {
+    if (!this.isSelectionContextMenuVisible) {
+      return;
+    }
+
+    this.isSelectionContextMenuVisible = false;
+  }
+
+  private getSelectionContextMenuHeight(): number {
+    if (this.selectionContextMenuTarget === 'strokeGroup') {
+      return SELECTION_CONTEXT_MENU_ITEM_HEIGHT * 3 + 8;
+    }
+
+    return SELECTION_CONTEXT_MENU_ITEM_HEIGHT + 8;
+  }
+
+  private handleSelectionContextMenuAction(action: SelectionAction): void {
+    const viewModel = this.getViewModel();
+    if (viewModel === null) {
+      this.hideSelectionContextMenu();
+      return;
+    }
+
+    const target = this.selectionContextMenuTarget;
+    this.hideSelectionContextMenu();
+    if (action === 'resize' && target === 'strokeGroup') {
+      this.beginStrokeResizeMode(viewModel);
+      return;
+    }
+
+    const result = viewModel.applySelectionAction(action, target);
+    if (!result.changed) {
+      this.syncEditorSnapshot();
+      this.redrawOverlayLayer();
+      return;
+    }
+
+    this.syncEditorSnapshot();
+    if (!this.tryApplyLatestRenderInvalidation()) {
+      this.redrawCommittedLayer(false);
+    }
+    this.redrawOverlayLayer();
+    this.onContentChanged(true, result.changedElements || result.elementSelectionChanged ? 'element' : 'stroke');
+  }
+
+  private beginStrokeResizeMode(viewModel: DrawingEditorViewModel): void {
+    const resizeBounds = viewModel.beginStrokeResizeMode();
+    if (resizeBounds === null) {
+      this.strokeResizeUiMode = 'none';
+      this.strokeResizeBounds = null;
+      this.syncEditorSnapshot();
+      this.redrawOverlayLayer();
+      return;
+    }
+
+    this.strokeResizeUiMode = 'ready';
+    this.strokeResizeBounds = resizeBounds;
     this.selectionOverlayRefreshVersion += 1;
+    this.syncEditorSnapshot();
+    this.redrawOverlayLayer();
+    this.onContentChanged(false, 'element');
+  }
+
+  private exitStrokeResizeMode(viewModel: DrawingEditorViewModel): void {
+    if (!this.isStrokeResizeModeVisible()) {
+      return;
+    }
+
+    if (this.isStrokeResizeDragging()) {
+      if (this.strokeResizeUiMode === 'moving') {
+        viewModel.cancelSelectionMove();
+      } else {
+        viewModel.cancelStrokeResize();
+      }
+      this.hiddenStrokeIdsDuringSelectionMove.clear();
+      this.redrawCommittedLayer(false);
+    }
+
+    this.strokeResizeUiMode = 'none';
+    this.strokeResizeBounds = null;
+    this.selectionOverlayRefreshVersion += 1;
+    this.syncEditorSnapshot();
+    this.redrawOverlayLayer();
+  }
+
+  private clearSelectionAndExitStrokeResizeMode(viewModel: DrawingEditorViewModel): void {
+    if (this.isStrokeResizeDragging()) {
+      if (this.strokeResizeUiMode === 'moving') {
+        viewModel.cancelSelectionMove();
+      } else {
+        viewModel.cancelStrokeResize();
+      }
+      this.hiddenStrokeIdsDuringSelectionMove.clear();
+      this.redrawCommittedLayer(false);
+    }
+
+    this.strokeResizeUiMode = 'none';
+    this.strokeResizeBounds = null;
+    viewModel.clearSelection();
+    this.selectionOverlayRefreshVersion += 1;
+    this.syncEditorSnapshot();
+    this.redrawOverlayLayer();
+  }
+
+  private isStrokeResizeModeVisible(): boolean {
+    return this.strokeResizeUiMode !== 'none';
+  }
+
+  private isStrokeResizeDragging(): boolean {
+    return this.strokeResizeUiMode === 'resizing' || this.strokeResizeUiMode === 'moving';
   }
 
   private pauseSelectionOverlay(): void {
@@ -1558,7 +1944,7 @@ export struct CanvasBoard {
   private getEditHitToleranceInPage(): number {
     const size = this.getCanvasSize(this.overlayContext2D);
     const transform = this.getPageViewportTransform(size);
-    return Math.max(3, 10 / Math.max(0.01, transform.scale));
+    return Math.max(3, EDIT_HANDLE_HIT_TOLERANCE_SCREEN_PX / Math.max(0.01, transform.scale));
   }
 
   private getLassoHitToleranceInPage(): number {
@@ -1825,8 +2211,12 @@ export struct CanvasBoard {
     this.endWorkspacePan(false);
     this.isDrawingGestureActive = false;
     this.isLassoGestureActive = false;
+    this.shouldClearSelectionOnLassoTap = false;
     this.isSelectionMovePending = false;
+    this.pendingSelectionHitResult = null;
     this.isSelectionMoveGestureActive = false;
+    this.strokeResizeUiMode = 'none';
+    this.strokeResizeBounds = null;
   }
 
   private getViewportTotalScale(size: CanvasSize): number {
@@ -2913,7 +3303,10 @@ export struct CanvasBoard {
     this.inlineTextEditContent = '';
     this.resetInlineTextEditFrame();
     this.clearLastEditTap();
-    this.selectedStrokeGroups = [];
+    this.hideSelectionContextMenu();
+    this.selectedStrokeTargets = [];
+    this.strokeResizeBounds = null;
+    this.strokeResizeUiMode = 'none';
     this.lastSelectionVersion = -1;
     this.selectionOverlayRefreshVersion += 1;
     this.resumeSelectionOverlayImmediately();
@@ -2932,6 +3325,9 @@ export struct CanvasBoard {
       this.commitInlineTextEdit(true);
     }
     const viewModel = this.getViewModel();
+    if (viewModel !== null && this.activeTool !== 'lasso') {
+      this.exitStrokeResizeMode(viewModel);
+    }
     if (viewModel !== null && this.activeTool !== 'lasso') {
       this.cancelSelectionMoveGesture(viewModel);
     }
@@ -2980,6 +3376,8 @@ export struct CanvasBoard {
       this.viewModel = null;
       this.clearCommittedLayer();
       this.hiddenStrokeIdsDuringSelectionMove.clear();
+      this.strokeResizeBounds = null;
+      this.strokeResizeUiMode = 'none';
       this.clearRenderedStrokeState();
       this.lastAppliedRenderInvalidationSequence = 0;
       this.forceFullCommittedRedrawOnNextCanvasRefresh = true;

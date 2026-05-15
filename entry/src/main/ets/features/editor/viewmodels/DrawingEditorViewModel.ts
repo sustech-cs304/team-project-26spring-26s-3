@@ -48,6 +48,7 @@ import {
 } from '../controllers/UndoRedoController';
 import { SelectionController } from '../selection/SelectionController';
 import {
+  ResizeHandle,
   SelectionAction,
   SelectionActionResult,
   SelectionContextMenuTarget,
@@ -94,9 +95,13 @@ interface BoundaryStartEdge {
 type ElementEditGestureKind =
   'move' |
   'resizeTopLeft' |
+  'resizeTop' |
   'resizeTopRight' |
+  'resizeRight' |
   'resizeBottomLeft' |
+  'resizeBottom' |
   'resizeBottomRight' |
+  'resizeLeft' |
   'resizeTextLeft' |
   'resizeTextRight' |
   'lineStart' |
@@ -117,6 +122,14 @@ interface SelectionMoveGesture {
   originalElementRecords: IndexedElementRecord[];
   originalTargets: SelectionTarget[];
   selectionBounds: BoundingBox;
+}
+
+interface StrokeResizeGesture {
+  handle: ResizeHandle;
+  currentBounds: BoundingBox;
+  originalBounds: BoundingBox;
+  originalStrokeRecords: IndexedStrokeRecord[];
+  originalTargets: SelectionTarget[];
 }
 
 export interface ImageInsertAsset {
@@ -164,6 +177,8 @@ const STROKE_SELECTION_MAX_EDGE_COUNT = 16000;
 const LASSO_STROKE_MIN_INSIDE_RATIO = 0.2;
 const LASSO_STROKE_MIN_INSIDE_COUNT = 2;
 const LASSO_STROKE_SHORT_SAMPLE_COUNT = 3;
+const MIN_STROKE_RESIZE_BOUNDS_SIZE = 8;
+const MIN_STROKE_RESIZE_WIDTH = 0.5;
 let nextEditorViewModelInstanceId = 1;
 
 export class DrawingEditorViewModel {
@@ -204,6 +219,7 @@ export class DrawingEditorViewModel {
   private lassoDraftPath: StrokePoint[] = [];
   private elementEditGesture: ElementEditGesture | null = null;
   private selectionMoveGesture: SelectionMoveGesture | null = null;
+  private strokeResizeGesture: StrokeResizeGesture | null = null;
   private readonly instanceId: number = nextEditorViewModelInstanceId++;
 
   constructor(private readonly contextProvider: () => common.Context) {}
@@ -330,6 +346,7 @@ export class DrawingEditorViewModel {
 
     this.cancelStroke();
     this.cancelSelectionMove();
+    this.cancelStrokeResize();
     const operationStartedAt = Date.now();
     const beforeStrokeCount = this.strokes.length;
     const beforePointCount = this.countStrokePoints(this.strokes);
@@ -380,6 +397,7 @@ export class DrawingEditorViewModel {
 
     this.cancelStroke();
     this.cancelSelectionMove();
+    this.cancelStrokeResize();
     const operationStartedAt = Date.now();
     const beforeStrokeCount = this.strokes.length;
     const beforePointCount = this.countStrokePoints(this.strokes);
@@ -482,6 +500,7 @@ export class DrawingEditorViewModel {
     this.cancelShapeDraft();
     this.cancelLassoSelection();
     this.cancelSelectionMove();
+    this.cancelStrokeResize();
     if (nextSetting.tool !== 'edit') {
       this.clearElementSelection();
     }
@@ -532,12 +551,22 @@ export class DrawingEditorViewModel {
     return this.cloneSelectionTargets(this.selectedStrokeTargets);
   }
 
+  getSelectedStrokeResizeBounds(): BoundingBox | null {
+    return this.getSelectionBoundsFromTargets(this.selectedStrokeTargets);
+  }
+
   getSelectionTargets(): SelectionTarget[] {
     return this.buildSelectionTargets();
   }
 
   hitTestSelection(point: StrokePoint, hitTolerance: number): SelectionHitResult {
     return SelectionController.hitTestTargets(this.buildSelectionTargets(), point, hitTolerance);
+  }
+
+  clearSelection(): void {
+    this.clearSelectionState();
+    this.lassoDraftPath = [];
+    this.appendDebugEvent('selection', 'clear');
   }
 
   getSelectionVersion(): number {
@@ -598,6 +627,7 @@ export class DrawingEditorViewModel {
     }
     this.elementEditGesture = null;
     this.selectionMoveGesture = null;
+    this.strokeResizeGesture = null;
     this.selectedElementId = '';
     this.selectedElementIds = [];
     this.selectedStrokeTargets = [];
@@ -661,6 +691,7 @@ export class DrawingEditorViewModel {
     this.clearEraseState();
     this.elementEditGesture = null;
     this.selectionMoveGesture = null;
+    this.strokeResizeGesture = null;
     this.lassoDraftPath = [this.clonePoint(point)];
     this.appendDebugEvent('lasso', `start x=${Math.round(point.x)} y=${Math.round(point.y)}`);
   }
@@ -837,6 +868,132 @@ export class DrawingEditorViewModel {
     this.selectedElementId = this.selectedElementIds.length > 0 ? this.selectedElementIds[0] : '';
     this.selectionVersion += 1;
     this.appendDebugEvent('selectionMove', 'cancelled');
+  }
+
+  beginStrokeResizeMode(): BoundingBox | null {
+    const resizeBounds = this.getSelectedStrokeResizeBounds();
+    if (resizeBounds === null) {
+      return null;
+    }
+
+    const hadElementSelection = this.selectedElementIds.length > 0;
+    this.cancelStroke();
+    this.cancelShapeDraft();
+    this.clearEraseState();
+    this.cancelSelectionMove();
+    this.cancelElementEditGesture();
+    this.selectedElementId = '';
+    this.selectedElementIds = [];
+    this.lassoDraftPath = [];
+    this.elementEditGesture = null;
+    if (hadElementSelection) {
+      this.selectionVersion += 1;
+    }
+    this.appendDebugEvent('strokeResize', 'mode start');
+    return resizeBounds;
+  }
+
+  beginStrokeResize(handle: ResizeHandle): boolean {
+    const originalStrokeRecords = this.getSelectedStrokeRecords();
+    if (originalStrokeRecords.length === 0) {
+      return false;
+    }
+
+    const originalBounds = this.getSelectionBoundsFromTargets(this.selectedStrokeTargets);
+    if (originalBounds === null ||
+      originalBounds.maxX - originalBounds.minX <= 0 ||
+      originalBounds.maxY - originalBounds.minY <= 0) {
+      return false;
+    }
+
+    this.cancelStroke();
+    this.cancelShapeDraft();
+    this.clearEraseState();
+    this.lassoDraftPath = [];
+    this.elementEditGesture = null;
+    this.selectionMoveGesture = null;
+    this.strokeResizeGesture = {
+      handle,
+      currentBounds: this.cloneBoundingBox(originalBounds),
+      originalBounds: this.cloneBoundingBox(originalBounds),
+      originalStrokeRecords: originalStrokeRecords.map((record: IndexedStrokeRecord): IndexedStrokeRecord =>
+        this.cloneIndexedStrokeRecord(record)),
+      originalTargets: this.cloneSelectionTargets(this.selectedStrokeTargets)
+    };
+    this.appendDebugEvent('strokeResize', `start handle=${handle} strokes=${originalStrokeRecords.length}`);
+    return true;
+  }
+
+  updateStrokeResize(point: StrokePoint, bounds: ElementBounds): boolean {
+    if (this.strokeResizeGesture === null) {
+      return false;
+    }
+
+    const nextBounds = this.buildStrokeResizeBounds(
+      this.strokeResizeGesture.originalBounds,
+      this.strokeResizeGesture.handle,
+      point,
+      bounds
+    );
+    if (this.areBoundingBoxesEquivalent(nextBounds, this.strokeResizeGesture.currentBounds)) {
+      return false;
+    }
+
+    this.applyStrokeResizeBounds(nextBounds);
+    return true;
+  }
+
+  finishStrokeResize(): boolean {
+    if (this.strokeResizeGesture === null) {
+      return false;
+    }
+
+    const gesture = this.strokeResizeGesture;
+    this.strokeResizeGesture = null;
+    if (this.areBoundingBoxesEquivalent(gesture.originalBounds, gesture.currentBounds)) {
+      this.replaceStrokeRecordsInMemory(gesture.originalStrokeRecords);
+      this.applyMovedStrokeRecordsToSpatialIndex(gesture.originalStrokeRecords);
+      this.selectedStrokeTargets = this.cloneSelectionTargets(gesture.originalTargets);
+      this.selectionVersion += 1;
+      this.appendDebugEvent('strokeResize', 'finish noChange');
+      return false;
+    }
+
+    const resizedStrokeRecords = this.scaleStrokeRecords(
+      gesture.originalStrokeRecords,
+      gesture.originalBounds,
+      gesture.currentBounds
+    );
+    this.undoRedoController.recordDelta(
+      gesture.originalStrokeRecords,
+      resizedStrokeRecords,
+      'resize',
+      [],
+      [],
+      this.getSelectionSnapshotFromTargets(gesture.originalTargets),
+      this.getCurrentSelectionSnapshot()
+    );
+    this.markPartialRenderInvalidation('resize', gesture.originalStrokeRecords, resizedStrokeRecords);
+    this.changeSequence += 1;
+    this.persistenceStatus = 'pending stroke resize save';
+    this.schedulePersistCurrentStrokes('strokeResize', 0);
+    this.errorMessage = '';
+    this.appendDebugEvent('strokeResize', 'finish');
+    return true;
+  }
+
+  cancelStrokeResize(): void {
+    if (this.strokeResizeGesture === null) {
+      return;
+    }
+
+    const gesture = this.strokeResizeGesture;
+    this.strokeResizeGesture = null;
+    this.replaceStrokeRecordsInMemory(gesture.originalStrokeRecords);
+    this.applyMovedStrokeRecordsToSpatialIndex(gesture.originalStrokeRecords);
+    this.selectedStrokeTargets = this.cloneSelectionTargets(gesture.originalTargets);
+    this.selectionVersion += 1;
+    this.appendDebugEvent('strokeResize', 'cancelled');
   }
 
   beginElementEditGesture(point: StrokePoint, bounds: ElementBounds, hitTolerance: number): boolean {
@@ -1716,6 +1873,26 @@ export class DrawingEditorViewModel {
         point: { x: element.x + element.width, y: element.y + element.height }
       }
     ];
+    if (element.type !== 'text') {
+      handles.push(
+        {
+          kind: 'resizeTop',
+          point: { x: element.x + element.width / 2, y: element.y }
+        },
+        {
+          kind: 'resizeRight',
+          point: { x: element.x + element.width, y: element.y + element.height / 2 }
+        },
+        {
+          kind: 'resizeBottom',
+          point: { x: element.x + element.width / 2, y: element.y + element.height }
+        },
+        {
+          kind: 'resizeLeft',
+          point: { x: element.x, y: element.y + element.height / 2 }
+        }
+      );
+    }
 
     for (const handle of handles) {
       if (this.isPointNearGeometryPoint(point, handle.point, hitTolerance)) {
@@ -1744,9 +1921,13 @@ export class DrawingEditorViewModel {
       case 'lineEnd':
         return this.buildLineEndpointEditedElement(gesture, point, bounds);
       case 'resizeTopLeft':
+      case 'resizeTop':
       case 'resizeTopRight':
+      case 'resizeRight':
       case 'resizeBottomLeft':
+      case 'resizeBottom':
       case 'resizeBottomRight':
+      case 'resizeLeft':
       case 'resizeTextLeft':
       case 'resizeTextRight':
         return this.buildResizedElement(gesture, point, bounds);
@@ -1896,10 +2077,18 @@ export class DrawingEditorViewModel {
     switch (kind) {
       case 'resizeTopLeft':
         return this.normalizeFrame(clampedX, clampedY, right, bottom);
+      case 'resizeTop':
+        return this.normalizeFrame(left, clampedY, right, bottom);
       case 'resizeTopRight':
         return this.normalizeFrame(left, clampedY, clampedX, bottom);
+      case 'resizeRight':
+        return this.normalizeFrame(left, top, clampedX, bottom);
       case 'resizeBottomLeft':
         return this.normalizeFrame(clampedX, top, right, clampedY);
+      case 'resizeBottom':
+        return this.normalizeFrame(left, top, right, clampedY);
+      case 'resizeLeft':
+        return this.normalizeFrame(clampedX, top, right, bottom);
       case 'resizeTextLeft':
       case 'resizeTextRight':
         return {
@@ -2170,6 +2359,15 @@ export class DrawingEditorViewModel {
       canMove: target.canMove,
       canShowMenu: target.canShowMenu
     };
+  }
+
+  private getSelectionBoundsFromTargets(targets: SelectionTarget[]): BoundingBox | null {
+    let bounds: BoundingBox | null = null;
+    for (const target of targets) {
+      bounds = mergeBoundingBoxes(bounds, target.bounds);
+    }
+
+    return bounds;
   }
 
   private getSelectionTargetKindForElement(element: CanvasElement): SelectionTargetKind {
@@ -2645,6 +2843,156 @@ export class DrawingEditorViewModel {
       maxX: bounds.maxX + offsetX,
       maxY: bounds.maxY + offsetY
     };
+  }
+
+  private buildStrokeResizeBounds(
+    originalBounds: BoundingBox,
+    handle: ResizeHandle,
+    point: StrokePoint,
+    bounds: ElementBounds
+  ): BoundingBox {
+    const clampedX = this.clampNumber(point.x, 0, Math.max(0, bounds.width));
+    const clampedY = this.clampNumber(point.y, 0, Math.max(0, bounds.height));
+    let minX = originalBounds.minX;
+    let minY = originalBounds.minY;
+    let maxX = originalBounds.maxX;
+    let maxY = originalBounds.maxY;
+
+    if (handle === 'topLeft' || handle === 'left' || handle === 'bottomLeft') {
+      minX = Math.min(clampedX, originalBounds.maxX - MIN_STROKE_RESIZE_BOUNDS_SIZE);
+    }
+    if (handle === 'topRight' || handle === 'right' || handle === 'bottomRight') {
+      maxX = Math.max(clampedX, originalBounds.minX + MIN_STROKE_RESIZE_BOUNDS_SIZE);
+    }
+    if (handle === 'topLeft' || handle === 'top' || handle === 'topRight') {
+      minY = Math.min(clampedY, originalBounds.maxY - MIN_STROKE_RESIZE_BOUNDS_SIZE);
+    }
+    if (handle === 'bottomLeft' || handle === 'bottom' || handle === 'bottomRight') {
+      maxY = Math.max(clampedY, originalBounds.minY + MIN_STROKE_RESIZE_BOUNDS_SIZE);
+    }
+
+    return {
+      minX: this.clampNumber(minX, 0, Math.max(0, bounds.width - MIN_STROKE_RESIZE_BOUNDS_SIZE)),
+      minY: this.clampNumber(minY, 0, Math.max(0, bounds.height - MIN_STROKE_RESIZE_BOUNDS_SIZE)),
+      maxX: this.clampNumber(maxX, MIN_STROKE_RESIZE_BOUNDS_SIZE, Math.max(MIN_STROKE_RESIZE_BOUNDS_SIZE, bounds.width)),
+      maxY: this.clampNumber(maxY, MIN_STROKE_RESIZE_BOUNDS_SIZE, Math.max(MIN_STROKE_RESIZE_BOUNDS_SIZE, bounds.height))
+    };
+  }
+
+  private applyStrokeResizeBounds(nextBounds: BoundingBox): void {
+    if (this.strokeResizeGesture === null) {
+      return;
+    }
+
+    this.strokeResizeGesture.currentBounds = this.cloneBoundingBox(nextBounds);
+    const resizedStrokeRecords = this.scaleStrokeRecords(
+      this.strokeResizeGesture.originalStrokeRecords,
+      this.strokeResizeGesture.originalBounds,
+      nextBounds
+    );
+    this.replaceStrokeRecordsInMemory(resizedStrokeRecords);
+    this.applyMovedStrokeRecordsToSpatialIndex(resizedStrokeRecords);
+    this.selectedStrokeTargets = this.scaleSelectionTargets(
+      this.strokeResizeGesture.originalTargets,
+      this.strokeResizeGesture.originalBounds,
+      nextBounds
+    );
+    this.selectionVersion += 1;
+  }
+
+  private scaleStrokeRecords(
+    records: IndexedStrokeRecord[],
+    sourceBounds: BoundingBox,
+    targetBounds: BoundingBox
+  ): IndexedStrokeRecord[] {
+    return records.map((record: IndexedStrokeRecord): IndexedStrokeRecord => ({
+      index: record.index,
+      stroke: this.scaleStroke(record.stroke, sourceBounds, targetBounds)
+    }));
+  }
+
+  private scaleStroke(stroke: Stroke, sourceBounds: BoundingBox, targetBounds: BoundingBox): Stroke {
+    const scaleX = (targetBounds.maxX - targetBounds.minX) / Math.max(1, sourceBounds.maxX - sourceBounds.minX);
+    const scaleY = (targetBounds.maxY - targetBounds.minY) / Math.max(1, sourceBounds.maxY - sourceBounds.minY);
+    const widthScale = Math.sqrt(Math.max(0.01, Math.abs(scaleX * scaleY)));
+    return {
+      ...this.cloneStroke(stroke),
+      points: stroke.points.map((point: StrokePoint): StrokePoint =>
+        this.scalePoint(point, sourceBounds, targetBounds, scaleX, scaleY)),
+      style: {
+        ...stroke.style,
+        width: Math.max(MIN_STROKE_RESIZE_WIDTH, stroke.style.width * widthScale)
+      },
+      updatedAt: now()
+    };
+  }
+
+  private scaleSelectionTargets(
+    targets: SelectionTarget[],
+    sourceBounds: BoundingBox,
+    targetBounds: BoundingBox
+  ): SelectionTarget[] {
+    const scaleX = (targetBounds.maxX - targetBounds.minX) / Math.max(1, sourceBounds.maxX - sourceBounds.minX);
+    const scaleY = (targetBounds.maxY - targetBounds.minY) / Math.max(1, sourceBounds.maxY - sourceBounds.minY);
+    return targets.map((target: SelectionTarget): SelectionTarget => ({
+      id: target.id,
+      kind: target.kind,
+      bounds: this.scaleBoundingBox(target.bounds, sourceBounds, targetBounds, scaleX, scaleY),
+      outline: target.outline.map((point: StrokePoint): StrokePoint =>
+        this.scalePoint(point, sourceBounds, targetBounds, scaleX, scaleY)),
+      strokeIds: [...target.strokeIds],
+      elementId: target.elementId,
+      canMove: target.canMove,
+      canShowMenu: target.canShowMenu
+    }));
+  }
+
+  private scalePoint(
+    point: StrokePoint,
+    sourceBounds: BoundingBox,
+    targetBounds: BoundingBox,
+    scaleX: number,
+    scaleY: number
+  ): StrokePoint {
+    return {
+      x: targetBounds.minX + (point.x - sourceBounds.minX) * scaleX,
+      y: targetBounds.minY + (point.y - sourceBounds.minY) * scaleY,
+      t: point.t,
+      pressure: point.pressure
+    };
+  }
+
+  private scaleBoundingBox(
+    bounds: BoundingBox,
+    sourceBounds: BoundingBox,
+    targetBounds: BoundingBox,
+    scaleX: number,
+    scaleY: number
+  ): BoundingBox {
+    const topLeft = this.scalePoint({ x: bounds.minX, y: bounds.minY, t: 0 }, sourceBounds, targetBounds, scaleX, scaleY);
+    const bottomRight = this.scalePoint({ x: bounds.maxX, y: bounds.maxY, t: 0 }, sourceBounds, targetBounds, scaleX, scaleY);
+    return {
+      minX: Math.min(topLeft.x, bottomRight.x),
+      minY: Math.min(topLeft.y, bottomRight.y),
+      maxX: Math.max(topLeft.x, bottomRight.x),
+      maxY: Math.max(topLeft.y, bottomRight.y)
+    };
+  }
+
+  private cloneBoundingBox(bounds: BoundingBox): BoundingBox {
+    return {
+      minX: bounds.minX,
+      minY: bounds.minY,
+      maxX: bounds.maxX,
+      maxY: bounds.maxY
+    };
+  }
+
+  private areBoundingBoxesEquivalent(left: BoundingBox, right: BoundingBox): boolean {
+    return Math.abs(left.minX - right.minX) < 0.01 &&
+      Math.abs(left.minY - right.minY) < 0.01 &&
+      Math.abs(left.maxX - right.maxX) < 0.01 &&
+      Math.abs(left.maxY - right.maxY) < 0.01;
   }
 
   private clampSelectionMoveOffset(value: number, firstLimit: number, secondLimit: number): number {
