@@ -35,6 +35,7 @@ export struct StrokeSelectionOverlay {
   private lastDirtyRect: SelectionDirtyRect | null = null;
   private lastCanvasWidth: number = 0;
   private lastCanvasHeight: number = 0;
+  private shouldClearFullCanvasOnNextRedraw: boolean = false;
   private readonly renderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
   private readonly selectionContext: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.renderingSettings);
 
@@ -61,6 +62,9 @@ export struct StrokeSelectionOverlay {
 
   private onGroupsChanged(): void {
     this.outlinePointCount = this.getOutlinePointCount();
+    if (this.paused) {
+      this.shouldClearFullCanvasOnNextRedraw = true;
+    }
     this.redrawSelection();
     if (this.canAnimateSelection()) {
       this.startAnimation();
@@ -70,12 +74,14 @@ export struct StrokeSelectionOverlay {
   }
 
   private onPausedChanged(): void {
+    this.shouldClearFullCanvasOnNextRedraw = true;
     if (this.paused) {
       this.stopAnimation();
       this.redrawSelection();
       return;
     }
 
+    this.redrawSelection();
     if (this.canAnimateSelection()) {
       this.startAnimation();
     }
@@ -113,9 +119,12 @@ export struct StrokeSelectionOverlay {
     const width = this.selectionContext.width;
     const height = this.selectionContext.height;
     const currentDirtyRect = this.getCurrentDirtyRect();
-    const shouldClearFullCanvas = width !== this.lastCanvasWidth || height !== this.lastCanvasHeight;
+    const shouldClearFullCanvas = this.shouldClearFullCanvasOnNextRedraw ||
+      width !== this.lastCanvasWidth || height !== this.lastCanvasHeight;
     if (shouldClearFullCanvas) {
       this.selectionContext.clearRect(0, 0, width, height);
+      this.lastDirtyRect = null;
+      this.shouldClearFullCanvasOnNextRedraw = false;
     } else {
       this.clearDirtyRect(this.mergeDirtyRects(this.lastDirtyRect, currentDirtyRect), width, height);
     }

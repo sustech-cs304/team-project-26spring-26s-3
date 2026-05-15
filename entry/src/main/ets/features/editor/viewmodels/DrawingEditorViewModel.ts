@@ -38,6 +38,8 @@ import { DrawableToolType, ToolSetting } from '../../../domain/entities/ToolSett
 import { StrokeController } from '../controllers/StrokeController';
 import { StrokeSpatialHashIndex } from '../controllers/StrokeSpatialHashIndex';
 import {
+  EditorDeltaLabel,
+  IndexedElementRecord,
   IndexedStrokeRecord,
   UndoRedoApplyResult,
   UndoRedoController,
@@ -102,6 +104,17 @@ interface ElementEditGesture {
   kind: ElementEditGestureKind;
   startPoint: StrokePoint;
   originalElement: CanvasElement;
+}
+
+interface SelectionMoveGesture {
+  startPoint: StrokePoint;
+  currentOffsetX: number;
+  currentOffsetY: number;
+  originalStrokeRecords: IndexedStrokeRecord[];
+  originalElementRecords: IndexedElementRecord[];
+  originalStrokeGroups: SelectedStrokeGroup[];
+  originalElementIds: string[];
+  selectionBounds: BoundingBox;
 }
 
 export interface ImageInsertAsset {
@@ -181,6 +194,7 @@ export class DrawingEditorViewModel {
   private selectedStrokeGroups: SelectedStrokeGroup[] = [];
   private lassoDraftPath: StrokePoint[] = [];
   private elementEditGesture: ElementEditGesture | null = null;
+  private selectionMoveGesture: SelectionMoveGesture | null = null;
   private readonly instanceId: number = nextEditorViewModelInstanceId++;
 
   constructor(private readonly contextProvider: () => common.Context) {}
@@ -306,24 +320,26 @@ export class DrawingEditorViewModel {
     }
 
     this.cancelStroke();
+    this.cancelSelectionMove();
     const operationStartedAt = Date.now();
     const beforeStrokeCount = this.strokes.length;
     const beforePointCount = this.countStrokePoints(this.strokes);
     this.appendDebugEvent('undo', `requested count=${this.strokes.length} history=${this.describeHistoryState()}`);
     const undoResult: UndoRedoApplyResult = EditorPerformanceTrace.measureSync(
       'undo.controller',
-      () => this.undoRedoController.undo(this.strokes),
+      () => this.undoRedoController.undo(this.strokes, this.elements),
       `beforeStrokes=${beforeStrokeCount} beforePoints=${beforePointCount}`,
       6
     );
-    if (undoResult.removed.length === 0 && undoResult.added.length === 0) {
+    if (!this.hasUndoRedoChanges(undoResult)) {
       this.appendDebugEvent('undo', 'skipped noChange');
       return;
     }
 
     const applyStartedAt = Date.now();
     this.strokes = undoResult.strokes;
-    this.clearStrokeSelection();
+    this.elements = undoResult.elements;
+    this.clearSelectionState();
     this.lassoDraftPath = [];
     this.applyStrokeSpatialIndexMutation(undoResult.removed, undoResult.added);
     this.markPartialRenderInvalidation('undo', undoResult.removed, undoResult.added);
@@ -354,24 +370,26 @@ export class DrawingEditorViewModel {
     }
 
     this.cancelStroke();
+    this.cancelSelectionMove();
     const operationStartedAt = Date.now();
     const beforeStrokeCount = this.strokes.length;
     const beforePointCount = this.countStrokePoints(this.strokes);
     this.appendDebugEvent('redo', `requested count=${this.strokes.length} history=${this.describeHistoryState()}`);
     const redoResult: UndoRedoApplyResult = EditorPerformanceTrace.measureSync(
       'redo.controller',
-      () => this.undoRedoController.redo(this.strokes),
+      () => this.undoRedoController.redo(this.strokes, this.elements),
       `beforeStrokes=${beforeStrokeCount} beforePoints=${beforePointCount}`,
       6
     );
-    if (redoResult.removed.length === 0 && redoResult.added.length === 0) {
+    if (!this.hasUndoRedoChanges(redoResult)) {
       this.appendDebugEvent('redo', 'skipped noChange');
       return;
     }
 
     const applyStartedAt = Date.now();
     this.strokes = redoResult.strokes;
-    this.clearStrokeSelection();
+    this.elements = redoResult.elements;
+    this.clearSelectionState();
     this.lassoDraftPath = [];
     this.applyStrokeSpatialIndexMutation(redoResult.removed, redoResult.added);
     this.markPartialRenderInvalidation('redo', redoResult.removed, redoResult.added);
@@ -449,6 +467,7 @@ export class DrawingEditorViewModel {
     }
     this.cancelShapeDraft();
     this.cancelLassoSelection();
+    this.cancelSelectionMove();
     if (nextSetting.tool !== 'edit') {
       this.clearElementSelection();
     }
@@ -556,6 +575,7 @@ export class DrawingEditorViewModel {
       this.appendDebugEvent('clearElementSelection', `element=${this.selectedElementId}`);
     }
     this.elementEditGesture = null;
+    this.selectionMoveGesture = null;
     this.selectedElementId = '';
     this.selectedElementIds = [];
     this.selectedStrokeGroups = [];
@@ -590,11 +610,16 @@ export class DrawingEditorViewModel {
       return null;
     }
 
+    const selectedElementIndex = this.getElementIndexById(selectedElement.id);
     this.elements = this.elements.filter((element: CanvasElement): boolean => element.id !== selectedElement.id);
     this.selectedElementIds = this.selectedElementIds.filter((elementId: string): boolean => elementId !== selectedElement.id);
     this.selectedElementId = this.selectedElementIds.length > 0 ? this.selectedElementIds[0] : '';
     this.elementEditGesture = null;
     this.selectionVersion += 1;
+    this.recordElementDelta('elementDelete', [{
+      index: selectedElementIndex,
+      element: this.cloneElement(selectedElement)
+    }], []);
     this.changeSequence += 1;
     this.persistenceStatus = 'pending element delete save';
     this.schedulePersistCurrentStrokes('elementDelete', 0);
@@ -612,6 +637,7 @@ export class DrawingEditorViewModel {
     this.cancelShapeDraft();
     this.clearEraseState();
     this.elementEditGesture = null;
+    this.selectionMoveGesture = null;
     this.lassoDraftPath = [this.clonePoint(point)];
     this.appendDebugEvent('lasso', `start x=${Math.round(point.x)} y=${Math.round(point.y)}`);
   }
@@ -657,6 +683,151 @@ export class DrawingEditorViewModel {
     this.lassoDraftPath = [];
   }
 
+  hasSelectionMoveHit(point: StrokePoint, hitTolerance: number): boolean {
+    if (this.selectedStrokeGroups.length === 0 && this.selectedElementIds.length === 0) {
+      return false;
+    }
+
+    for (const group of this.selectedStrokeGroups) {
+      if (this.isPointInBoundingBox(point, expandBoundingBox(group.bounds, hitTolerance))) {
+        return true;
+      }
+    }
+
+    const selectedElements = this.getSelectedElementsInZOrderDescending();
+    for (const element of selectedElements) {
+      if (this.isPointInBoundingBox(point, expandBoundingBox(this.getElementBoundingBox(element), hitTolerance))) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  beginSelectionMove(point: StrokePoint, bounds: ElementBounds, hitTolerance: number): boolean {
+    if (!this.hasSelectionMoveHit(point, hitTolerance)) {
+      return false;
+    }
+
+    const originalStrokeRecords = this.getSelectedStrokeRecords();
+    const originalElementRecords = this.getSelectedElementRecords();
+    if (originalStrokeRecords.length === 0 && originalElementRecords.length === 0) {
+      return false;
+    }
+
+    const selectionBounds = this.getSelectionBoundsFromRecords(originalStrokeRecords, originalElementRecords);
+    if (selectionBounds === null) {
+      return false;
+    }
+
+    this.cancelStroke();
+    this.cancelShapeDraft();
+    this.clearEraseState();
+    this.lassoDraftPath = [];
+    this.elementEditGesture = null;
+    this.selectionMoveGesture = {
+      startPoint: this.clonePoint(point),
+      currentOffsetX: 0,
+      currentOffsetY: 0,
+      originalStrokeRecords: originalStrokeRecords.map((record: IndexedStrokeRecord): IndexedStrokeRecord =>
+        this.cloneIndexedStrokeRecord(record)),
+      originalElementRecords: originalElementRecords.map((record: IndexedElementRecord): IndexedElementRecord =>
+        this.cloneIndexedElementRecord(record)),
+      originalStrokeGroups: this.cloneSelectedStrokeGroups(this.selectedStrokeGroups),
+      originalElementIds: [...this.selectedElementIds],
+      selectionBounds
+    };
+    this.appendDebugEvent(
+      'selectionMove',
+      `start strokes=${originalStrokeRecords.length} elements=${originalElementRecords.length}`
+    );
+    return true;
+  }
+
+  updateSelectionMove(point: StrokePoint, bounds: ElementBounds): boolean {
+    if (this.selectionMoveGesture === null) {
+      return false;
+    }
+
+    const rawOffsetX = point.x - this.selectionMoveGesture.startPoint.x;
+    const rawOffsetY = point.y - this.selectionMoveGesture.startPoint.y;
+    const offsetX = this.clampSelectionMoveOffset(
+      rawOffsetX,
+      -this.selectionMoveGesture.selectionBounds.minX,
+      bounds.width - this.selectionMoveGesture.selectionBounds.maxX
+    );
+    const offsetY = this.clampSelectionMoveOffset(
+      rawOffsetY,
+      -this.selectionMoveGesture.selectionBounds.minY,
+      bounds.height - this.selectionMoveGesture.selectionBounds.maxY
+    );
+
+    if (offsetX === this.selectionMoveGesture.currentOffsetX && offsetY === this.selectionMoveGesture.currentOffsetY) {
+      return false;
+    }
+
+    this.applySelectionMoveOffset(offsetX, offsetY);
+    return true;
+  }
+
+  finishSelectionMove(): boolean {
+    if (this.selectionMoveGesture === null) {
+      return false;
+    }
+
+    const gesture = this.selectionMoveGesture;
+    this.selectionMoveGesture = null;
+    if (gesture.currentOffsetX === 0 && gesture.currentOffsetY === 0) {
+      this.appendDebugEvent('selectionMove', 'finish noChange');
+      return false;
+    }
+
+    const movedStrokeRecords = this.translateStrokeRecords(
+      gesture.originalStrokeRecords,
+      gesture.currentOffsetX,
+      gesture.currentOffsetY
+    );
+    const movedElementRecords = this.translateElementRecords(
+      gesture.originalElementRecords,
+      gesture.currentOffsetX,
+      gesture.currentOffsetY
+    );
+    this.undoRedoController.recordDelta(
+      gesture.originalStrokeRecords,
+      movedStrokeRecords,
+      'move',
+      gesture.originalElementRecords,
+      movedElementRecords
+    );
+    this.markPartialRenderInvalidation('move', gesture.originalStrokeRecords, movedStrokeRecords);
+    this.changeSequence += 1;
+    this.persistenceStatus = 'pending selection move save';
+    this.schedulePersistCurrentStrokes('selectionMove', 0);
+    this.errorMessage = '';
+    this.appendDebugEvent(
+      'selectionMove',
+      `finish dx=${Math.round(gesture.currentOffsetX)} dy=${Math.round(gesture.currentOffsetY)}`
+    );
+    return true;
+  }
+
+  cancelSelectionMove(): void {
+    if (this.selectionMoveGesture === null) {
+      return;
+    }
+
+    const gesture = this.selectionMoveGesture;
+    this.selectionMoveGesture = null;
+    this.replaceStrokeRecordsInMemory(gesture.originalStrokeRecords);
+    this.replaceElementRecordsInMemory(gesture.originalElementRecords);
+    this.applyMovedStrokeRecordsToSpatialIndex(gesture.originalStrokeRecords);
+    this.selectedStrokeGroups = this.cloneSelectedStrokeGroups(gesture.originalStrokeGroups);
+    this.selectedElementIds = [...gesture.originalElementIds];
+    this.selectedElementId = this.selectedElementIds.length > 0 ? this.selectedElementIds[0] : '';
+    this.selectionVersion += 1;
+    this.appendDebugEvent('selectionMove', 'cancelled');
+  }
+
   beginElementEditGesture(point: StrokePoint, bounds: ElementBounds, hitTolerance: number): boolean {
     if (this.pageId.length === 0) {
       return false;
@@ -664,6 +835,7 @@ export class DrawingEditorViewModel {
 
     this.cancelStroke();
     this.cancelShapeDraft();
+    this.cancelSelectionMove();
 
     const selectedElements = this.getSelectedElementsInZOrderDescending();
     for (const selectedElement of selectedElements) {
@@ -731,6 +903,14 @@ export class DrawingEditorViewModel {
     }
 
     this.selectedElementId = editedElement.id;
+    const elementIndex = this.getElementIndexById(editedElement.id);
+    this.recordElementDelta('elementEdit', [{
+      index: elementIndex,
+      element: this.cloneElement(gesture.originalElement)
+    }], [{
+      index: elementIndex,
+      element: this.cloneElement(editedElement)
+    }]);
     this.changeSequence += 1;
     this.persistenceStatus = 'pending element edit save';
     this.schedulePersistCurrentStrokes('elementEdit', 0);
@@ -785,7 +965,12 @@ export class DrawingEditorViewModel {
       backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR
     };
 
+    const insertionIndex = this.elements.length;
     this.elements = [...this.elements, nextElement];
+    this.recordElementDelta('elementInsert', [], [{
+      index: insertionIndex,
+      element: this.cloneElement(nextElement)
+    }]);
     this.changeSequence += 1;
     this.persistenceStatus = 'pending text save';
     this.schedulePersistCurrentStrokes('text', 0);
@@ -833,7 +1018,12 @@ export class DrawingEditorViewModel {
       opacity: 1
     };
 
+    const insertionIndex = this.elements.length;
     this.elements = [...this.elements, nextElement];
+    this.recordElementDelta('elementInsert', [], [{
+      index: insertionIndex,
+      element: this.cloneElement(nextElement)
+    }]);
     this.changeSequence += 1;
     this.persistenceStatus = 'pending image save';
     this.schedulePersistCurrentStrokes('image', 0);
@@ -897,7 +1087,12 @@ export class DrawingEditorViewModel {
       return null;
     }
 
+    const insertionIndex = this.elements.length;
     this.elements = [...this.elements, nextElement];
+    this.recordElementDelta('elementInsert', [], [{
+      index: insertionIndex,
+      element: this.cloneElement(nextElement)
+    }]);
     this.changeSequence += 1;
     this.persistenceStatus = 'pending shape save';
     this.schedulePersistCurrentStrokes('shape', 0);
@@ -976,6 +1171,7 @@ export class DrawingEditorViewModel {
     }
 
     let changed = false;
+    let originalTextElement: TextCanvasElement | null = null;
     let updatedTextElement: TextCanvasElement | null = null;
     const timestamp = now();
     this.elements = this.elements.map((element: CanvasElement): CanvasElement => {
@@ -991,6 +1187,7 @@ export class DrawingEditorViewModel {
       }
 
       changed = true;
+      originalTextElement = this.cloneTextElement(element);
       const nextElement: TextCanvasElement = {
         id: element.id,
         pageId: element.pageId,
@@ -1016,6 +1213,16 @@ export class DrawingEditorViewModel {
       return null;
     }
 
+    if (originalTextElement !== null && updatedTextElement !== null) {
+      const elementIndex = this.getElementIndexById(elementId);
+      this.recordElementDelta('textEdit', [{
+        index: elementIndex,
+        element: this.cloneElement(originalTextElement)
+      }], [{
+        index: elementIndex,
+        element: this.cloneElement(updatedTextElement)
+      }]);
+    }
     this.changeSequence += 1;
     this.persistenceStatus = 'pending text edit save';
     this.schedulePersistCurrentStrokes('textEdit', 0);
@@ -1187,16 +1394,28 @@ export class DrawingEditorViewModel {
     this.strokeController.cancelStroke();
     this.clearEraseState();
     this.shapeDraft = null;
-    this.selectedElementId = '';
-    this.selectedElementIds = [];
-    this.selectedStrokeGroups = [];
+    this.selectionMoveGesture = null;
+    this.clearSelectionState();
     this.lassoDraftPath = [];
-    this.selectionVersion += 1;
   }
 
   private clearStrokeSelection(): void {
     this.selectedStrokeGroups = [];
     this.selectionVersion += 1;
+  }
+
+  private clearSelectionState(): void {
+    this.elementEditGesture = null;
+    this.selectionMoveGesture = null;
+    this.selectedElementId = '';
+    this.selectedElementIds = [];
+    this.selectedStrokeGroups = [];
+    this.selectionVersion += 1;
+  }
+
+  private hasUndoRedoChanges(result: UndoRedoApplyResult): boolean {
+    return result.removed.length > 0 || result.added.length > 0 ||
+      result.removedElements.length > 0 || result.addedElements.length > 0;
   }
 
   private schedulePersistCurrentStrokes(reason: string, delayMs: number = SAVE_DEBOUNCE_MS): void {
@@ -1893,6 +2112,265 @@ export class DrawingEditorViewModel {
     });
   }
 
+  private getSelectedStrokeRecords(): IndexedStrokeRecord[] {
+    const selectedStrokeIds = this.getSelectedStrokeIdSet();
+    if (selectedStrokeIds.size === 0) {
+      return [];
+    }
+
+    const records: IndexedStrokeRecord[] = [];
+    for (let index = 0; index < this.strokes.length; index += 1) {
+      const stroke = this.strokes[index];
+      if (selectedStrokeIds.has(stroke.id)) {
+        records.push({
+          index,
+          stroke: this.cloneStroke(stroke)
+        });
+      }
+    }
+
+    return records;
+  }
+
+  private getSelectedElementRecords(): IndexedElementRecord[] {
+    if (this.selectedElementIds.length === 0) {
+      return [];
+    }
+
+    const selectedElementIds = new Set<string>(this.selectedElementIds);
+    const records: IndexedElementRecord[] = [];
+    for (let index = 0; index < this.elements.length; index += 1) {
+      const element = this.elements[index];
+      if (selectedElementIds.has(element.id)) {
+        records.push({
+          index,
+          element: this.cloneElement(element)
+        });
+      }
+    }
+
+    return records;
+  }
+
+  private getSelectedStrokeIdSet(): Set<string> {
+    const selectedStrokeIds = new Set<string>();
+    for (const group of this.selectedStrokeGroups) {
+      for (const strokeId of group.strokeIds) {
+        selectedStrokeIds.add(strokeId);
+      }
+    }
+
+    return selectedStrokeIds;
+  }
+
+  private getSelectionBoundsFromRecords(
+    strokeRecords: IndexedStrokeRecord[],
+    elementRecords: IndexedElementRecord[]
+  ): BoundingBox | null {
+    let bounds: BoundingBox | null = null;
+    for (const record of strokeRecords) {
+      bounds = mergeBoundingBoxes(bounds, getStrokeRenderBoundingBox(record.stroke));
+    }
+
+    for (const record of elementRecords) {
+      bounds = mergeBoundingBoxes(bounds, this.getElementBoundingBox(record.element));
+    }
+
+    return bounds;
+  }
+
+  private applySelectionMoveOffset(offsetX: number, offsetY: number): void {
+    if (this.selectionMoveGesture === null) {
+      return;
+    }
+
+    this.selectionMoveGesture.currentOffsetX = offsetX;
+    this.selectionMoveGesture.currentOffsetY = offsetY;
+    const movedStrokeRecords = this.translateStrokeRecords(
+      this.selectionMoveGesture.originalStrokeRecords,
+      offsetX,
+      offsetY
+    );
+    const movedElementRecords = this.translateElementRecords(
+      this.selectionMoveGesture.originalElementRecords,
+      offsetX,
+      offsetY
+    );
+    this.replaceStrokeRecordsInMemory(movedStrokeRecords);
+    this.replaceElementRecordsInMemory(movedElementRecords);
+    this.applyMovedStrokeRecordsToSpatialIndex(movedStrokeRecords);
+    this.selectedStrokeGroups = this.translateSelectedStrokeGroups(
+      this.selectionMoveGesture.originalStrokeGroups,
+      offsetX,
+      offsetY
+    );
+    this.selectedElementIds = [...this.selectionMoveGesture.originalElementIds];
+    this.selectedElementId = this.selectedElementIds.length > 0 ? this.selectedElementIds[0] : '';
+    this.selectionVersion += 1;
+  }
+
+  private translateStrokeRecords(records: IndexedStrokeRecord[], offsetX: number, offsetY: number): IndexedStrokeRecord[] {
+    return records.map((record: IndexedStrokeRecord): IndexedStrokeRecord => {
+      return {
+        index: record.index,
+        stroke: this.translateStroke(record.stroke, offsetX, offsetY)
+      };
+    });
+  }
+
+  private translateElementRecords(
+    records: IndexedElementRecord[],
+    offsetX: number,
+    offsetY: number
+  ): IndexedElementRecord[] {
+    return records.map((record: IndexedElementRecord): IndexedElementRecord => {
+      return {
+        index: record.index,
+        element: this.translateElement(record.element, offsetX, offsetY)
+      };
+    });
+  }
+
+  private replaceStrokeRecordsInMemory(records: IndexedStrokeRecord[]): void {
+    if (records.length === 0) {
+      return;
+    }
+
+    const strokeById = new Map<string, Stroke>();
+    for (const record of records) {
+      strokeById.set(record.stroke.id, this.cloneStroke(record.stroke));
+    }
+
+    this.strokes = this.strokes.map((stroke: Stroke): Stroke => {
+      const movedStroke = strokeById.get(stroke.id);
+      return movedStroke === undefined ? stroke : movedStroke;
+    });
+  }
+
+  private replaceElementRecordsInMemory(records: IndexedElementRecord[]): void {
+    if (records.length === 0) {
+      return;
+    }
+
+    const elementById = new Map<string, CanvasElement>();
+    for (const record of records) {
+      elementById.set(record.element.id, this.cloneElement(record.element));
+    }
+
+    this.elements = this.elements.map((element: CanvasElement): CanvasElement => {
+      const movedElement = elementById.get(element.id);
+      return movedElement === undefined ? element : movedElement;
+    });
+  }
+
+  private applyMovedStrokeRecordsToSpatialIndex(records: IndexedStrokeRecord[]): void {
+    for (const record of records) {
+      this.strokeSpatialIndex.removeStrokeById(record.stroke.id);
+      this.strokeSpatialIndex.upsertStroke(record.stroke);
+    }
+  }
+
+  private translateSelectedStrokeGroups(
+    groups: SelectedStrokeGroup[],
+    offsetX: number,
+    offsetY: number
+  ): SelectedStrokeGroup[] {
+    return groups.map((group: SelectedStrokeGroup): SelectedStrokeGroup => {
+      return {
+        id: group.id,
+        strokeIds: [...group.strokeIds],
+        bounds: this.translateBoundingBox(group.bounds, offsetX, offsetY),
+        outline: group.outline.map((point: StrokePoint): StrokePoint => this.translatePoint(point, offsetX, offsetY))
+      };
+    });
+  }
+
+  private translateStroke(stroke: Stroke, offsetX: number, offsetY: number): Stroke {
+    return {
+      ...this.cloneStroke(stroke),
+      points: stroke.points.map((point: StrokePoint): StrokePoint => this.translatePoint(point, offsetX, offsetY)),
+      updatedAt: now()
+    };
+  }
+
+  private translateElement(element: CanvasElement, offsetX: number, offsetY: number): CanvasElement {
+    if (element.type === 'shape') {
+      return {
+        ...this.cloneShapeElement(element),
+        x: element.x + offsetX,
+        y: element.y + offsetY,
+        geometry: {
+          kind: element.geometry.kind,
+          points: element.geometry.points.map((point: ShapeGeometryPoint): ShapeGeometryPoint => {
+            return {
+              x: point.x + offsetX,
+              y: point.y + offsetY
+            };
+          })
+        },
+        updatedAt: now()
+      };
+    }
+
+    if (element.type === 'image') {
+      return {
+        ...this.cloneImageElement(element),
+        x: element.x + offsetX,
+        y: element.y + offsetY,
+        updatedAt: now()
+      };
+    }
+
+    return {
+      ...this.cloneTextElement(element),
+      x: element.x + offsetX,
+      y: element.y + offsetY,
+      updatedAt: now()
+    };
+  }
+
+  private translatePoint(point: StrokePoint, offsetX: number, offsetY: number): StrokePoint {
+    return {
+      x: point.x + offsetX,
+      y: point.y + offsetY,
+      t: point.t,
+      pressure: point.pressure
+    };
+  }
+
+  private translateBoundingBox(bounds: BoundingBox, offsetX: number, offsetY: number): BoundingBox {
+    return {
+      minX: bounds.minX + offsetX,
+      minY: bounds.minY + offsetY,
+      maxX: bounds.maxX + offsetX,
+      maxY: bounds.maxY + offsetY
+    };
+  }
+
+  private clampSelectionMoveOffset(value: number, firstLimit: number, secondLimit: number): number {
+    const minValue = Math.min(firstLimit, secondLimit);
+    const maxValue = Math.max(firstLimit, secondLimit);
+    return Math.max(minValue, Math.min(maxValue, value));
+  }
+
+  private isPointInBoundingBox(point: StrokePoint, bounds: BoundingBox): boolean {
+    return point.x >= bounds.minX && point.x <= bounds.maxX &&
+      point.y >= bounds.minY && point.y <= bounds.maxY;
+  }
+
+  private recordElementDelta(
+    label: EditorDeltaLabel,
+    removedElements: IndexedElementRecord[],
+    addedElements: IndexedElementRecord[]
+  ): void {
+    this.undoRedoController.recordDelta([], [], label, removedElements, addedElements);
+  }
+
+  private getElementIndexById(elementId: string): number {
+    const elementIndex = this.elements.findIndex((element: CanvasElement): boolean => element.id === elementId);
+    return elementIndex < 0 ? this.elements.length : elementIndex;
+  }
+
   private getStrokesInsideLasso(lassoPath: StrokePoint[], hitTolerance: number): Stroke[] {
     const lassoBounds = getBoundingBox(lassoPath);
     if (lassoBounds === null) {
@@ -2431,6 +2909,20 @@ export class DrawingEditorViewModel {
         outline: group.outline.map((point: StrokePoint): StrokePoint => this.clonePoint(point))
       };
     });
+  }
+
+  private cloneIndexedStrokeRecord(record: IndexedStrokeRecord): IndexedStrokeRecord {
+    return {
+      index: record.index,
+      stroke: this.cloneStroke(record.stroke)
+    };
+  }
+
+  private cloneIndexedElementRecord(record: IndexedElementRecord): IndexedElementRecord {
+    return {
+      index: record.index,
+      element: this.cloneElement(record.element)
+    };
   }
 
   private getSelectedElementsInZOrderDescending(): CanvasElement[] {
