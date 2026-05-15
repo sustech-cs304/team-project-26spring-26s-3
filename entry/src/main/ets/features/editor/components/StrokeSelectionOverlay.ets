@@ -5,7 +5,7 @@ import {
   SELECTION_DASH_WIDTH,
   SelectionDashRenderer
 } from '../controllers/SelectionDashRenderer';
-import { SelectedStrokeGroup } from '../viewmodels/DrawingEditorViewModel';
+import { SelectionTarget } from '../selection/SelectionTypes';
 
 const DASH_ANIMATION_INTERVAL_MS = 64;
 const DASH_ANIMATION_STEP = 2.5;
@@ -21,9 +21,9 @@ interface SelectionDirtyRect {
 
 @Component
 export struct StrokeSelectionOverlay {
-  @Watch('onGroupsChanged')
-  @Prop groups: SelectedStrokeGroup[] = [];
-  @Watch('onGroupsChanged')
+  @Watch('onTargetsChanged')
+  @Prop targets: SelectionTarget[] = [];
+  @Watch('onTargetsChanged')
   @Prop refreshVersion: number = 0;
   @Watch('onPausedChanged')
   @Prop paused: boolean = false;
@@ -60,7 +60,7 @@ export struct StrokeSelectionOverlay {
       .hitTestBehavior(HitTestMode.None)
   }
 
-  private onGroupsChanged(): void {
+  private onTargetsChanged(): void {
     this.outlinePointCount = this.getOutlinePointCount();
     if (this.paused) {
       this.shouldClearFullCanvasOnNextRedraw = true;
@@ -108,7 +108,7 @@ export struct StrokeSelectionOverlay {
   }
 
   private canAnimateSelection(): boolean {
-    return this.groups.length > 0 && !this.paused && this.outlinePointCount <= ANIMATED_SELECTION_POINT_LIMIT;
+    return this.targets.length > 0 && !this.paused && this.outlinePointCount <= ANIMATED_SELECTION_POINT_LIMIT;
   }
 
   private redrawSelection(): void {
@@ -131,12 +131,12 @@ export struct StrokeSelectionOverlay {
 
     this.lastCanvasWidth = width;
     this.lastCanvasHeight = height;
-    if (this.groups.length === 0) {
+    if (this.targets.length === 0) {
       this.lastDirtyRect = null;
       return;
     }
 
-    for (const group of this.groups) {
+    for (const group of this.targets) {
       const outline = group.outline.length > 0 ? group.outline : this.buildBoundsOutline(group);
       SelectionDashRenderer.drawPath(this.selectionContext, outline, true, this.dashOffset);
     }
@@ -146,14 +146,14 @@ export struct StrokeSelectionOverlay {
 
   private getOutlinePointCount(): number {
     let pointCount = 0;
-    for (const group of this.groups) {
+    for (const group of this.targets) {
       pointCount += group.outline.length > 0 ? group.outline.length : 4;
     }
 
     return pointCount;
   }
 
-  private buildBoundsOutline(group: SelectedStrokeGroup): StrokePoint[] {
+  private buildBoundsOutline(group: SelectionTarget): StrokePoint[] {
     return [
       { x: group.bounds.minX, y: group.bounds.minY, t: 0 },
       { x: group.bounds.maxX, y: group.bounds.minY, t: 0 },
@@ -164,7 +164,7 @@ export struct StrokeSelectionOverlay {
 
   private getCurrentDirtyRect(): SelectionDirtyRect | null {
     let dirtyRect: SelectionDirtyRect | null = null;
-    for (const group of this.groups) {
+    for (const group of this.targets) {
       const groupRect = this.expandDirtyRect({
         minX: group.bounds.minX,
         minY: group.bounds.minY,
