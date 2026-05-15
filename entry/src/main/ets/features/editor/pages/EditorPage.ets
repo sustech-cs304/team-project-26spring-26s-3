@@ -29,6 +29,14 @@ const SIDEBAR_COLLAPSED_WIDTH = 56;
 const PAGE_THUMBNAIL_WIDTH = SIDEBAR_EXPANDED_WIDTH - SIDEBAR_EXPANDED_PADDING * 2;
 const WORKSPACE_MENU_BUTTON_FONT_SIZE = 26;
 const PAGE_TEMPLATE_DROPDOWN_LEFT = 384;
+const DOCUMENT_PAGE_GAP = 10;
+const DOCUMENT_PAGE_HORIZONTAL_PADDING = 12;
+const DOCUMENT_PAGE_HEADER_HEIGHT = 28;
+const DOCUMENT_PAGE_SURFACE_MAX_WIDTH = 980;
+const DOCUMENT_PAGE_SURFACE_MIN_WIDTH = 320;
+const DOCUMENT_ZOOM_MIN_SCALE = 0.72;
+const DOCUMENT_ZOOM_MAX_SCALE = 2.2;
+const DOCUMENT_ZOOM_STEP = 0.08;
 const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser', 'text', 'shape', 'edit'];
 const SHAPE_TOOL_OPTIONS: ShapeType[] = ['rectangle', 'circle', 'line'];
 const PAGE_TEMPLATE_OPTIONS: NotebookPageTemplateType[] = [
@@ -72,9 +80,14 @@ struct EditorPage {
   @State private isShapeDropdownVisible: boolean = false;
   @State private isPageTemplateDropdownVisible: boolean = false;
   @State private isCanvasPanModeEnabled: boolean = false;
+  @State private workspaceViewportWidth: number = 0;
+  @State private documentZoomScale: number = 1;
+  @State private documentHorizontalOffset: number = 0;
   private readonly pageCanvasRenderSizeMap: Map<string, PageCanvasRenderSize> = new Map<string, PageCanvasRenderSize>();
+  private readonly documentScroller: Scroller = new Scroller();
   private thumbnailRefreshTimerId: number = -1;
   private lastThumbnailRefreshTime: number = 0;
+  private documentGestureStartZoomScale: number = 1;
   private editorViewModel?: EditorViewModel;
   private drawingViewModel: DrawingEditorViewModel | null = null;
   private currentDrawingPageId: string = '';
@@ -615,6 +628,8 @@ struct EditorPage {
                   this.togglePageActionMenu(this.activePageId);
                 })
 
+              this.buildDocumentZoomToolbar()
+
               Text(this.getActivePageIndexText())
                 .fontSize($r('app.float.caption_text_size'))
                 .fontColor($r('app.color.editor_accent'))
@@ -681,10 +696,6 @@ struct EditorPage {
 
       if (this.notebookPageList.length === 0) {
         this.buildWorkspaceEmptyState()
-      } else if (this.isCanvasLoading) {
-        this.buildWorkspaceLoadingState()
-      } else if (this.activePageCanvas === null) {
-        this.buildWorkspaceEmptyState()
       } else {
         Row() {
           this.buildPaperSurface()
@@ -720,6 +731,66 @@ struct EditorPage {
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
     .padding(24)
+  }
+
+  @Builder
+  private buildDocumentZoomToolbar(): void {
+    Row({ space: 6 }) {
+      Button('-')
+        .width(30)
+        .height(30)
+        .padding(0)
+        .fontSize(14)
+        .backgroundColor('#FFFFFF')
+        .fontColor('#475569')
+        .borderRadius(10)
+        .border({
+          width: 1,
+          color: '#CBD5E1'
+        })
+        .enabled(this.canDecreaseDocumentZoom())
+        .opacity(this.canDecreaseDocumentZoom() ? 1 : 0.45)
+        .onClick(() => {
+          this.adjustDocumentZoomScale(-DOCUMENT_ZOOM_STEP);
+        })
+
+      Button(this.getDocumentZoomText())
+        .height(30)
+        .padding({
+          left: 10,
+          right: 10
+        })
+        .fontSize(12)
+        .backgroundColor('#FFFFFF')
+        .fontColor('#475569')
+        .borderRadius(10)
+        .border({
+          width: 1,
+          color: '#CBD5E1'
+        })
+        .onClick(() => {
+          this.resetDocumentZoomScale();
+        })
+
+      Button('+')
+        .width(30)
+        .height(30)
+        .padding(0)
+        .fontSize(14)
+        .backgroundColor('#FFFFFF')
+        .fontColor('#475569')
+        .borderRadius(10)
+        .border({
+          width: 1,
+          color: '#CBD5E1'
+        })
+        .enabled(this.canIncreaseDocumentZoom())
+        .opacity(this.canIncreaseDocumentZoom() ? 1 : 0.45)
+        .onClick(() => {
+          this.adjustDocumentZoomScale(DOCUMENT_ZOOM_STEP);
+        })
+    }
+    .alignItems(VerticalAlign.Center)
   }
 
   @Builder
@@ -909,78 +980,181 @@ struct EditorPage {
 
   @Builder
   private buildPaperSurface(): void {
-    Column({ space: 14 }) {
-      // Row({ space: 12 }) {
-      //   Text(this.getActivePageLabel())
-      //     .fontSize($r('app.float.section_title_size'))
-      //     .fontWeight(FontWeight.Medium)
-      //     .fontColor($r('app.color.primary_text'))
-      //
-      //   Text($r('app.string.editor_canvas_ready_badge'))
-      //     .fontSize($r('app.float.caption_text_size'))
-      //     .fontColor($r('app.color.editor_accent'))
-      //     .padding({
-      //       left: 10,
-      //       right: 10,
-      //       top: 6,
-      //       bottom: 6
-      //     })
-      //     .backgroundColor($r('app.color.editor_accent_soft'))
-      //     .borderRadius(999)
-      //
-      //   Text(this.getCanvasText())
-      //     .fontSize($r('app.float.caption_text_size'))
-      //     .fontColor($r('app.color.secondary_text'))
-      // }
-      // .width('100%')
-      // .alignItems(VerticalAlign.Center)
+    Scroll(this.documentScroller) {
+      Column({ space: DOCUMENT_PAGE_GAP }) {
+        ForEach(this.notebookPageList, (page: NotebookPage, index: number) => {
+          this.buildDocumentPageSurface(page, index);
+        }, (page: NotebookPage): string => this.getPageRenderKey(page))
+      }
+      .width('100%')
+      .padding({
+        left: DOCUMENT_PAGE_HORIZONTAL_PADDING,
+        right: DOCUMENT_PAGE_HORIZONTAL_PADDING,
+        top: DOCUMENT_PAGE_HORIZONTAL_PADDING,
+        bottom: DOCUMENT_PAGE_HORIZONTAL_PADDING
+      })
+      .alignItems(HorizontalAlign.Center)
+      .offset({
+        x: this.documentHorizontalOffset,
+        y: 0
+      })
+    }
+    .width('100%')
+    .layoutWeight(1)
+    .height('100%')
+    .scrollable(this.getDocumentScrollDirection())
+    .enableScrollInteraction(this.isDocumentNavigationModeEnabled())
+    .scrollBar(BarState.Off)
+    .backgroundColor($r('app.color.editor_workspace_background'))
+    .borderRadius(30)
+    .clip(true)
+    .border({
+      width: 1,
+      color: $r('app.color.editor_paper_border')
+    })
+    .onAreaChange((_oldValue: Area, newValue: Area) => {
+      this.handleWorkspaceAreaChange(newValue);
+    })
+  }
+
+  @Builder
+  private buildDocumentPageSurface(page: NotebookPage, pageIndex: number): void {
+    Column({ space: 10 }) {
+      Row({ space: 8 }) {
+        Text(this.getPageOrderText(page.id, pageIndex))
+          .fontSize(12)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.isDocumentPageActive(page.id) ? '#FFFFFF' : '#475569')
+          .padding({
+            left: 10,
+            right: 10,
+            top: 5,
+            bottom: 5
+          })
+          .backgroundColor(this.isDocumentPageActive(page.id) ? $r('app.color.editor_accent') : '#FFFFFF')
+          .borderRadius(999)
+
+        if (this.isDocumentPageActive(page.id)) {
+          Text('Current')
+            .fontSize(11)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.editor_accent'))
+            .padding({
+              left: 8,
+              right: 8,
+              top: 4,
+              bottom: 4
+            })
+            .backgroundColor($r('app.color.editor_accent_soft'))
+            .borderRadius(999)
+        }
+
+        Blank()
+          .layoutWeight(1)
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
 
       Stack() {
         Column()
           .width('100%')
           .height('100%')
-          .backgroundColor($r('app.color.editor_workspace_background'))
-          .borderRadius(30)
+          .backgroundColor(this.getPageCanvasBackgroundColor(page.id))
+          .borderRadius(24)
 
-        CanvasBoard({
-          pageId: this.activePageId,
-          canvasVersion: this.canvasVersion,
-          elementVersion: this.elementLayerRefreshVersion,
-          selectedShapeType: this.selectedShapeType,
-          templateType: this.getActivePageTemplateType(),
-          paperBackgroundColor: this.getActiveCanvasBackgroundColor(),
-          pageWidth: this.getActiveCanvasWidth(),
-          pageHeight: this.getActiveCanvasHeight(),
-          isPanModeEnabled: this.isCanvasPanModeEnabled,
-          activeTool: this.toolSetting.tool,
-          editorSnapshot: $editorSnapshot,
-          onContentChanged: (immediate: boolean, kind: CanvasBoardContentChangeKind): void => {
-            if (kind === 'element') {
-              this.refreshElementLayer();
+        if (this.shouldRenderEditableDocumentPage(page.id)) {
+          CanvasBoard({
+            pageId: page.id,
+            canvasVersion: this.canvasVersion,
+            elementVersion: this.elementLayerRefreshVersion,
+            selectedShapeType: this.selectedShapeType,
+            templateType: this.resolvePageTemplateType(page.templateType),
+            paperBackgroundColor: this.getPageCanvasBackgroundColor(page.id),
+            pageWidth: this.getPageCanvasWidth(page.id),
+            pageHeight: this.getPageCanvasHeight(page.id),
+            isPanModeEnabled: this.isCanvasPanModeEnabled,
+            isDocumentViewportMode: this.isContinuousDocumentViewEnabled(),
+            activeTool: this.toolSetting.tool,
+            editorSnapshot: $editorSnapshot,
+            onContentChanged: (immediate: boolean, kind: CanvasBoardContentChangeKind): void => {
+              if (kind === 'element') {
+                this.refreshElementLayer();
+              }
+              this.restoreWritingToolAfterOneShotElementInsertion();
+              if (immediate || kind === 'stroke') {
+                this.requestThumbnailRefresh(immediate);
+              }
+            },
+            onCanvasMetricsChanged: (width: number, height: number): void => {
+              this.updatePageCanvasRenderSize(page.id, width, height);
+            },
+            onDocumentViewportGestureStart: (): void => {
+              this.beginDocumentViewportGesture();
+            },
+            onDocumentViewportGestureUpdate: (scaleRatio: number, deltaX: number, deltaY: number): void => {
+              this.updateDocumentViewportGesture(scaleRatio, deltaX, deltaY);
+            },
+            onDocumentViewportGestureEnd: (): void => {
+              this.endDocumentViewportGesture();
             }
-            this.restoreWritingToolAfterOneShotElementInsertion();
-            if (immediate || kind === 'stroke') {
-              this.requestThumbnailRefresh(immediate);
-            }
-          },
-          onCanvasMetricsChanged: (width: number, height: number): void => {
-            this.updatePageCanvasRenderSize(this.activePageId, width, height);
+          })
+            .width('100%')
+            .height('100%')
+        } else {
+          PageThumbnailPreview({
+            pageId: page.id,
+            isActive: false,
+            refreshVersion: this.thumbnailRefreshVersion,
+            templateType: this.resolvePageTemplateType(page.templateType),
+            paperBackgroundColor: this.getPageCanvasBackgroundColor(page.id),
+            canvasWidth: this.getPageCanvasWidth(page.id),
+            canvasHeight: this.getPageCanvasHeight(page.id)
+          })
+            .width('100%')
+            .height('100%')
+        }
+
+        if (this.isDocumentPageActive(page.id) && this.isCanvasLoading && !this.isDocumentNavigationModeEnabled()) {
+          Column({ space: 10 }) {
+            LoadingProgress()
+              .width(28)
+              .height(28)
+
+            Text($r('app.string.editor_loading'))
+              .fontSize(12)
+              .fontColor($r('app.color.secondary_text'))
           }
-        })
           .width('100%')
           .height('100%')
+          .justifyContent(FlexAlign.Center)
+          .alignItems(HorizontalAlign.Center)
+          .backgroundColor('#66FFFFFF')
+        }
       }
-      .width('100%')
-      .layoutWeight(1)
-      .borderRadius(30)
+      .width(this.getDocumentPageSurfaceWidth())
+      .height(this.getDocumentPageSurfaceHeightForPage(page.id))
+      .borderRadius(24)
       .clip(true)
       .border({
-        width: 1,
-        color: $r('app.color.editor_paper_border')
+        width: this.isDocumentPageActive(page.id) ? 2 : 1,
+        color: this.isDocumentPageActive(page.id) ? $r('app.color.editor_accent') : $r('app.color.editor_paper_border')
+      })
+      .shadow({
+        radius: 18,
+        color: '#14000000',
+        offsetX: 0,
+        offsetY: 6
       })
     }
-    .layoutWeight(1)
-    .height('100%')
+    .width('100%')
+    .alignItems(HorizontalAlign.Center)
+    .onClick(() => {
+      if (this.isDocumentPageActive(page.id)) {
+        return;
+      }
+      this.closeTransientDropdowns();
+      void this.selectNotebookPage(page);
+    })
   }
 
   @Builder
@@ -1348,6 +1522,7 @@ struct EditorPage {
     this.pageActionMenuPageId = '';
     this.isPageTemplateDropdownVisible = false;
     this.isCanvasPanModeEnabled = false;
+    this.documentZoomScale = 1;
     this.resetDeletePageDialogState();
     this.resetDrawingState('');
   }
@@ -1420,6 +1595,7 @@ struct EditorPage {
     }
 
     this.activePageId = page.id;
+    this.scrollDocumentToPage(page.id, false);
     this.closePageActionMenu();
     await this.loadActivePageCanvas();
   }
@@ -1691,7 +1867,7 @@ struct EditorPage {
       return cachedSize.width;
     }
 
-    return this.getActiveCanvasWidth();
+    return this.getPageCanvasWidth(pageId);
   }
 
   private getThumbnailCanvasHeight(pageId: string): number {
@@ -1700,7 +1876,7 @@ struct EditorPage {
       return cachedSize.height;
     }
 
-    return this.getActiveCanvasHeight();
+    return this.getPageCanvasHeight(pageId);
   }
 
   private getPageThumbnailHeight(pageId: string): number {
@@ -1729,6 +1905,187 @@ struct EditorPage {
       width: 1600,
       height: 900
     };
+  }
+
+  private handleWorkspaceAreaChange(area: Area): void {
+    const nextWidth = this.resolveAreaWidth(area);
+    if (nextWidth <= 0 || nextWidth === this.workspaceViewportWidth) {
+      return;
+    }
+
+    this.workspaceViewportWidth = nextWidth;
+    this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset);
+  }
+
+  private resolveAreaWidth(area: Area): number {
+    const numericWidth = Number(area.width);
+    if (Number.isFinite(numericWidth) && numericWidth > 0) {
+      return Math.round(numericWidth);
+    }
+
+    return 0;
+  }
+
+  private getDocumentPageSurfaceWidth(): number {
+    const availableWidth = this.workspaceViewportWidth > 0
+      ? this.workspaceViewportWidth - DOCUMENT_PAGE_HORIZONTAL_PADDING * 2
+      : DOCUMENT_PAGE_SURFACE_MAX_WIDTH;
+    const scaledWidth = Math.round(availableWidth * this.documentZoomScale);
+    return Math.max(DOCUMENT_PAGE_SURFACE_MIN_WIDTH, scaledWidth);
+  }
+
+  private getDocumentPageSurfaceHeight(pageId: string, targetWidth: number): number {
+    const pageWidth = this.getPageCanvasWidth(pageId);
+    const pageHeight = this.getPageCanvasHeight(pageId);
+    return Math.max(240, Math.round(targetWidth * pageHeight / Math.max(1, pageWidth)));
+  }
+
+  private getDocumentPageSurfaceHeightForPage(pageId: string): number {
+    return this.getDocumentPageSurfaceHeight(pageId, this.getDocumentPageSurfaceWidth());
+  }
+
+  private isDocumentPageActive(pageId: string): boolean {
+    return pageId === this.activePageId;
+  }
+
+  private isContinuousDocumentViewEnabled(): boolean {
+    return true;
+  }
+
+  private isDocumentNavigationModeEnabled(): boolean {
+    return this.isContinuousDocumentViewEnabled() && this.isCanvasPanModeEnabled;
+  }
+
+  private shouldRenderEditableDocumentPage(pageId: string): boolean {
+    return this.isDocumentPageActive(pageId) && !this.isCanvasLoading && !this.isDocumentNavigationModeEnabled();
+  }
+
+  private getDocumentScrollDirection(): ScrollDirection {
+    return this.isContinuousDocumentViewEnabled() ? ScrollDirection.Vertical : ScrollDirection.None;
+  }
+
+  private adjustDocumentZoomScale(delta: number): void {
+    this.setDocumentZoomScale(this.documentZoomScale + delta);
+  }
+
+  private resetDocumentZoomScale(): void {
+    this.setDocumentZoomScale(1);
+    this.documentHorizontalOffset = 0;
+  }
+
+  private clampDocumentZoomScale(scale: number): number {
+    return Math.max(DOCUMENT_ZOOM_MIN_SCALE, Math.min(DOCUMENT_ZOOM_MAX_SCALE, scale));
+  }
+
+  private beginDocumentViewportGesture(): void {
+    this.documentGestureStartZoomScale = this.documentZoomScale;
+  }
+
+  private updateDocumentViewportGesture(scaleRatio: number, deltaX: number, deltaY: number): void {
+    this.setDocumentZoomScale(this.documentGestureStartZoomScale * scaleRatio);
+    this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset + deltaX);
+    if (deltaY !== 0) {
+      this.documentScroller.scrollBy(0, -deltaY);
+    }
+  }
+
+  private endDocumentViewportGesture(): void {
+    this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset);
+  }
+
+  private setDocumentZoomScale(scale: number): void {
+    this.documentZoomScale = this.clampDocumentZoomScale(scale);
+    this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset);
+  }
+
+  private getDocumentContentWidth(): number {
+    return this.getDocumentPageSurfaceWidth() + DOCUMENT_PAGE_HORIZONTAL_PADDING * 2;
+  }
+
+  private clampDocumentHorizontalOffset(offset: number): number {
+    const viewportWidth = Math.max(1, this.workspaceViewportWidth);
+    const overflowWidth = Math.max(0, this.getDocumentContentWidth() - viewportWidth);
+    if (overflowWidth <= 0) {
+      return 0;
+    }
+
+    const halfOverflow = overflowWidth / 2;
+    return Math.max(-halfOverflow, Math.min(halfOverflow, offset));
+  }
+
+  private getDocumentScrollOffsetForPage(pageId: string): number {
+    let offset = DOCUMENT_PAGE_HORIZONTAL_PADDING;
+    for (let index = 0; index < this.notebookPageList.length; index += 1) {
+      const page = this.notebookPageList[index];
+      if (page.id === pageId) {
+        return Math.max(0, offset);
+      }
+
+      offset += DOCUMENT_PAGE_HEADER_HEIGHT;
+      offset += 10;
+      offset += this.getDocumentPageSurfaceHeightForPage(page.id);
+      offset += DOCUMENT_PAGE_GAP;
+    }
+
+    return Math.max(0, offset);
+  }
+
+  private scrollDocumentToPage(pageId: string, smooth: boolean): void {
+    if (!this.isContinuousDocumentViewEnabled() || pageId.length === 0) {
+      return;
+    }
+
+    this.documentScroller.scrollTo({
+      xOffset: 0,
+      yOffset: this.getDocumentScrollOffsetForPage(pageId),
+      animation: smooth
+    });
+  }
+
+  private canDecreaseDocumentZoom(): boolean {
+    return this.documentZoomScale > DOCUMENT_ZOOM_MIN_SCALE + 0.001;
+  }
+
+  private canIncreaseDocumentZoom(): boolean {
+    return this.documentZoomScale < DOCUMENT_ZOOM_MAX_SCALE - 0.001;
+  }
+
+  private getDocumentZoomText(): string {
+    return `${Math.round(this.documentZoomScale * 100)}%`;
+  }
+
+  private getPageCanvasBackgroundColor(pageId: string): string {
+    if (pageId === this.activePageId) {
+      return this.getActiveCanvasBackgroundColor();
+    }
+
+    return '#FFFFFF';
+  }
+
+  private getPageCanvasWidth(pageId: string): number {
+    const cachedSize = this.pageCanvasRenderSizeMap.get(pageId);
+    if (cachedSize !== undefined && cachedSize.width > 0) {
+      return cachedSize.width;
+    }
+
+    if (pageId === this.activePageId) {
+      return this.getActiveCanvasWidth();
+    }
+
+    return NotebookPageCanvasEntity.DEFAULT_WIDTH;
+  }
+
+  private getPageCanvasHeight(pageId: string): number {
+    const cachedSize = this.pageCanvasRenderSizeMap.get(pageId);
+    if (cachedSize !== undefined && cachedSize.height > 0) {
+      return cachedSize.height;
+    }
+
+    if (pageId === this.activePageId) {
+      return this.getActiveCanvasHeight();
+    }
+
+    return NotebookPageCanvasEntity.DEFAULT_HEIGHT;
   }
 
   private async handleUndo(): Promise<void> {
@@ -1848,10 +2205,14 @@ struct EditorPage {
       return;
     }
 
+    const enablePanMode = !this.isCanvasPanModeEnabled;
     this.closeToolDropdown();
     this.closePageActionMenu();
     this.closePageTemplateDropdown();
-    this.isCanvasPanModeEnabled = !this.isCanvasPanModeEnabled;
+    this.isCanvasPanModeEnabled = enablePanMode;
+    if (!enablePanMode && this.activePageId.length > 0) {
+      this.scrollDocumentToPage(this.activePageId, false);
+    }
   }
 
   private isWorkspaceToolActive(tool: ToolType): boolean {

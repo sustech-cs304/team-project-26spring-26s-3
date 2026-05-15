@@ -94,6 +94,8 @@ export struct CanvasBoard {
   @Prop pageHeight: number = NotebookPageCanvasEntity.DEFAULT_HEIGHT;
   @Watch('onInteractionModeChanged')
   @Prop isPanModeEnabled: boolean = false;
+  @Watch('onInteractionModeChanged')
+  @Prop isDocumentViewportMode: boolean = false;
   @Watch('onActiveToolChanged')
   @Prop activeTool: ToolType = 'pen';
   @Prop elementVersion: number = 0;
@@ -102,6 +104,10 @@ export struct CanvasBoard {
   onContentChanged: (immediate: boolean, kind: CanvasBoardContentChangeKind) => void =
     (_immediate: boolean, _kind: CanvasBoardContentChangeKind): void => {};
   onCanvasMetricsChanged: (width: number, height: number) => void = (_width: number, _height: number): void => {};
+  onDocumentViewportGestureStart: () => void = (): void => {};
+  onDocumentViewportGestureUpdate: (scaleRatio: number, deltaX: number, deltaY: number) => void =
+    (_scaleRatio: number, _deltaX: number, _deltaY: number): void => {};
+  onDocumentViewportGestureEnd: () => void = (): void => {};
   private viewModel: DrawingEditorViewModel | null = null;
 
   private readonly committedRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
@@ -141,6 +147,8 @@ export struct CanvasBoard {
   private viewportGestureStartZoomScale: number = MIN_ZOOM_SCALE;
   private viewportGestureStartPageX: number = 0;
   private viewportGestureStartPageY: number = 0;
+  private viewportGestureLastCenterX: number = 0;
+  private viewportGestureLastCenterY: number = 0;
   private lastViewportRedrawTime: number = 0;
   private lastEditTapTime: number = 0;
   private lastEditTapElementId: string = '';
@@ -247,6 +255,10 @@ export struct CanvasBoard {
     .width('100%')
     .height('100%')
     .clip(true)
+    .onAreaChange((_oldValue: Area, _newValue: Area) => {
+      this.notifyCanvasMetricsChanged();
+      this.redrawViewportLayers(this.isViewportGestureActive);
+    })
   }
 
   @Builder
@@ -632,6 +644,10 @@ export struct CanvasBoard {
   }
 
   private handlePanModeTouch(event: TouchEvent, touch: TouchObject): boolean {
+    if (this.isDocumentViewportMode) {
+      return false;
+    }
+
     if (!this.isPanModeEnabled) {
       return false;
     }
@@ -661,9 +677,17 @@ export struct CanvasBoard {
       this.endWorkspacePan(false);
       const pairMetrics: TouchPairMetrics = this.getTouchPairMetrics(activeTouches[0], activeTouches[1]);
       if (!this.isViewportGestureActive || event.type === TouchType.Down) {
-        this.beginViewportGesture(pairMetrics);
+        if (this.isDocumentCanvasGestureEnabled()) {
+          this.beginDocumentViewportGesture(pairMetrics);
+        } else {
+          this.beginViewportGesture(pairMetrics);
+        }
       } else {
-        this.updateViewportGesture(pairMetrics);
+        if (this.isDocumentCanvasGestureEnabled()) {
+          this.updateDocumentViewportGesture(pairMetrics);
+        } else {
+          this.updateViewportGesture(pairMetrics);
+        }
       }
       return true;
     }
@@ -1460,6 +1484,8 @@ export struct CanvasBoard {
     this.viewportGestureStartZoomScale = this.viewportZoomScale;
     this.viewportGestureStartPageX = (pairMetrics.centerX - transform.offsetX) / transform.scale;
     this.viewportGestureStartPageY = (pairMetrics.centerY - transform.offsetY) / transform.scale;
+    this.viewportGestureLastCenterX = pairMetrics.centerX;
+    this.viewportGestureLastCenterY = pairMetrics.centerY;
   }
 
   private updateViewportGesture(pairMetrics: TouchPairMetrics): void {
@@ -1484,9 +1510,34 @@ export struct CanvasBoard {
   private endViewportGesture(redrawFinal: boolean = false): void {
     const wasGesturing = this.isViewportGestureActive;
     this.isViewportGestureActive = false;
+    if (wasGesturing && this.isDocumentCanvasGestureEnabled()) {
+      this.onDocumentViewportGestureEnd();
+      return;
+    }
     if (redrawFinal && wasGesturing) {
       this.redrawViewportLayers(false);
     }
+  }
+
+  private beginDocumentViewportGesture(pairMetrics: TouchPairMetrics): void {
+    this.isViewportGestureActive = true;
+    this.viewportGestureStartDistance = Math.max(1, pairMetrics.distance);
+    this.viewportGestureLastCenterX = pairMetrics.centerX;
+    this.viewportGestureLastCenterY = pairMetrics.centerY;
+    this.onDocumentViewportGestureStart();
+  }
+
+  private updateDocumentViewportGesture(pairMetrics: TouchPairMetrics): void {
+    if (!this.isViewportGestureActive) {
+      return;
+    }
+
+    const distanceRatio = Math.max(0.1, pairMetrics.distance / Math.max(1, this.viewportGestureStartDistance));
+    const deltaX = pairMetrics.centerX - this.viewportGestureLastCenterX;
+    const deltaY = pairMetrics.centerY - this.viewportGestureLastCenterY;
+    this.viewportGestureLastCenterX = pairMetrics.centerX;
+    this.viewportGestureLastCenterY = pairMetrics.centerY;
+    this.onDocumentViewportGestureUpdate(distanceRatio, deltaX, deltaY);
   }
 
   private panViewportBy(deltaX: number, deltaY: number): void {
@@ -2367,6 +2418,14 @@ export struct CanvasBoard {
     }
     this.endWorkspacePan(false);
     this.endViewportGesture(false);
+    if (this.isDocumentViewportMode && this.isPanModeEnabled) {
+      this.resetViewportTransform();
+      this.redrawViewportLayers(false);
+    }
+  }
+
+  private isDocumentCanvasGestureEnabled(): boolean {
+    return this.isDocumentViewportMode && !this.isPanModeEnabled;
   }
 
   private getViewModel(): DrawingEditorViewModel | null {
