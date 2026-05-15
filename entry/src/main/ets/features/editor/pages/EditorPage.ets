@@ -88,6 +88,8 @@ struct EditorPage {
   private thumbnailRefreshTimerId: number = -1;
   private lastThumbnailRefreshTime: number = 0;
   private documentGestureStartZoomScale: number = 1;
+  private workspaceViewportHeight: number = 0;
+  private documentScrollOffsetY: number = 0;
   private editorViewModel?: EditorViewModel;
   private drawingViewModel: DrawingEditorViewModel | null = null;
   private currentDrawingPageId: string = '';
@@ -1004,6 +1006,12 @@ struct EditorPage {
     .height('100%')
     .scrollable(this.getDocumentScrollDirection())
     .enableScrollInteraction(this.isDocumentNavigationModeEnabled())
+    .onDidScroll((_xOffset: number, _yOffset: number, _scrollState: ScrollState) => {
+      this.handleDocumentDidScroll();
+    })
+    .onScrollStop(() => {
+      void this.commitViewportCenteredPage();
+    })
     .scrollBar(BarState.Off)
     .backgroundColor($r('app.color.editor_workspace_background'))
     .borderRadius(30)
@@ -1909,11 +1917,19 @@ struct EditorPage {
 
   private handleWorkspaceAreaChange(area: Area): void {
     const nextWidth = this.resolveAreaWidth(area);
-    if (nextWidth <= 0 || nextWidth === this.workspaceViewportWidth) {
+    const nextHeight = this.resolveAreaHeight(area);
+    const hasWidthChanged = nextWidth > 0 && nextWidth !== this.workspaceViewportWidth;
+    const hasHeightChanged = nextHeight > 0 && nextHeight !== this.workspaceViewportHeight;
+    if (!hasWidthChanged && !hasHeightChanged) {
       return;
     }
 
-    this.workspaceViewportWidth = nextWidth;
+    if (hasWidthChanged) {
+      this.workspaceViewportWidth = nextWidth;
+    }
+    if (hasHeightChanged) {
+      this.workspaceViewportHeight = nextHeight;
+    }
     this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset);
   }
 
@@ -1921,6 +1937,15 @@ struct EditorPage {
     const numericWidth = Number(area.width);
     if (Number.isFinite(numericWidth) && numericWidth > 0) {
       return Math.round(numericWidth);
+    }
+
+    return 0;
+  }
+
+  private resolveAreaHeight(area: Area): number {
+    const numericHeight = Number(area.height);
+    if (Number.isFinite(numericHeight) && numericHeight > 0) {
+      return Math.round(numericHeight);
     }
 
     return 0;
@@ -1979,6 +2004,7 @@ struct EditorPage {
 
   private beginDocumentViewportGesture(): void {
     this.documentGestureStartZoomScale = this.documentZoomScale;
+    this.syncDocumentScrollOffsetFromScroller();
   }
 
   private updateDocumentViewportGesture(scaleRatio: number, deltaX: number, deltaY: number): void {
@@ -1986,11 +2012,14 @@ struct EditorPage {
     this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset + deltaX);
     if (deltaY !== 0) {
       this.documentScroller.scrollBy(0, -deltaY);
+      this.handleDocumentDidScroll();
     }
   }
 
   private endDocumentViewportGesture(): void {
+    this.syncDocumentScrollOffsetFromScroller();
     this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset);
+    void this.commitViewportCenteredPage();
   }
 
   private setDocumentZoomScale(scale: number): void {
@@ -2035,11 +2064,69 @@ struct EditorPage {
       return;
     }
 
+    const targetOffset = this.getDocumentScrollOffsetForPage(pageId);
+    this.documentScrollOffsetY = targetOffset;
     this.documentScroller.scrollTo({
       xOffset: 0,
-      yOffset: this.getDocumentScrollOffsetForPage(pageId),
+      yOffset: targetOffset,
       animation: smooth
     });
+  }
+
+  private handleDocumentDidScroll(): void {
+    this.syncDocumentScrollOffsetFromScroller();
+  }
+
+  private syncDocumentScrollOffsetFromScroller(): void {
+    const currentOffset = this.documentScroller.currentOffset();
+    const numericOffset = Number(currentOffset.yOffset);
+    if (Number.isFinite(numericOffset)) {
+      this.documentScrollOffsetY = Math.max(0, numericOffset);
+    }
+  }
+
+  private getViewportCenteredPageId(): string {
+    if (this.notebookPageList.length === 0) {
+      return '';
+    }
+
+    const viewportHeight = this.workspaceViewportHeight > 0 ? this.workspaceViewportHeight : 1;
+    const viewportCenterY = this.documentScrollOffsetY + viewportHeight / 2;
+    let pageTopOffset = DOCUMENT_PAGE_HORIZONTAL_PADDING;
+    let bestPageId = this.notebookPageList[0].id;
+    let bestDistance = Number.MAX_VALUE;
+
+    for (const page of this.notebookPageList) {
+      const pageSurfaceHeight = this.getDocumentPageSurfaceHeightForPage(page.id);
+      const pageContentTop = pageTopOffset + DOCUMENT_PAGE_HEADER_HEIGHT + 10;
+      const pageCenterY = pageContentTop + pageSurfaceHeight / 2;
+      const distance = Math.abs(viewportCenterY - pageCenterY);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestPageId = page.id;
+      }
+
+      pageTopOffset = pageContentTop + pageSurfaceHeight + DOCUMENT_PAGE_GAP;
+    }
+
+    return bestPageId;
+  }
+
+  private async commitViewportCenteredPage(): Promise<void> {
+    if (!this.isContinuousDocumentViewEnabled() || this.isLoading || this.isCreatingPage ||
+      this.isDeletingPage || this.isReorderingPages || this.isUpdatingPageTemplate) {
+      return;
+    }
+
+    this.syncDocumentScrollOffsetFromScroller();
+    const targetPageId = this.getViewportCenteredPageId();
+    if (targetPageId.length === 0 || targetPageId === this.activePageId) {
+      return;
+    }
+
+    this.activePageId = targetPageId;
+    this.closePageActionMenu();
+    await this.loadActivePageCanvas();
   }
 
   private canDecreaseDocumentZoom(): boolean {
@@ -2210,8 +2297,8 @@ struct EditorPage {
     this.closePageActionMenu();
     this.closePageTemplateDropdown();
     this.isCanvasPanModeEnabled = enablePanMode;
-    if (!enablePanMode && this.activePageId.length > 0) {
-      this.scrollDocumentToPage(this.activePageId, false);
+    if (!enablePanMode) {
+      void this.commitViewportCenteredPage();
     }
   }
 
