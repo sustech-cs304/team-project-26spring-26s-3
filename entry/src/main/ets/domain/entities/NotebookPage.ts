@@ -12,6 +12,8 @@ export interface NotebookPage {
   createdAt: number;
   updatedAt: number;
   templateType: NotebookPageTemplateType;
+  sourceFileUri?: string;
+  sourceFileType?: string;
 }
 
 export class NotebookPageEntity {

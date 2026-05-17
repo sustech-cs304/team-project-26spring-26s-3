@@ -8,7 +8,7 @@ import {
   getStrokeRenderBoundingBox
 } from '../../../common/utils/GeometryUtil';
 import { clampElementFrameToBounds } from '../../../common/utils/ElementBoundsUtil';
-import { CanvasElement, ShapeType, TextCanvasElement } from '../../../domain/entities/CanvasElement';
+import { CanvasElement, ImageCanvasElement, ShapeType, TextCanvasElement } from '../../../domain/entities/CanvasElement';
 import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { NotebookPageCanvasEntity } from '../../../domain/entities/NotebookPageCanvas';
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
@@ -121,6 +121,7 @@ export struct CanvasBoard {
   @Prop toolSetting: ToolSetting = DEFAULT_CANVAS_TOOL_SETTING;
   @Watch('onActivePageChanged')
   @Prop isActivePage: boolean = false;
+  @Prop backgroundImageUri: string = '';
   @Prop elementVersion: number = 0;
   @Prop selectedShapeType: ShapeType = 'rectangle';
   @Link editorSnapshot: EditorDebugSnapshot;
@@ -241,6 +242,8 @@ export struct CanvasBoard {
         })
 
       Stack() {
+        this.buildPageBackgroundImage()
+
         ElementLayer({
           pageId: this.pageId,
           refreshVersion: this.elementVersion,
@@ -309,6 +312,31 @@ export struct CanvasBoard {
       this.notifyCanvasMetricsChanged();
       this.redrawViewportLayers();
     })
+  }
+
+  private resolvePageBackgroundImageUri(): string {
+    if (typeof this.backgroundImageUri !== 'string') {
+      return '';
+    }
+    const backgroundImageUri = this.backgroundImageUri.trim();
+    if (backgroundImageUri.length === 0) {
+      return '';
+    }
+    if (backgroundImageUri.startsWith('file://') || backgroundImageUri.startsWith('http://') || backgroundImageUri.startsWith('https://')) {
+      return backgroundImageUri;
+    }
+    return `file://${backgroundImageUri}`;
+  }
+
+  @Builder
+  private buildPageBackgroundImage(): void {
+    if (this.resolvePageBackgroundImageUri().length > 0) {
+      Image(this.resolvePageBackgroundImageUri())
+        .width('100%')
+        .height('100%')
+        .objectFit(ImageFit.Cover)
+        .hitTestBehavior(HitTestMode.None)
+    }
   }
 
   @Builder

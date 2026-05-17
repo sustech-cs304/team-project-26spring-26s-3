@@ -1172,6 +1172,7 @@ struct EditorPage {
             selectedShapeType: this.selectedShapeType,
             templateType: this.resolvePageTemplateType(page.templateType),
             paperBackgroundColor: this.getPageCanvasBackgroundColor(page.id),
+            backgroundImageUri: this.getPageCanvasBackgroundImageUri(page.id),
             pageWidth: this.getPageCanvasWidth(page.id),
             pageHeight: this.getPageCanvasHeight(page.id),
             toolSetting: this.toolSetting,
@@ -3023,6 +3024,16 @@ struct EditorPage {
 
   private getPageFrameBackgroundColor(_pageId: string): string {
     return '#E8EEF6';
+  }
+
+  private getPageCanvasBackgroundImageUri(pageId: string): string {
+    if (this.activePageCanvas === null || this.activePageCanvas.pageId !== pageId) {
+      return '';
+    }
+    if (typeof this.activePageCanvas.backgroundImageUri !== 'string') {
+      return '';
+    }
+    return this.activePageCanvas.backgroundImageUri;
   }
 
   private getPageCanvasWidth(pageId: string): number {

@@ -147,7 +147,15 @@ export class EditorViewModel {
       title: this.notebook.title,
       folderId: this.notebook.folderId,
       createdAt: this.notebook.createdAt,
-      updatedAt: this.notebook.updatedAt
+      updatedAt: this.notebook.updatedAt,
+      coverColor: this.notebook.coverColor,
+      coverImageUri: this.notebook.coverImageUri,
+      pageCount: this.notebook.pageCount,
+      isFavorite: this.notebook.isFavorite,
+      tags: Array.isArray(this.notebook.tags) ? this.notebook.tags.slice() : [],
+      isDeleted: this.notebook.isDeleted,
+      deletedAt: this.notebook.deletedAt,
+      lastOpenedAt: this.notebook.lastOpenedAt
     };
   }
 
@@ -159,7 +167,9 @@ export class EditorViewModel {
         order: page.order,
         createdAt: page.createdAt,
         updatedAt: page.updatedAt,
-        templateType: page.templateType
+        templateType: page.templateType,
+        sourceFileUri: page.sourceFileUri,
+        sourceFileType: page.sourceFileType
       };
     });
   }
@@ -179,6 +189,7 @@ export class EditorViewModel {
       width: notebookPageCanvas.width,
       height: notebookPageCanvas.height,
       backgroundColor: notebookPageCanvas.backgroundColor,
+      backgroundImageUri: notebookPageCanvas.backgroundImageUri,
       createdAt: notebookPageCanvas.createdAt,
       updatedAt: notebookPageCanvas.updatedAt
     };

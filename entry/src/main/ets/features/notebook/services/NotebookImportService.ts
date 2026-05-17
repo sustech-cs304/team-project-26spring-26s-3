@@ -1,0 +1,632 @@
+import common from '@ohos.app.ability.common';
+import picker from '@ohos.file.picker';
+import fs from '@ohos.file.fs';
+import zlib from '@ohos.zlib';
+
+import { IdUtil } from '../../../common/utils/IdUtil';
+import { TimeUtil } from '../../../common/utils/TimeUtil';
+import { Notebook, NotebookEntity } from '../../../domain/entities/Notebook';
+import { NotebookPage, NotebookPageEntity } from '../../../domain/entities/NotebookPage';
+import { NotebookPageCanvas, NotebookPageCanvasEntity } from '../../../domain/entities/NotebookPageCanvas';
+import { CanvasElement, PageCanvasContent, TRANSPARENT_ELEMENT_BACKGROUND_COLOR } from '../../../domain/entities/CanvasElement';
+import { FileDataSource } from '../../../data/sources/local/FileDataSource';
+import { ImageAssetDataSource, ImportedImageAsset } from '../../../data/sources/local/ImageAssetDataSource';
+import { EditorRepositoryImpl } from '../../../data/repositories/EditorRepositoryImpl';
+
+interface RawMap {
+  [key: string]: unknown;
+}
+
+interface ImportFileProfile {
+  uri: string;
+  fileName: string;
+  extension: string;
+  lowerExtension: string;
+  baseName: string;
+  mimeType: string;
+}
+
+interface ImportResult {
+  notebookId: string;
+  notebookTitle: string;
+  openedPageId: string;
+}
+
+export class NotebookImportService {
+  private static readonly NOTEBOOK_LIST_PATH: string = 'notebooks/notebook-list.json';
+  private static readonly PAGE_DIR: string = 'notebooks/pages';
+  private static readonly CANVAS_DIR: string = 'notebooks/canvases';
+  private static readonly PAGE_CONTENT_DIR: string = 'editor/page-content';
+  private static readonly IMPORT_DIR: string = 'notebooks/imports';
+  private static readonly XML_TEXT_TRIM_LIMIT: number = 220000;
+
+  constructor(
+    private readonly context: common.Context,
+    private readonly fileDataSource: FileDataSource = new FileDataSource(context),
+    private readonly editorRepository: EditorRepositoryImpl = new EditorRepositoryImpl(context)
+  ) {
+  }
+
+  async importFromPicker(): Promise<ImportResult | null> {
+    const selectedUri: string = await this.pickFile();
+    if (selectedUri.length === 0) {
+      return null;
+    }
+
+    return await this.importFromUri(selectedUri);
+  }
+
+  async importFromUri(sourceUri: string): Promise<ImportResult | null> {
+    const profile: ImportFileProfile = this.buildImportFileProfile(sourceUri);
+    if (profile.fileName.length === 0) {
+      return null;
+    }
+
+    if (this.isImageFile(profile)) {
+      return await this.importAsVisualNotebook(profile, sourceUri);
+    }
+
+    if (this.isPdfFile(profile)) {
+      return await this.importAsAttachmentNotebook(profile, sourceUri);
+    }
+
+    if (this.isOfficeLikeFile(profile)) {
+      return await this.importAsEditableNotebook(profile, sourceUri);
+    }
+
+    const textContent: string = await this.readBestEffortText(sourceUri);
+    if (textContent.length > 0) {
+      return await this.importAsTextNotebook(profile, textContent, sourceUri);
+    }
+
+    return await this.importAsAttachmentNotebook(profile, sourceUri);
+  }
+
+  private async pickFile(): Promise<string> {
+    try {
+      const options = new picker.DocumentSelectOptions();
+      options.maxSelectNumber = 1;
+      options.defaultFilePathUri = '';
+      options.fileSuffixFilters = [
+        'Image|jpg,jpeg,png,webp,bmp,gif',
+        'Office|doc,docx,ppt,pptx',
+        'Text|txt,md,rtf,csv,log',
+        'PDF|pdf',
+        'All|*'
+      ];
+      const pickerInstance = new picker.DocumentViewPicker(this.context);
+      const result = await pickerInstance.select(options);
+      if (result.length === 0) {
+        return '';
+      }
+      return result[0];
+    } catch (_error) {
+      return '';
+    }
+  }
+
+  private async importAsVisualNotebook(profile: ImportFileProfile, sourceUri: string): Promise<ImportResult | null> {
+    const importedAsset: ImportedImageAsset = await this.importImageAsset(sourceUri);
+    const notebook: Notebook = await this.ensureNotebookCreated(profile.baseName, importedAsset.uri);
+    const pageId: string = await this.ensureNotebookBackgroundPage(notebook.id, importedAsset, sourceUri, profile.lowerExtension);
+    await this.persistImportSource(notebook.id, profile, importedAsset.uri);
+    return {
+      notebookId: notebook.id,
+      notebookTitle: notebook.title,
+      openedPageId: pageId
+    };
+  }
+
+  private async importAsEditableNotebook(profile: ImportFileProfile, sourceUri: string): Promise<ImportResult | null> {
+    const extractedText: string = await this.extractOfficeText(sourceUri, profile.lowerExtension);
+    if (extractedText.length > 0) {
+      return await this.importAsTextNotebook(profile, extractedText, sourceUri);
+    }
+
+    return await this.importAsAttachmentNotebook(profile, sourceUri);
+  }
+
+  private async importAsTextNotebook(profile: ImportFileProfile, textContent: string, sourceUri: string): Promise<ImportResult | null> {
+    const notebook: Notebook = await this.ensureNotebookCreated(profile.baseName, '');
+    const pageId: string = await this.writeNotebookTextPage(notebook.id, textContent, profile, sourceUri);
+    await this.persistImportSource(notebook.id, profile, sourceUri);
+    return {
+      notebookId: notebook.id,
+      notebookTitle: notebook.title,
+      openedPageId: pageId
+    };
+  }
+
+  private async importAsAttachmentNotebook(profile: ImportFileProfile, sourceUri: string): Promise<ImportResult | null> {
+    const notebook: Notebook = await this.ensureNotebookCreated(profile.baseName, '');
+    const pageId: string = await this.writeNotebookAttachmentPage(notebook.id, profile, sourceUri);
+    await this.persistImportSource(notebook.id, profile, sourceUri);
+    return {
+      notebookId: notebook.id,
+      notebookTitle: notebook.title,
+      openedPageId: pageId
+    };
+  }
+
+  private async ensureNotebookCreated(title: string, coverImageUri: string): Promise<Notebook> {
+    const notebookList: Notebook[] = await this.readNotebookList();
+    const currentTime: number = TimeUtil.now();
+    const usedCoverColorList: string[] = [];
+    for (const existingNotebook of notebookList) {
+      const normalizedColor: string = NotebookEntity.normalizeCoverColor(existingNotebook.coverColor);
+      if (!usedCoverColorList.includes(normalizedColor)) {
+        usedCoverColorList.push(normalizedColor);
+      }
+    }
+
+    let coverColor: string = NotebookEntity.DEFAULT_COVER_COLOR;
+    for (const color of NotebookEntity.COVER_COLOR_PALETTE) {
+      if (!usedCoverColorList.includes(color)) {
+        coverColor = color;
+        break;
+      }
+    }
+
+    const notebook: Notebook = {
+      id: IdUtil.createNotebookId(),
+      title: NotebookEntity.normalizeTitle(title),
+      folderId: '',
+      createdAt: currentTime,
+      updatedAt: currentTime,
+      coverColor: coverColor,
+      coverImageUri: NotebookEntity.normalizeCoverImageUri(this.normalizeLocalUri(coverImageUri)),
+      pageCount: 1,
+      isFavorite: false,
+      tags: [],
+      isDeleted: false,
+      deletedAt: 0,
+      lastOpenedAt: 0
+    };
+
+    notebookList.push(notebook);
+    await this.writeNotebookList(notebookList);
+    return notebook;
+  }
+
+  private async ensureNotebookBackgroundPage(
+    notebookId: string,
+    importedAsset: ImportedImageAsset,
+    sourceUri: string,
+    sourceType: string
+  ): Promise<string> {
+    const currentTime: number = TimeUtil.now();
+    const notebookPage: NotebookPage = {
+      id: IdUtil.createNotebookPageId(),
+      notebookId: notebookId,
+      order: 0,
+      createdAt: currentTime,
+      updatedAt: currentTime,
+      templateType: NotebookPageEntity.DEFAULT_TEMPLATE_TYPE,
+      sourceFileUri: sourceUri,
+      sourceFileType: sourceType
+    };
+
+    await this.writePageList(notebookId, [notebookPage]);
+    await this.writeCanvas({
+      pageId: notebookPage.id,
+      notebookId: notebookId,
+      width: importedAsset.originalWidth,
+      height: importedAsset.originalHeight,
+      backgroundColor: NotebookPageCanvasEntity.DEFAULT_BACKGROUND_COLOR,
+      backgroundImageUri: this.normalizeLocalUri(importedAsset.uri),
+      createdAt: currentTime,
+      updatedAt: currentTime
+    });
+    await this.writePageContent(notebookPage.id, {
+      version: 2,
+      strokes: [],
+      elements: []
+    });
+    return notebookPage.id;
+  }
+
+  private async writeNotebookTextPage(
+    notebookId: string,
+    textContent: string,
+    profile: ImportFileProfile,
+    sourceUri: string
+  ): Promise<string> {
+    const currentTime: number = TimeUtil.now();
+    const pageId: string = IdUtil.createNotebookPageId();
+    const notebookPage: NotebookPage = {
+      id: pageId,
+      notebookId: notebookId,
+      order: 0,
+      createdAt: currentTime,
+      updatedAt: currentTime,
+      templateType: NotebookPageEntity.DEFAULT_TEMPLATE_TYPE,
+      sourceFileUri: sourceUri,
+      sourceFileType: profile.lowerExtension
+    };
+
+    await this.writePageList(notebookId, [notebookPage]);
+    await this.writeCanvas({
+      pageId: pageId,
+      notebookId: notebookId,
+      width: NotebookPageCanvasEntity.DEFAULT_WIDTH,
+      height: NotebookPageCanvasEntity.DEFAULT_HEIGHT,
+      backgroundColor: NotebookPageCanvasEntity.DEFAULT_BACKGROUND_COLOR,
+      backgroundImageUri: '',
+      createdAt: currentTime,
+      updatedAt: currentTime
+    });
+
+    const element: CanvasElement = {
+      id: IdUtil.createId('import_text'),
+      pageId: pageId,
+      type: 'text',
+      x: 96,
+      y: 96,
+      width: Math.max(280, NotebookPageCanvasEntity.DEFAULT_WIDTH - 192),
+      height: Math.max(180, NotebookPageCanvasEntity.DEFAULT_HEIGHT - 192),
+      rotation: 0,
+      zIndex: 1,
+      createdAt: currentTime,
+      updatedAt: currentTime,
+      content: textContent.trim().length > 0 ? textContent.trim() : profile.fileName,
+      color: '#111827',
+      fontSize: 18,
+      backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR
+    };
+
+    await this.writePageContent(pageId, {
+      version: 2,
+      strokes: [],
+      elements: [element]
+    });
+    return pageId;
+  }
+
+  private async writeNotebookAttachmentPage(notebookId: string, profile: ImportFileProfile, sourceUri: string): Promise<string> {
+    const currentTime: number = TimeUtil.now();
+    const pageId: string = IdUtil.createNotebookPageId();
+    const notebookPage: NotebookPage = {
+      id: pageId,
+      notebookId: notebookId,
+      order: 0,
+      createdAt: currentTime,
+      updatedAt: currentTime,
+      templateType: NotebookPageEntity.DEFAULT_TEMPLATE_TYPE,
+      sourceFileUri: sourceUri,
+      sourceFileType: profile.lowerExtension
+    };
+
+    await this.writePageList(notebookId, [notebookPage]);
+    await this.writeCanvas({
+      pageId: pageId,
+      notebookId: notebookId,
+      width: NotebookPageCanvasEntity.DEFAULT_WIDTH,
+      height: NotebookPageCanvasEntity.DEFAULT_HEIGHT,
+      backgroundColor: NotebookPageCanvasEntity.DEFAULT_BACKGROUND_COLOR,
+      backgroundImageUri: '',
+      createdAt: currentTime,
+      updatedAt: currentTime
+    });
+
+    await this.writePageContent(pageId, {
+      version: 2,
+      strokes: [],
+      elements: [
+        {
+          id: IdUtil.createId('import_file'),
+          pageId: pageId,
+          type: 'text',
+          x: 96,
+          y: 96,
+          width: Math.max(280, NotebookPageCanvasEntity.DEFAULT_WIDTH - 192),
+          height: 160,
+          rotation: 0,
+          zIndex: 1,
+          createdAt: currentTime,
+          updatedAt: currentTime,
+          content: `Imported file: ${profile.fileName}`,
+          color: '#111827',
+          fontSize: 18,
+          backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR
+        }
+      ]
+    });
+    return pageId;
+  }
+
+  private async importImageAsset(sourceUri: string): Promise<ImportedImageAsset> {
+    try {
+      return await new ImageAssetDataSource(this.context).importImage(sourceUri);
+    } catch (_error) {
+      return {
+        uri: sourceUri,
+        originalWidth: 1,
+        originalHeight: 1
+      };
+    }
+  }
+
+  private normalizeLocalUri(path: string): string {
+    if (path.length === 0) {
+      return '';
+    }
+    if (path.startsWith('file://')) {
+      return path;
+    }
+    return `file://${path}`;
+  }
+
+  private async extractOfficeText(sourceUri: string, lowerExtension: string): Promise<string> {
+    const unpackDir = `${this.context.filesDir}/${NotebookImportService.IMPORT_DIR}/${IdUtil.createId('office')}`;
+    try {
+      fs.mkdirSync(unpackDir, true);
+    } catch (_error) {
+    }
+
+    try {
+      await zlib.unzipFile(sourceUri, unpackDir, {});
+    } catch (_error) {
+      return '';
+    }
+
+    const candidateFiles: string[] = [];
+    if (lowerExtension === '.docx') {
+      candidateFiles.push(`${unpackDir}/word/document.xml`);
+    } else if (lowerExtension === '.pptx') {
+      const slideFiles = await this.listRecursiveFiles(`${unpackDir}/ppt/slides`);
+      for (const filePath of slideFiles) {
+        if (filePath.toLowerCase().endsWith('.xml')) {
+          candidateFiles.push(`${unpackDir}/${filePath}`);
+        }
+      }
+    }
+
+    const texts: string[] = [];
+    for (const filePath of candidateFiles) {
+      const raw = await this.readTextFromPath(filePath);
+      if (raw.length === 0) {
+        continue;
+      }
+      const extracted = this.extractVisibleTextFromXml(raw);
+      if (extracted.length > 0) {
+        texts.push(extracted);
+      }
+    }
+
+    return this.trimImportText(texts.join('\n\n'));
+  }
+
+  private async listRecursiveFiles(directoryPath: string): Promise<string[]> {
+    try {
+      return await fs.listFile(directoryPath, { recursion: true });
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  private async readTextFromPath(path: string): Promise<string> {
+    try {
+      return fs.readTextSync(path);
+    } catch (_error) {
+      return '';
+    }
+  }
+
+  private extractVisibleTextFromXml(rawXml: string): string {
+    if (rawXml.length === 0) {
+      return '';
+    }
+
+    const normalized = rawXml
+      .replace(/<\/?[a-zA-Z0-9:_-]+[^>]*>/g, ' ')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return this.trimImportText(normalized);
+  }
+
+  private trimImportText(text: string): string {
+    if (text.length <= NotebookImportService.XML_TEXT_TRIM_LIMIT) {
+      return text;
+    }
+    return text.substring(0, NotebookImportService.XML_TEXT_TRIM_LIMIT);
+  }
+
+  private buildImportFileProfile(uri: string): ImportFileProfile {
+    const normalized = uri.split('?')[0].split('#')[0];
+    const fileName = this.resolveFileName(normalized);
+    const extensionIndex = fileName.lastIndexOf('.');
+    const extension = extensionIndex >= 0 ? fileName.substring(extensionIndex) : '';
+    const baseName = extensionIndex >= 0 ? fileName.substring(0, extensionIndex) : fileName;
+    return {
+      uri,
+      fileName,
+      extension,
+      lowerExtension: extension.toLowerCase(),
+      baseName: NotebookEntity.normalizeTitle(baseName.length > 0 ? baseName : 'Imported Notebook'),
+      mimeType: this.resolveMimeType(extension.toLowerCase())
+    };
+  }
+
+  private resolveFileName(path: string): string {
+    const slashIndex = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+    if (slashIndex >= 0 && slashIndex < path.length - 1) {
+      return path.substring(slashIndex + 1);
+    }
+    return path;
+  }
+
+  private resolveMimeType(extension: string): string {
+    switch (extension) {
+      case '.jpg':
+      case '.jpeg':
+        return 'image/jpeg';
+      case '.png':
+        return 'image/png';
+      case '.webp':
+        return 'image/webp';
+      case '.gif':
+        return 'image/gif';
+      case '.bmp':
+        return 'image/bmp';
+      case '.pdf':
+        return 'application/pdf';
+      case '.doc':
+        return 'application/msword';
+      case '.docx':
+        return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      case '.ppt':
+        return 'application/vnd.ms-powerpoint';
+      case '.pptx':
+        return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      default:
+        return 'application/octet-stream';
+    }
+  }
+
+  private isImageFile(profile: ImportFileProfile): boolean {
+    return ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].includes(profile.lowerExtension);
+  }
+
+  private isPdfFile(profile: ImportFileProfile): boolean {
+    return profile.lowerExtension === '.pdf';
+  }
+
+  private isOfficeLikeFile(profile: ImportFileProfile): boolean {
+    return ['.doc', '.docx', '.ppt', '.pptx'].includes(profile.lowerExtension);
+  }
+
+  private async readBestEffortText(sourceUri: string): Promise<string> {
+    const text = await this.readTextFromPath(sourceUri);
+    if (text.length > 0) {
+      return text;
+    }
+    return '';
+  }
+
+  private async persistImportSource(notebookId: string, profile: ImportFileProfile, importedUri: string): Promise<void> {
+    const sourcePath = `${NotebookImportService.IMPORT_DIR}/${notebookId}.json`;
+    const payload = {
+      notebookId: notebookId,
+      sourceUri: profile.uri,
+      importedUri: importedUri,
+      fileName: profile.fileName,
+      extension: profile.lowerExtension,
+      mimeType: profile.mimeType,
+      importedAt: TimeUtil.now()
+    };
+    await this.fileDataSource.writeText(sourcePath, JSON.stringify(payload));
+  }
+
+  private async readNotebookList(): Promise<Notebook[]> {
+    const content = await this.fileDataSource.readText(NotebookImportService.NOTEBOOK_LIST_PATH, '[]');
+    return this.parseNotebookList(content);
+  }
+
+  private async writeNotebookList(notebookList: Notebook[]): Promise<void> {
+    await this.fileDataSource.writeText(NotebookImportService.NOTEBOOK_LIST_PATH, JSON.stringify(notebookList));
+  }
+
+  private async writePageList(notebookId: string, pageList: NotebookPage[]): Promise<void> {
+    await this.fileDataSource.writeText(`${NotebookImportService.PAGE_DIR}/${notebookId}.json`, JSON.stringify(pageList));
+  }
+
+  private async writeCanvas(canvas: NotebookPageCanvas): Promise<void> {
+    await this.fileDataSource.writeText(`${NotebookImportService.CANVAS_DIR}/${canvas.pageId}.json`, JSON.stringify(canvas));
+  }
+
+  private async writePageContent(pageId: string, content: PageCanvasContent): Promise<void> {
+    await this.editorRepository.savePageContent(pageId, content);
+  }
+
+  private parseNotebookList(content: string): Notebook[] {
+    try {
+      const parsed = JSON.parse(content);
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+      const result: Notebook[] = [];
+      for (const item of parsed) {
+        const notebook = this.parseNotebook(item);
+        if (notebook !== null) {
+          result.push(notebook);
+        }
+      }
+      return result;
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  private parseNotebook(value: unknown): Notebook | null {
+    const map = this.asMap(value);
+    if (map === null) {
+      return null;
+    }
+    const now = TimeUtil.now();
+    const tags = this.parseStringArray(map.tags);
+    return {
+      id: this.parseId(map.id, IdUtil.createNotebookId()),
+      title: NotebookEntity.normalizeTitle(this.parseString(map.title)),
+      folderId: NotebookEntity.normalizeFolderId(this.parseString(map.folderId)),
+      createdAt: this.parseTimestamp(map.createdAt, now),
+      updatedAt: this.parseTimestamp(map.updatedAt, now),
+      coverColor: NotebookEntity.normalizeCoverColor(this.parseString(map.coverColor)),
+      coverImageUri: NotebookEntity.normalizeCoverImageUri(this.parseString(map.coverImageUri)),
+      pageCount: NotebookEntity.normalizePageCount(this.parseNumber(map.pageCount, 1)),
+      isFavorite: this.parseBoolean(map.isFavorite),
+      tags: tags,
+      isDeleted: this.parseBoolean(map.isDeleted),
+      deletedAt: this.parseTimestamp(map.deletedAt, 0),
+      lastOpenedAt: this.parseTimestamp(map.lastOpenedAt, 0)
+    };
+  }
+
+  private parseId(value: unknown, fallback: string): string {
+    const id = this.parseString(value);
+    return id.length > 0 ? id : fallback;
+  }
+
+  private parseString(value: unknown): string {
+    return typeof value === 'string' ? value.trim() : '';
+  }
+
+  private parseNumber(value: unknown, fallback: number): number {
+    return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  }
+
+  private parseBoolean(value: unknown): boolean {
+    return value === true;
+  }
+
+  private parseTimestamp(value: unknown, fallback: number): number {
+    const timestamp = this.parseNumber(value, fallback);
+    return TimeUtil.isValidTimestamp(timestamp) ? timestamp : fallback;
+  }
+
+  private parseStringArray(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    const result: string[] = [];
+    for (const item of value) {
+      const text = this.parseString(item);
+      if (text.length > 0 && !result.includes(text)) {
+        result.push(text);
+      }
+    }
+    return result;
+  }
+
+  private asMap(value: unknown): RawMap | null {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    return value as RawMap;
+  }
+}

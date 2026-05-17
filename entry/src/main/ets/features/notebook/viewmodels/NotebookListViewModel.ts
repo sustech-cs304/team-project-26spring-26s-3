@@ -57,10 +57,35 @@ export class NotebookListViewModel {
     return notebook;
   }
 
-  async createFolder(title: string): Promise<NotebookFolder> {
-    const folder: NotebookFolder = await this.createNotebookFolderUseCase.execute({ title: title });
+  async createFolder(title: string, color: string): Promise<NotebookFolder> {
+    const folder: NotebookFolder = await this.createNotebookFolderUseCase.execute({ title: title, color: color });
     this.folderList = await this.getNotebookFolderListUseCase.execute();
     return folder;
+  }
+
+  async renameFolder(folderId: string, title: string): Promise<NotebookFolder | null> {
+    const folder: NotebookFolder | null = await this.notebookRepository.renameFolder({
+      folderId: folderId,
+      title: title
+    });
+    this.folderList = await this.getNotebookFolderListUseCase.execute();
+    return folder;
+  }
+
+  async updateFolderColor(folderId: string, color: string): Promise<NotebookFolder | null> {
+    const folder: NotebookFolder | null = await this.notebookRepository.updateFolderColor({
+      folderId: folderId,
+      color: color
+    });
+    this.folderList = await this.getNotebookFolderListUseCase.execute();
+    return folder;
+  }
+
+  async deleteFolder(folderId: string): Promise<boolean> {
+    const hasDeleted: boolean = await this.notebookRepository.deleteFolder(folderId);
+    this.folderList = await this.getNotebookFolderListUseCase.execute();
+    this.notebookList = await this.getNotebookListUseCase.execute();
+    return hasDeleted;
   }
 
   async renameNotebook(notebookId: string, title: string): Promise<Notebook | null> {
@@ -88,6 +113,52 @@ export class NotebookListViewModel {
     return notebook;
   }
 
+  async toggleNotebookFavorite(notebookId: string, isFavorite: boolean): Promise<Notebook | null> {
+    const notebook: Notebook | null = await this.notebookRepository.toggleNotebookFavorite({
+      notebookId: notebookId,
+      isFavorite: isFavorite
+    });
+    this.notebookList = await this.getNotebookListUseCase.execute();
+    return notebook;
+  }
+
+  async updateNotebookTags(notebookId: string, tags: string[]): Promise<Notebook | null> {
+    const notebook: Notebook | null = await this.notebookRepository.updateNotebookTags({
+      notebookId: notebookId,
+      tags: tags
+    });
+    this.notebookList = await this.getNotebookListUseCase.execute();
+    return notebook;
+  }
+
+  async updateNotebookCover(notebookId: string, coverImageUri: string, coverColor?: string): Promise<Notebook | null> {
+    const notebook: Notebook | null = await this.notebookRepository.updateNotebookCover({
+      notebookId: notebookId,
+      coverImageUri: coverImageUri,
+      coverColor: coverColor
+    });
+    this.notebookList = await this.getNotebookListUseCase.execute();
+    return notebook;
+  }
+
+  async touchNotebookLastOpened(notebookId: string): Promise<Notebook | null> {
+    const notebook: Notebook | null = await this.notebookRepository.touchNotebookLastOpened(notebookId);
+    this.notebookList = await this.getNotebookListUseCase.execute();
+    return notebook;
+  }
+
+  async restoreNotebook(notebookId: string): Promise<boolean> {
+    const hasRestored: boolean = await this.notebookRepository.restoreNotebook(notebookId);
+    this.notebookList = await this.getNotebookListUseCase.execute();
+    return hasRestored;
+  }
+
+  async purgeNotebook(notebookId: string): Promise<boolean> {
+    const hasPurged: boolean = await this.notebookRepository.purgeNotebook(notebookId);
+    this.notebookList = await this.getNotebookListUseCase.execute();
+    return hasPurged;
+  }
+
   async changeSortType(sortType: NotebookSortType): Promise<Notebook[]> {
     this.notebookList = await this.sortNotebookListUseCase.execute(sortType);
     return this.cloneNotebookList(this.notebookList);
@@ -109,7 +180,15 @@ export class NotebookListViewModel {
         title: notebook.title,
         folderId: notebook.folderId,
         createdAt: notebook.createdAt,
-        updatedAt: notebook.updatedAt
+        updatedAt: notebook.updatedAt,
+        coverColor: notebook.coverColor,
+        coverImageUri: notebook.coverImageUri,
+        pageCount: notebook.pageCount,
+        isFavorite: notebook.isFavorite === true,
+        tags: Array.isArray(notebook.tags) ? notebook.tags.slice() : [],
+        isDeleted: notebook.isDeleted === true,
+        deletedAt: typeof notebook.deletedAt === 'number' ? notebook.deletedAt : 0,
+        lastOpenedAt: typeof notebook.lastOpenedAt === 'number' ? notebook.lastOpenedAt : 0
       });
     }
     return clonedNotebookList;
@@ -121,6 +200,7 @@ export class NotebookListViewModel {
       clonedFolderList.push({
         id: folder.id,
         title: folder.title,
+        color: folder.color,
         createdAt: folder.createdAt,
         updatedAt: folder.updatedAt
       });

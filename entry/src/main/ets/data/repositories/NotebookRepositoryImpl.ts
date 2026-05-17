@@ -16,7 +16,12 @@ import {
   NotebookRepository,
   NotebookSortType,
   ReorderNotebookPagesRequest,
+  RenameNotebookFolderRequest,
   RenameNotebookRequest,
+  ToggleNotebookFavoriteRequest,
+  UpdateNotebookCoverRequest,
+  UpdateNotebookFolderColorRequest,
+  UpdateNotebookTagsRequest,
   UpdateNotebookPageCanvasRequest,
   UpdateNotebookPageTemplateRequest
 } from '../../domain/repositories/NotebookRepository';
@@ -65,12 +70,42 @@ export class NotebookRepositoryImpl implements NotebookRepository {
   async createNotebook(request: CreateNotebookRequest): Promise<Notebook> {
     const notebookList: Notebook[] = await this.loadNotebookList();
     const currentTime: number = TimeUtil.now();
+    const usedCoverColorList: string[] = [];
+    for (const existingNotebook of notebookList) {
+      const normalizedColor: string = NotebookEntity.normalizeCoverColor(existingNotebook.coverColor);
+      if (!usedCoverColorList.includes(normalizedColor)) {
+        usedCoverColorList.push(normalizedColor);
+      }
+    }
+    let coverColor: string = NotebookEntity.DEFAULT_COVER_COLOR;
+    const availableCoverColorList: string[] = [];
+    for (const color of NotebookEntity.COVER_COLOR_PALETTE) {
+      if (!usedCoverColorList.includes(color)) {
+        availableCoverColorList.push(color);
+      }
+    }
+    if (availableCoverColorList.length > 0) {
+      const randomIndex: number = Math.floor(Math.random() * availableCoverColorList.length);
+      coverColor = availableCoverColorList[randomIndex];
+    } else {
+      const randomIndex: number = Math.floor(Math.random() * NotebookEntity.COVER_COLOR_PALETTE.length);
+      coverColor = NotebookEntity.COVER_COLOR_PALETTE[randomIndex];
+    }
+
     const notebook: Notebook = {
       id: IdUtil.createNotebookId(),
       title: NotebookEntity.normalizeTitle(request.title),
       folderId: '',
       createdAt: currentTime,
-      updatedAt: currentTime
+      updatedAt: currentTime,
+      coverColor: coverColor,
+      coverImageUri: '',
+      pageCount: 1,
+      isFavorite: false,
+      tags: [],
+      isDeleted: false,
+      deletedAt: 0,
+      lastOpenedAt: 0
     };
 
     notebookList.push(notebook);
@@ -87,6 +122,7 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     const folder: NotebookFolder = {
       id: IdUtil.createNotebookFolderId(),
       title: NotebookFolderEntity.normalizeTitle(request.title),
+      color: NotebookFolderEntity.normalizeColor(request.color),
       createdAt: currentTime,
       updatedAt: currentTime
     };
@@ -94,6 +130,94 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     folderList.push(folder);
     await this.persistFolderList(folderList);
     return folder;
+  }
+
+  async renameFolder(request: RenameNotebookFolderRequest): Promise<NotebookFolder | null> {
+    const folderList: NotebookFolder[] = await this.loadFolderList();
+    const folderIndex: number = this.findFolderIndexById(folderList, request.folderId);
+    if (folderIndex < 0) {
+      return null;
+    }
+
+    const currentFolder: NotebookFolder = folderList[folderIndex];
+    const updatedFolder: NotebookFolder = {
+      id: currentFolder.id,
+      title: NotebookFolderEntity.normalizeTitle(request.title),
+      color: NotebookFolderEntity.normalizeColor(currentFolder.color),
+      createdAt: currentFolder.createdAt,
+      updatedAt: currentFolder.updatedAt
+    };
+    folderList[folderIndex] = updatedFolder;
+    await this.persistFolderList(folderList);
+    return updatedFolder;
+  }
+
+  async updateFolderColor(request: UpdateNotebookFolderColorRequest): Promise<NotebookFolder | null> {
+    const folderList: NotebookFolder[] = await this.loadFolderList();
+    const folderIndex: number = this.findFolderIndexById(folderList, request.folderId);
+    if (folderIndex < 0) {
+      return null;
+    }
+
+    const currentFolder: NotebookFolder = folderList[folderIndex];
+    const updatedFolder: NotebookFolder = {
+      id: currentFolder.id,
+      title: currentFolder.title,
+      color: NotebookFolderEntity.normalizeColor(request.color),
+      createdAt: currentFolder.createdAt,
+      updatedAt: currentFolder.updatedAt
+    };
+    folderList[folderIndex] = updatedFolder;
+    await this.persistFolderList(folderList);
+    return updatedFolder;
+  }
+
+  async deleteFolder(folderId: string): Promise<boolean> {
+    const folderList: NotebookFolder[] = await this.loadFolderList();
+    const folderIndex: number = this.findFolderIndexById(folderList, folderId);
+    if (folderIndex < 0) {
+      return false;
+    }
+
+    const nextFolderList: NotebookFolder[] = [];
+    for (let index: number = 0; index < folderList.length; index += 1) {
+      if (index !== folderIndex) {
+        nextFolderList.push(folderList[index]);
+      }
+    }
+
+    const notebookList: Notebook[] = await this.loadNotebookList();
+    const nextNotebookList: Notebook[] = [];
+    const currentTime: number = TimeUtil.now();
+    let hasNotebookMovedOut: boolean = false;
+    for (const notebook of notebookList) {
+      if (notebook.folderId === folderId) {
+        hasNotebookMovedOut = true;
+        nextNotebookList.push({
+          id: notebook.id,
+          title: notebook.title,
+          folderId: '',
+          createdAt: notebook.createdAt,
+          updatedAt: currentTime,
+          coverColor: NotebookEntity.normalizeCoverColor(notebook.coverColor),
+          coverImageUri: NotebookEntity.normalizeCoverImageUri(notebook.coverImageUri),
+          pageCount: NotebookEntity.normalizePageCount(notebook.pageCount),
+          isFavorite: notebook.isFavorite === true,
+          tags: this.normalizeTags(notebook.tags),
+          isDeleted: notebook.isDeleted === true,
+          deletedAt: this.normalizeTimestamp(notebook.deletedAt),
+          lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
+        });
+      } else {
+        nextNotebookList.push(notebook);
+      }
+    }
+
+    await this.persistFolderList(nextFolderList);
+    if (hasNotebookMovedOut) {
+      await this.persistNotebookList(nextNotebookList);
+    }
+    return true;
   }
 
   async renameNotebook(request: RenameNotebookRequest): Promise<Notebook | null> {
@@ -107,7 +231,15 @@ export class NotebookRepositoryImpl implements NotebookRepository {
           title: NotebookEntity.normalizeTitle(request.title),
           folderId: currentNotebook.folderId,
           createdAt: currentNotebook.createdAt,
-          updatedAt: TimeUtil.now()
+          updatedAt: TimeUtil.now(),
+          coverColor: NotebookEntity.normalizeCoverColor(currentNotebook.coverColor),
+          coverImageUri: NotebookEntity.normalizeCoverImageUri(currentNotebook.coverImageUri),
+          pageCount: NotebookEntity.normalizePageCount(currentNotebook.pageCount),
+          isFavorite: currentNotebook.isFavorite === true,
+          tags: this.normalizeTags(currentNotebook.tags),
+          isDeleted: currentNotebook.isDeleted === true,
+          deletedAt: this.normalizeTimestamp(currentNotebook.deletedAt),
+          lastOpenedAt: this.normalizeTimestamp(currentNotebook.lastOpenedAt)
         };
 
         notebookList[index] = renamedNotebook;
@@ -144,7 +276,15 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       title: currentNotebook.title,
       folderId: targetFolderId,
       createdAt: currentNotebook.createdAt,
-      updatedAt: currentTime
+      updatedAt: currentTime,
+      coverColor: NotebookEntity.normalizeCoverColor(currentNotebook.coverColor),
+      coverImageUri: NotebookEntity.normalizeCoverImageUri(currentNotebook.coverImageUri),
+      pageCount: NotebookEntity.normalizePageCount(currentNotebook.pageCount),
+      isFavorite: currentNotebook.isFavorite === true,
+      tags: this.normalizeTags(currentNotebook.tags),
+      isDeleted: currentNotebook.isDeleted === true,
+      deletedAt: this.normalizeTimestamp(currentNotebook.deletedAt),
+      lastOpenedAt: this.normalizeTimestamp(currentNotebook.lastOpenedAt)
     };
     notebookList[notebookIndex] = movedNotebook;
     await this.persistNotebookList(notebookList);
@@ -154,17 +294,178 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       folderList[targetFolderIndex] = {
         id: targetFolder.id,
         title: targetFolder.title,
+        color: NotebookFolderEntity.normalizeColor(targetFolder.color),
         createdAt: targetFolder.createdAt,
         updatedAt: currentTime
       };
-      await this.persistFolderList(folderList);
     }
+    if (currentNotebook.folderId.length > 0) {
+      const previousFolderIndex: number = this.findFolderIndexById(folderList, currentNotebook.folderId);
+      if (previousFolderIndex >= 0) {
+        const previousFolder: NotebookFolder = folderList[previousFolderIndex];
+        folderList[previousFolderIndex] = {
+          id: previousFolder.id,
+          title: previousFolder.title,
+          color: NotebookFolderEntity.normalizeColor(previousFolder.color),
+          createdAt: previousFolder.createdAt,
+          updatedAt: currentTime
+        };
+      }
+    }
+    await this.persistFolderList(folderList);
 
     return movedNotebook;
   }
 
-  async deleteNotebook(notebookId: string): Promise<boolean> {
+  async toggleNotebookFavorite(request: ToggleNotebookFavoriteRequest): Promise<Notebook | null> {
     const notebookList: Notebook[] = await this.loadNotebookList();
+    const notebookIndex: number = this.findNotebookIndexById(notebookList, request.notebookId);
+    if (notebookIndex < 0) {
+      return null;
+    }
+
+    const notebook: Notebook = notebookList[notebookIndex];
+    const updatedNotebook: Notebook = {
+      id: notebook.id,
+      title: notebook.title,
+      folderId: notebook.folderId,
+      createdAt: notebook.createdAt,
+      updatedAt: TimeUtil.now(),
+      coverColor: NotebookEntity.normalizeCoverColor(notebook.coverColor),
+      coverImageUri: NotebookEntity.normalizeCoverImageUri(notebook.coverImageUri),
+      pageCount: NotebookEntity.normalizePageCount(notebook.pageCount),
+      isFavorite: request.isFavorite,
+      tags: this.normalizeTags(notebook.tags),
+      isDeleted: notebook.isDeleted === true,
+      deletedAt: this.normalizeTimestamp(notebook.deletedAt),
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
+    };
+    notebookList[notebookIndex] = updatedNotebook;
+    await this.persistNotebookList(notebookList);
+    return updatedNotebook;
+  }
+
+  async updateNotebookTags(request: UpdateNotebookTagsRequest): Promise<Notebook | null> {
+    const notebookList: Notebook[] = await this.loadNotebookList();
+    const notebookIndex: number = this.findNotebookIndexById(notebookList, request.notebookId);
+    if (notebookIndex < 0) {
+      return null;
+    }
+
+    const notebook: Notebook = notebookList[notebookIndex];
+    const updatedNotebook: Notebook = {
+      id: notebook.id,
+      title: notebook.title,
+      folderId: notebook.folderId,
+      createdAt: notebook.createdAt,
+      updatedAt: TimeUtil.now(),
+      coverColor: NotebookEntity.normalizeCoverColor(notebook.coverColor),
+      coverImageUri: NotebookEntity.normalizeCoverImageUri(notebook.coverImageUri),
+      pageCount: NotebookEntity.normalizePageCount(notebook.pageCount),
+      isFavorite: notebook.isFavorite === true,
+      tags: this.normalizeTags(request.tags),
+      isDeleted: notebook.isDeleted === true,
+      deletedAt: this.normalizeTimestamp(notebook.deletedAt),
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
+    };
+    notebookList[notebookIndex] = updatedNotebook;
+    await this.persistNotebookList(notebookList);
+    return updatedNotebook;
+  }
+
+  async updateNotebookCover(request: UpdateNotebookCoverRequest): Promise<Notebook | null> {
+    const notebookList: Notebook[] = await this.loadNotebookList();
+    const notebookIndex: number = this.findNotebookIndexById(notebookList, request.notebookId);
+    if (notebookIndex < 0) {
+      return null;
+    }
+
+    const notebook: Notebook = notebookList[notebookIndex];
+    const updatedNotebook: Notebook = {
+      id: notebook.id,
+      title: notebook.title,
+      folderId: notebook.folderId,
+      createdAt: notebook.createdAt,
+      updatedAt: TimeUtil.now(),
+      coverColor: typeof request.coverColor === 'string' ?
+        NotebookEntity.normalizeCoverColor(request.coverColor) :
+        NotebookEntity.normalizeCoverColor(notebook.coverColor),
+      coverImageUri: NotebookEntity.normalizeCoverImageUri(request.coverImageUri),
+      pageCount: NotebookEntity.normalizePageCount(notebook.pageCount),
+      isFavorite: notebook.isFavorite === true,
+      tags: this.normalizeTags(notebook.tags),
+      isDeleted: notebook.isDeleted === true,
+      deletedAt: this.normalizeTimestamp(notebook.deletedAt),
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
+    };
+    notebookList[notebookIndex] = updatedNotebook;
+    await this.persistNotebookList(notebookList);
+    return updatedNotebook;
+  }
+
+  async touchNotebookLastOpened(notebookId: string): Promise<Notebook | null> {
+    const notebookList: Notebook[] = await this.loadNotebookList();
+    const notebookIndex: number = this.findNotebookIndexById(notebookList, notebookId);
+    if (notebookIndex < 0) {
+      return null;
+    }
+
+    const notebook: Notebook = notebookList[notebookIndex];
+    const currentTime: number = TimeUtil.now();
+    const updatedNotebook: Notebook = {
+      id: notebook.id,
+      title: notebook.title,
+      folderId: notebook.folderId,
+      createdAt: notebook.createdAt,
+      updatedAt: currentTime,
+      coverColor: NotebookEntity.normalizeCoverColor(notebook.coverColor),
+      coverImageUri: NotebookEntity.normalizeCoverImageUri(notebook.coverImageUri),
+      pageCount: NotebookEntity.normalizePageCount(notebook.pageCount),
+      isFavorite: notebook.isFavorite === true,
+      tags: this.normalizeTags(notebook.tags),
+      isDeleted: notebook.isDeleted === true,
+      deletedAt: this.normalizeTimestamp(notebook.deletedAt),
+      lastOpenedAt: currentTime
+    };
+    notebookList[notebookIndex] = updatedNotebook;
+    await this.persistNotebookList(notebookList);
+    return updatedNotebook;
+  }
+
+  async restoreNotebook(notebookId: string): Promise<boolean> {
+    const notebookList: Notebook[] = await this.loadNotebookList();
+    const notebookIndex: number = this.findNotebookIndexById(notebookList, notebookId);
+    if (notebookIndex < 0) {
+      return false;
+    }
+
+    const notebook: Notebook = notebookList[notebookIndex];
+    const restoredNotebook: Notebook = {
+      id: notebook.id,
+      title: notebook.title,
+      folderId: notebook.folderId,
+      createdAt: notebook.createdAt,
+      updatedAt: TimeUtil.now(),
+      coverColor: NotebookEntity.normalizeCoverColor(notebook.coverColor),
+      coverImageUri: NotebookEntity.normalizeCoverImageUri(notebook.coverImageUri),
+      pageCount: NotebookEntity.normalizePageCount(notebook.pageCount),
+      isFavorite: notebook.isFavorite === true,
+      tags: this.normalizeTags(notebook.tags),
+      isDeleted: false,
+      deletedAt: 0,
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
+    };
+    notebookList[notebookIndex] = restoredNotebook;
+    await this.persistNotebookList(notebookList);
+    if (restoredNotebook.folderId.length > 0) {
+      await this.touchFolderUpdatedAt(restoredNotebook.folderId, TimeUtil.now());
+    }
+    return true;
+  }
+
+  async purgeNotebook(notebookId: string): Promise<boolean> {
+    const notebookList: Notebook[] = await this.loadNotebookList();
+    let removedFolderId: string = '';
     const notebookPageList: NotebookPage[] = await this.loadNotebookPageList(notebookId);
     const filteredNotebookList: Notebook[] = [];
     let hasDeleted: boolean = false;
@@ -172,6 +473,7 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     for (const notebook of notebookList) {
       if (notebook.id === notebookId) {
         hasDeleted = true;
+        removedFolderId = notebook.folderId;
         continue;
       }
       filteredNotebookList.push(notebook);
@@ -186,6 +488,40 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     }
     await this.fileDataSource.delete(this.buildNotebookPageListFilePath(notebookId));
     await this.persistNotebookList(filteredNotebookList);
+    if (removedFolderId.length > 0) {
+      await this.touchFolderUpdatedAt(removedFolderId, TimeUtil.now());
+    }
+    return true;
+  }
+
+  async deleteNotebook(notebookId: string): Promise<boolean> {
+    const notebookList: Notebook[] = await this.loadNotebookList();
+    const notebookIndex: number = this.findNotebookIndexById(notebookList, notebookId);
+    if (notebookIndex < 0) {
+      return false;
+    }
+
+    const notebook: Notebook = notebookList[notebookIndex];
+    const deletedNotebook: Notebook = {
+      id: notebook.id,
+      title: notebook.title,
+      folderId: notebook.folderId,
+      createdAt: notebook.createdAt,
+      updatedAt: TimeUtil.now(),
+      coverColor: NotebookEntity.normalizeCoverColor(notebook.coverColor),
+      coverImageUri: NotebookEntity.normalizeCoverImageUri(notebook.coverImageUri),
+      pageCount: NotebookEntity.normalizePageCount(notebook.pageCount),
+      isFavorite: notebook.isFavorite === true,
+      tags: this.normalizeTags(notebook.tags),
+      isDeleted: true,
+      deletedAt: TimeUtil.now(),
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
+    };
+    notebookList[notebookIndex] = deletedNotebook;
+    await this.persistNotebookList(notebookList);
+    if (deletedNotebook.folderId.length > 0) {
+      await this.touchFolderUpdatedAt(deletedNotebook.folderId, TimeUtil.now());
+    }
     return true;
   }
 
@@ -239,7 +575,15 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       title: notebook.title,
       folderId: notebook.folderId,
       createdAt: notebook.createdAt,
-      updatedAt: currentTime
+      updatedAt: currentTime,
+      coverColor: NotebookEntity.normalizeCoverColor(notebook.coverColor),
+      coverImageUri: NotebookEntity.normalizeCoverImageUri(notebook.coverImageUri),
+      pageCount: NotebookEntity.normalizePageCount(notebook.pageCount) + 1,
+      isFavorite: notebook.isFavorite === true,
+      tags: this.normalizeTags(notebook.tags),
+      isDeleted: notebook.isDeleted === true,
+      deletedAt: this.normalizeTimestamp(notebook.deletedAt),
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
     };
     await this.persistNotebookList(notebookList);
     return notebookPage;
@@ -290,7 +634,15 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       title: notebook.title,
       folderId: notebook.folderId,
       createdAt: notebook.createdAt,
-      updatedAt: currentTime
+      updatedAt: currentTime,
+      coverColor: NotebookEntity.normalizeCoverColor(notebook.coverColor),
+      coverImageUri: NotebookEntity.normalizeCoverImageUri(notebook.coverImageUri),
+      pageCount: Math.max(1, NotebookEntity.normalizePageCount(notebook.pageCount) - 1),
+      isFavorite: notebook.isFavorite === true,
+      tags: this.normalizeTags(notebook.tags),
+      isDeleted: notebook.isDeleted === true,
+      deletedAt: this.normalizeTimestamp(notebook.deletedAt),
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
     };
     await this.persistNotebookList(notebookList);
     return true;
@@ -323,7 +675,15 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       title: notebook.title,
       folderId: notebook.folderId,
       createdAt: notebook.createdAt,
-      updatedAt: currentTime
+      updatedAt: currentTime,
+      coverColor: NotebookEntity.normalizeCoverColor(notebook.coverColor),
+      coverImageUri: NotebookEntity.normalizeCoverImageUri(notebook.coverImageUri),
+      pageCount: NotebookEntity.normalizePageCount(notebook.pageCount),
+      isFavorite: notebook.isFavorite === true,
+      tags: this.normalizeTags(notebook.tags),
+      isDeleted: notebook.isDeleted === true,
+      deletedAt: this.normalizeTimestamp(notebook.deletedAt),
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
     };
     await this.persistNotebookList(notebookList);
     return true;
@@ -366,7 +726,15 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       title: notebook.title,
       folderId: notebook.folderId,
       createdAt: notebook.createdAt,
-      updatedAt: currentTime
+      updatedAt: currentTime,
+      coverColor: NotebookEntity.normalizeCoverColor(notebook.coverColor),
+      coverImageUri: NotebookEntity.normalizeCoverImageUri(notebook.coverImageUri),
+      pageCount: NotebookEntity.normalizePageCount(notebook.pageCount),
+      isFavorite: notebook.isFavorite === true,
+      tags: this.normalizeTags(notebook.tags),
+      isDeleted: notebook.isDeleted === true,
+      deletedAt: this.normalizeTimestamp(notebook.deletedAt),
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
     };
     await this.persistNotebookList(notebookList);
     return updatedNotebookPage;
@@ -480,7 +848,15 @@ export class NotebookRepositoryImpl implements NotebookRepository {
           title: notebook.title,
           folderId: notebook.folderId,
           createdAt: notebook.createdAt,
-          updatedAt: currentTime
+          updatedAt: currentTime,
+          coverColor: NotebookEntity.normalizeCoverColor(notebook.coverColor),
+          coverImageUri: NotebookEntity.normalizeCoverImageUri(notebook.coverImageUri),
+          pageCount: NotebookEntity.normalizePageCount(notebook.pageCount),
+          isFavorite: notebook.isFavorite === true,
+          tags: this.normalizeTags(notebook.tags),
+          isDeleted: notebook.isDeleted === true,
+          deletedAt: this.normalizeTimestamp(notebook.deletedAt),
+          lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
         };
         await this.persistNotebookList(notebookList);
         return true;
@@ -624,7 +1000,15 @@ export class NotebookRepositoryImpl implements NotebookRepository {
           title: NotebookEntity.normalizeTitle(item.title),
           folderId: NotebookEntity.normalizeFolderId(item.folderId),
           createdAt: TimeUtil.isValidTimestamp(item.createdAt) ? item.createdAt : TimeUtil.now(),
-          updatedAt: TimeUtil.isValidTimestamp(item.updatedAt) ? item.updatedAt : TimeUtil.now()
+          updatedAt: TimeUtil.isValidTimestamp(item.updatedAt) ? item.updatedAt : TimeUtil.now(),
+          coverColor: NotebookEntity.normalizeCoverColor(item.coverColor),
+          coverImageUri: NotebookEntity.normalizeCoverImageUri(item.coverImageUri),
+          pageCount: NotebookEntity.normalizePageCount(item.pageCount),
+          isFavorite: item.isFavorite === true,
+          tags: this.normalizeTags(item.tags),
+          isDeleted: item.isDeleted === true,
+          deletedAt: this.normalizeTimestamp(item.deletedAt),
+          lastOpenedAt: this.normalizeTimestamp(item.lastOpenedAt)
         };
         normalizedNotebookList.push(notebook);
       }
@@ -650,6 +1034,7 @@ export class NotebookRepositoryImpl implements NotebookRepository {
         const folder: NotebookFolder = {
           id: typeof item.id === 'string' ? item.id : IdUtil.createNotebookFolderId(),
           title: NotebookFolderEntity.normalizeTitle(item.title),
+          color: NotebookFolderEntity.normalizeColor(typeof item.color === 'string' ? item.color : ''),
           createdAt: TimeUtil.isValidTimestamp(item.createdAt) ? item.createdAt : TimeUtil.now(),
           updatedAt: TimeUtil.isValidTimestamp(item.updatedAt) ? item.updatedAt : TimeUtil.now()
         };
@@ -682,7 +1067,9 @@ export class NotebookRepositoryImpl implements NotebookRepository {
           order: NotebookPageEntity.normalizeOrder(item.order, index),
           createdAt: TimeUtil.isValidTimestamp(item.createdAt) ? item.createdAt : TimeUtil.now(),
           updatedAt: TimeUtil.isValidTimestamp(item.updatedAt) ? item.updatedAt : TimeUtil.now(),
-          templateType: NotebookPageEntity.normalizeTemplateType(item.templateType)
+          templateType: NotebookPageEntity.normalizeTemplateType(item.templateType),
+          sourceFileUri: typeof item.sourceFileUri === 'string' ? item.sourceFileUri.trim() : '',
+          sourceFileType: typeof item.sourceFileType === 'string' ? item.sourceFileType.trim() : ''
         };
         normalizedNotebookPageList.push(notebookPage);
       }
@@ -698,7 +1085,9 @@ export class NotebookRepositoryImpl implements NotebookRepository {
           order: index,
           createdAt: page.createdAt,
           updatedAt: page.updatedAt,
-          templateType: page.templateType
+          templateType: page.templateType,
+          sourceFileUri: typeof page.sourceFileUri === 'string' ? page.sourceFileUri : '',
+          sourceFileType: typeof page.sourceFileType === 'string' ? page.sourceFileType : ''
         };
       });
     } catch (_error) {
@@ -725,6 +1114,9 @@ export class NotebookRepositoryImpl implements NotebookRepository {
           NotebookPageCanvasEntity.DEFAULT_HEIGHT
         ),
         backgroundColor: NotebookPageCanvasEntity.normalizeBackgroundColor(parsedNotebookPageCanvas.backgroundColor),
+        backgroundImageUri: NotebookPageCanvasEntity.normalizeBackgroundImageUri(
+          parsedNotebookPageCanvas.backgroundImageUri
+        ),
         createdAt: TimeUtil.isValidTimestamp(parsedNotebookPageCanvas.createdAt) ? parsedNotebookPageCanvas.createdAt : notebookPage.createdAt,
         updatedAt: TimeUtil.isValidTimestamp(parsedNotebookPageCanvas.updatedAt) ? parsedNotebookPageCanvas.updatedAt : notebookPage.updatedAt
       };
@@ -756,7 +1148,39 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     sortedFolderList.sort((left: NotebookFolder, right: NotebookFolder): number => {
       return left.title.localeCompare(right.title);
     });
+    for (let index: number = 0; index < sortedFolderList.length; index += 1) {
+      const folder: NotebookFolder = sortedFolderList[index];
+      sortedFolderList[index] = {
+        id: folder.id,
+        title: folder.title,
+        color: NotebookFolderEntity.normalizeColor(folder.color),
+        createdAt: folder.createdAt,
+        updatedAt: folder.updatedAt
+      };
+    }
     return sortedFolderList;
+  }
+
+  private async touchFolderUpdatedAt(folderId: string, updatedAt: number): Promise<void> {
+    if (folderId.length === 0) {
+      return;
+    }
+
+    const folderList: NotebookFolder[] = await this.loadFolderList();
+    const folderIndex: number = this.findFolderIndexById(folderList, folderId);
+    if (folderIndex < 0) {
+      return;
+    }
+
+    const folder: NotebookFolder = folderList[folderIndex];
+    folderList[folderIndex] = {
+      id: folder.id,
+      title: folder.title,
+      color: NotebookFolderEntity.normalizeColor(folder.color),
+      createdAt: folder.createdAt,
+      updatedAt: updatedAt
+    };
+    await this.persistFolderList(folderList);
   }
 
   private buildReorderedNotebookPageList(
@@ -803,7 +1227,9 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       order: order,
       createdAt: timestamp,
       updatedAt: timestamp,
-      templateType: NotebookPageEntity.DEFAULT_TEMPLATE_TYPE
+      templateType: NotebookPageEntity.DEFAULT_TEMPLATE_TYPE,
+      sourceFileUri: '',
+      sourceFileType: ''
     };
   }
 
@@ -814,9 +1240,38 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       width: NotebookPageCanvasEntity.DEFAULT_WIDTH,
       height: NotebookPageCanvasEntity.DEFAULT_HEIGHT,
       backgroundColor: NotebookPageCanvasEntity.DEFAULT_BACKGROUND_COLOR,
+      backgroundImageUri: '',
       createdAt: timestamp,
       updatedAt: timestamp
     };
+  }
+
+  private normalizeTags(rawTags?: string[]): string[] {
+    if (!Array.isArray(rawTags)) {
+      return [];
+    }
+
+    const tags: string[] = [];
+    for (const rawTag of rawTags) {
+      if (typeof rawTag !== 'string') {
+        continue;
+      }
+      const normalizedTag: string = rawTag.trim();
+      if (normalizedTag.length === 0) {
+        continue;
+      }
+      if (!tags.includes(normalizedTag)) {
+        tags.push(normalizedTag);
+      }
+    }
+    return tags;
+  }
+
+  private normalizeTimestamp(rawTimestamp?: number): number {
+    if (typeof rawTimestamp === 'number' && rawTimestamp > 0) {
+      return rawTimestamp;
+    }
+    return 0;
   }
 
   private findNotebookIndexById(notebookList: Notebook[], notebookId: string): number {
