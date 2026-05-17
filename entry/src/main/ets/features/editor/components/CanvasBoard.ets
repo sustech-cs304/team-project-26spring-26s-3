@@ -72,6 +72,8 @@ interface ExtendedTouchObject extends TouchObject {
   t?: number;
 }
 
+type CanvasDrawContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
 const COMMITTED_TILE_SIZE = 256;
 const PARTIAL_REDRAW_OVERDRAW_VIEWPORT_PX = 2;
 const RECENT_COMMITTED_STROKE_LIMIT = 6;
@@ -83,7 +85,7 @@ const MAX_ZOOM_SCALE = 4;
 const DEFAULT_VIEWPORT_WIDTH = 1600;
 const DEFAULT_VIEWPORT_HEIGHT = 900;
 const PAGE_BORDER_COLOR = '#C4D2E6';
-const VIEWPORT_REDRAW_INTERVAL_MS = 16;
+const VIEWPORT_REDRAW_INTERVAL_MS = 24;
 const TEXT_EDIT_DOUBLE_TAP_MS = 360;
 const TEXT_EDIT_DOUBLE_TAP_DISTANCE = 18;
 const INLINE_TEXT_LINE_HEIGHT_FACTOR = 1.35;
@@ -227,6 +229,7 @@ export struct CanvasBoard {
   }
 
   aboutToDisappear(): void {
+    this.flattenRecentCommittedLayer();
     this.clearSelectionOverlayResumeTimer();
     this.commitInlineTextEdit(true);
   }
@@ -1024,7 +1027,7 @@ export struct CanvasBoard {
         viewModel.updateStrokeResize(point, this.getPageBounds());
       if (didUpdate) {
         this.syncEditorSnapshot();
-        if (this.requestSelectionMoveRedraw(false)) {
+        if (this.requestSelectionMoveRedraw(false) && viewModel.getSelectedElementIds().length > 0) {
           this.onContentChanged(false, 'element');
         }
       }
@@ -1048,10 +1051,12 @@ export struct CanvasBoard {
       const didChange = this.strokeResizeUiMode === 'moving' ?
         viewModel.finishSelectionMove() :
         viewModel.finishStrokeResize();
+      const contentChangeKind: CanvasBoardContentChangeKind =
+        this.strokeResizeUiMode === 'moving' && viewModel.getSelectedElementIds().length > 0 ? 'element' : 'stroke';
       this.strokeResizeUiMode = 'ready';
       this.syncEditorSnapshot();
       this.finishSelectionMovePreview(didChange);
-      this.onContentChanged(didChange, 'stroke');
+      this.onContentChanged(didChange, contentChangeKind);
       return true;
     }
 
@@ -1116,7 +1121,7 @@ export struct CanvasBoard {
 
     if (viewModel.updateSelectionMove(point, this.getPageBounds())) {
       this.syncEditorSnapshot();
-      if (this.requestSelectionMoveRedraw(forceRedraw)) {
+      if (this.requestSelectionMoveRedraw(forceRedraw) && viewModel.getSelectedElementIds().length > 0) {
         this.onContentChanged(false, 'element');
       }
     }
@@ -1188,7 +1193,7 @@ export struct CanvasBoard {
     }
 
     if (this.hiddenStrokeIdsDuringSelectionMove.size > 0) {
-      this.redrawCommittedLayer(false);
+      this.repaintSelectedStrokeTargetRegions();
     }
   }
 
@@ -1207,7 +1212,7 @@ export struct CanvasBoard {
 
   private cancelSelectionMovePreview(): void {
     this.hiddenStrokeIdsDuringSelectionMove.clear();
-    this.redrawCommittedLayer(false);
+    this.repaintSelectedStrokeTargetRegions();
     this.redrawOverlayLayer();
   }
 
@@ -1346,40 +1351,14 @@ export struct CanvasBoard {
     const transform = this.getPageViewportTransform(size);
     this.syncElementLayerTransform(transform);
     const visibleRegion = this.getVisiblePageRegion(transform);
-    this.committedContext2D.clearRect(0, 0, size.width, size.height);
-    this.clearRecentCommittedLayer();
 
-    if (visibleRegion !== null) {
-      const visibleBounds = this.toBoundingBox(visibleRegion);
-      this.committedContext2D.save();
-      this.applyPageTransformAndClip(this.committedContext2D, transform);
-      PageTemplateRenderer.drawTemplateBackground(
-        this.committedContext2D,
-        this.templateType,
-        transform.pageWidth,
-        transform.pageHeight,
-        this.paperBackgroundColor,
-        visibleRegion
-      );
-      this.drawStrokeRange(this.committedContext2D, strokes, 0, flattenedStrokeCount, visibleBounds, useFastRendering);
-      this.committedContext2D.restore();
-
-      if (flattenedStrokeCount < strokes.length) {
-        this.recentCommittedContext2D.save();
-        this.applyPageTransformAndClip(this.recentCommittedContext2D, transform);
-        this.drawStrokeRange(
-          this.recentCommittedContext2D,
-          strokes,
-          flattenedStrokeCount,
-          strokes.length,
-          visibleBounds,
-          useFastRendering
-        );
-        this.recentCommittedContext2D.restore();
-      }
+    if (this.redrawCommittedBaseLayerWithBuffer(size, transform, visibleRegion, strokes, flattenedStrokeCount,
+      useFastRendering)) {
+      this.redrawRecentCommittedStrokes(strokes, flattenedStrokeCount, visibleRegion, transform, useFastRendering);
+    } else {
+      this.redrawCommittedLayerDirect(size, transform, visibleRegion, strokes, flattenedStrokeCount, useFastRendering);
     }
 
-    this.drawPageBorder(this.committedContext2D, transform);
     EditorPerformanceTrace.record(
       'committed.fullRedraw',
       Date.now() - redrawStartedAt,
@@ -1994,7 +1973,7 @@ export struct CanvasBoard {
     };
   }
 
-  private drawStroke(context: CanvasRenderingContext2D, stroke: Stroke, useFastRendering: boolean = false): void {
+  private drawStroke(context: CanvasDrawContext, stroke: Stroke, useFastRendering: boolean = false): void {
     if (useFastRendering) {
       StrokeRenderer.drawStrokeFast(context, stroke);
       return;
@@ -2048,6 +2027,77 @@ export struct CanvasBoard {
       }
     }
     this.overlayContext2D.restore();
+  }
+
+  private repaintSelectedStrokeTargetRegions(): void {
+    const dirtyRect = this.getSelectedStrokeTargetDirtyBounds();
+    if (dirtyRect === null) {
+      return;
+    }
+
+    if (!this.repaintCommittedRegion(dirtyRect)) {
+      this.redrawCommittedLayer(false);
+      return;
+    }
+  }
+
+  private flattenRecentCommittedLayer(): void {
+    if (!this.hasActiveRecentCommittedLayer()) {
+      return;
+    }
+
+    this.redrawCommittedLayer(false, false);
+  }
+
+  private getSelectedStrokeTargetDirtyBounds(): BoundingBox | null {
+    const dirtyBounds: BoundingBox[] = [];
+    for (const strokeId of this.hiddenStrokeIdsDuringSelectionMove) {
+      const stroke = this.renderedStrokesById.get(strokeId);
+      if (stroke === undefined) {
+        continue;
+      }
+
+      const strokeBounds = getStrokeRenderBoundingBox(stroke);
+      if (strokeBounds !== null) {
+        dirtyBounds.push(strokeBounds);
+      }
+    }
+
+    if (dirtyBounds.length === 0) {
+      for (const target of this.selectedStrokeTargets) {
+        if (target.kind === 'strokeGroup') {
+          dirtyBounds.push(target.bounds);
+        }
+      }
+    }
+
+    return this.mergeBoundingBoxes(dirtyBounds);
+  }
+
+  private repaintCommittedRegion(region: BoundingBox): boolean {
+    if (!this.areCommittedLayersReady()) {
+      return false;
+    }
+
+    const pageRegion = clampBoundingBox(region, this.getPageWidth(), this.getPageHeight());
+    if (pageRegion === null) {
+      return true;
+    }
+
+    const size = this.getCanvasSize(this.committedContext2D);
+    const transform = this.getPageViewportTransform(size);
+    this.syncElementLayerTransform(transform);
+    const visibleRegion = this.getVisiblePageRegion(transform);
+    if (visibleRegion === null) {
+      return true;
+    }
+
+    const visibleBounds = this.toBoundingBox(visibleRegion);
+    if (this.redrawCommittedRegion(pageRegion, transform, visibleBounds)) {
+      this.drawPageBorder(this.committedContext2D, transform);
+    }
+
+    return true;
   }
 
   private drawVisibleStrokes(
@@ -2247,7 +2297,7 @@ export struct CanvasBoard {
     return NotebookPageCanvasEntity.DEFAULT_HEIGHT;
   }
 
-  private applyPageTransformAndClip(context: CanvasRenderingContext2D, transform: PageViewportTransform): void {
+  private applyPageTransformAndClip(context: CanvasDrawContext, transform: PageViewportTransform): void {
     context.translate(transform.offsetX, transform.offsetY);
     context.scale(transform.scale, transform.scale);
     context.beginPath();
@@ -2255,7 +2305,7 @@ export struct CanvasBoard {
     context.clip();
   }
 
-  private drawPageBorder(context: CanvasRenderingContext2D, transform: PageViewportTransform): void {
+  private drawPageBorder(context: CanvasDrawContext, transform: PageViewportTransform): void {
     const left = Math.round(transform.offsetX) + 0.5;
     const top = Math.round(transform.offsetY) + 0.5;
     const width = transform.pageWidth * transform.scale;
@@ -2300,6 +2350,7 @@ export struct CanvasBoard {
   private beginWorkspacePan(touch: TouchObject): void {
     this.isWorkspacePanActive = true;
     this.pauseSelectionOverlay();
+    this.flattenRecentCommittedLayer();
     this.lastWorkspacePanX = touch.x;
     this.lastWorkspacePanY = touch.y;
   }
@@ -2333,6 +2384,7 @@ export struct CanvasBoard {
 
     this.isViewportGestureActive = true;
     this.pauseSelectionOverlay();
+    this.flattenRecentCommittedLayer();
     this.viewportGestureStartDistance = Math.max(1, pairMetrics.distance);
     this.viewportGestureStartZoomScale = this.viewportZoomScale;
     this.viewportGestureStartPageX = (pairMetrics.centerX - transform.offsetX) / transform.scale;
@@ -2438,7 +2490,7 @@ export struct CanvasBoard {
       return;
     }
 
-    this.redrawCommittedLayer(useFastRendering, true);
+    this.redrawCommittedLayer(useFastRendering, false);
     this.redrawOverlayLayer();
   }
 
@@ -2971,23 +3023,48 @@ export struct CanvasBoard {
     redrawRegion: BoundingBox,
     transform: PageViewportTransform
   ): string[] {
-    this.clearCommittedRegion(redrawRegion, transform);
-
     const candidateStrokeIds = this.strokeSpatialIndex.queryStrokeIds(redrawRegion)
       .sort((left: string, right: string) => this.getRenderedStrokeIndex(left) - this.getRenderedStrokeIndex(right));
 
-    this.committedContext2D.save();
-    this.applyPageTransformAndClip(this.committedContext2D, transform);
-    this.committedContext2D.beginPath();
-    this.committedContext2D.rect(
+    if (!this.repaintCommittedBaseRegionWithBuffer(redrawRegion, transform, candidateStrokeIds)) {
+      this.clearCommittedRegion(redrawRegion, transform);
+    }
+    this.repaintRecentCommittedRegionWithBuffer(redrawRegion, transform, candidateStrokeIds);
+    return candidateStrokeIds;
+  }
+
+  private repaintCommittedBaseRegionWithBuffer(
+    redrawRegion: BoundingBox,
+    transform: PageViewportTransform,
+    candidateStrokeIds: string[]
+  ): boolean {
+    const viewportRegion = this.toPixelAlignedViewportRegion(redrawRegion, transform);
+    if (viewportRegion === null) {
+      return true;
+    }
+
+    const width = viewportRegion.maxX - viewportRegion.minX;
+    const height = viewportRegion.maxY - viewportRegion.minY;
+    if (width <= 0 || height <= 0) {
+      return true;
+    }
+
+    const offscreenCanvas = new OffscreenCanvas(width, height);
+    const offscreenContext = offscreenCanvas.getContext('2d', this.committedRenderingSettings);
+    offscreenContext.clearRect(0, 0, width, height);
+    offscreenContext.save();
+    offscreenContext.translate(-viewportRegion.minX, -viewportRegion.minY);
+    this.applyPageTransformAndClip(offscreenContext, transform);
+    offscreenContext.beginPath();
+    offscreenContext.rect(
       redrawRegion.minX,
       redrawRegion.minY,
       redrawRegion.maxX - redrawRegion.minX,
       redrawRegion.maxY - redrawRegion.minY
     );
-    this.committedContext2D.clip();
+    offscreenContext.clip();
     PageTemplateRenderer.drawTemplateBackground(
-      this.committedContext2D,
+      offscreenContext,
       this.templateType,
       transform.pageWidth,
       transform.pageHeight,
@@ -3001,6 +3078,10 @@ export struct CanvasBoard {
     );
 
     for (const strokeId of candidateStrokeIds) {
+      if (this.hiddenStrokeIdsDuringSelectionMove.has(strokeId)) {
+        continue;
+      }
+
       const stroke = this.renderedStrokesById.get(strokeId);
       if (stroke === undefined) {
         continue;
@@ -3012,16 +3093,87 @@ export struct CanvasBoard {
 
       const strokeBounds = this.strokeSpatialIndex.getBounds(strokeId);
       if (strokeBounds !== null && doBoundingBoxesIntersect(strokeBounds, redrawRegion)) {
-        this.drawStroke(this.committedContext2D, stroke);
+        this.drawStroke(offscreenContext, stroke);
       }
     }
 
-    this.committedContext2D.restore();
-    return candidateStrokeIds;
+    offscreenContext.restore();
+    const bitmap = offscreenCanvas.transferToImageBitmap();
+    this.committedContext2D.drawImage(bitmap, viewportRegion.minX, viewportRegion.minY, width, height);
+    bitmap.close();
+    return true;
+  }
+
+  private repaintRecentCommittedRegionWithBuffer(
+    redrawRegion: BoundingBox,
+    transform: PageViewportTransform,
+    candidateStrokeIds: string[]
+  ): boolean {
+    if (!this.hasActiveRecentCommittedLayer()) {
+      return true;
+    }
+
+    const viewportRegion = this.toPixelAlignedViewportRegion(redrawRegion, transform);
+    if (viewportRegion === null) {
+      return true;
+    }
+
+    const width = viewportRegion.maxX - viewportRegion.minX;
+    const height = viewportRegion.maxY - viewportRegion.minY;
+    if (width <= 0 || height <= 0) {
+      return true;
+    }
+
+    const offscreenCanvas = new OffscreenCanvas(width, height);
+    const offscreenContext = offscreenCanvas.getContext('2d', this.recentCommittedRenderingSettings);
+    offscreenContext.clearRect(0, 0, width, height);
+    offscreenContext.save();
+    offscreenContext.translate(-viewportRegion.minX, -viewportRegion.minY);
+    this.applyPageTransformAndClip(offscreenContext, transform);
+    offscreenContext.beginPath();
+    offscreenContext.rect(
+      redrawRegion.minX,
+      redrawRegion.minY,
+      redrawRegion.maxX - redrawRegion.minX,
+      redrawRegion.maxY - redrawRegion.minY
+    );
+    offscreenContext.clip();
+
+    for (const strokeId of candidateStrokeIds) {
+      if (this.hiddenStrokeIdsDuringSelectionMove.has(strokeId)) {
+        continue;
+      }
+
+      if (!this.shouldSkipRecentCommittedStrokeInBaseLayer(strokeId)) {
+        continue;
+      }
+
+      const stroke = this.renderedStrokesById.get(strokeId);
+      if (stroke === undefined) {
+        continue;
+      }
+
+      const strokeBounds = this.strokeSpatialIndex.getBounds(strokeId);
+      if (strokeBounds !== null && doBoundingBoxesIntersect(strokeBounds, redrawRegion)) {
+        this.drawStroke(offscreenContext, stroke);
+      }
+    }
+
+    offscreenContext.restore();
+    const bitmap = offscreenCanvas.transferToImageBitmap();
+    this.recentCommittedContext2D.clearRect(
+      viewportRegion.minX,
+      viewportRegion.minY,
+      width,
+      height
+    );
+    this.recentCommittedContext2D.drawImage(bitmap, viewportRegion.minX, viewportRegion.minY, width, height);
+    bitmap.close();
+    return true;
   }
 
   private drawStrokeRange(
-    context: CanvasRenderingContext2D,
+    context: CanvasDrawContext,
     strokes: Stroke[],
     startIndex: number,
     endIndex: number,
@@ -3030,6 +3182,10 @@ export struct CanvasBoard {
   ): void {
     for (let index = startIndex; index < endIndex; index += 1) {
       const stroke = strokes[index];
+      if (this.hiddenStrokeIdsDuringSelectionMove.has(stroke.id)) {
+        continue;
+      }
+
       if (this.isStrokeBoundsVisible(stroke, visibleBounds)) {
         this.drawStroke(context, stroke, useFastRendering);
       }
@@ -3050,6 +3206,134 @@ export struct CanvasBoard {
       viewportRegion.maxX - viewportRegion.minX,
       viewportRegion.maxY - viewportRegion.minY
     );
+  }
+
+  private redrawCommittedBaseLayerWithBuffer(
+    size: CanvasSize,
+    transform: PageViewportTransform,
+    visibleRegion: PageRenderRegion | null,
+    strokes: Stroke[],
+    flattenedStrokeCount: number,
+    useFastRendering: boolean
+  ): boolean {
+    const width = Math.ceil(size.width);
+    const height = Math.ceil(size.height);
+    if (width <= 0 || height <= 0) {
+      return true;
+    }
+
+    try {
+      const offscreenCanvas = new OffscreenCanvas(width, height);
+      const offscreenContext = offscreenCanvas.getContext('2d', this.committedRenderingSettings);
+      offscreenContext.clearRect(0, 0, width, height);
+      this.drawCommittedBaseLayerContent(
+        offscreenContext,
+        transform,
+        visibleRegion,
+        strokes,
+        flattenedStrokeCount,
+        useFastRendering
+      );
+      this.drawPageBorder(offscreenContext, transform);
+
+      const bitmap = offscreenCanvas.transferToImageBitmap();
+      this.committedContext2D.clearRect(0, 0, size.width, size.height);
+      this.committedContext2D.drawImage(bitmap, 0, 0, width, height);
+      bitmap.close();
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  private redrawCommittedLayerDirect(
+    size: CanvasSize,
+    transform: PageViewportTransform,
+    visibleRegion: PageRenderRegion | null,
+    strokes: Stroke[],
+    flattenedStrokeCount: number,
+    useFastRendering: boolean
+  ): void {
+    this.committedContext2D.clearRect(0, 0, size.width, size.height);
+    this.drawCommittedBaseLayerContent(
+      this.committedContext2D,
+      transform,
+      visibleRegion,
+      strokes,
+      flattenedStrokeCount,
+      useFastRendering
+    );
+    this.drawPageBorder(this.committedContext2D, transform);
+    this.redrawRecentCommittedStrokes(strokes, flattenedStrokeCount, visibleRegion, transform, useFastRendering);
+  }
+
+  private drawCommittedBaseLayerContent(
+    context: CanvasDrawContext,
+    transform: PageViewportTransform,
+    visibleRegion: PageRenderRegion | null,
+    strokes: Stroke[],
+    flattenedStrokeCount: number,
+    useFastRendering: boolean
+  ): void {
+    if (visibleRegion === null) {
+      return;
+    }
+
+    const visibleBounds = this.toBoundingBox(visibleRegion);
+    context.save();
+    this.applyPageTransformAndClip(context, transform);
+    PageTemplateRenderer.drawTemplateBackground(
+      context,
+      this.templateType,
+      transform.pageWidth,
+      transform.pageHeight,
+      this.paperBackgroundColor,
+      visibleRegion
+    );
+    this.drawStrokeRange(context, strokes, 0, flattenedStrokeCount, visibleBounds, useFastRendering);
+    context.restore();
+  }
+
+  private redrawRecentCommittedStrokes(
+    strokes: Stroke[],
+    flattenedStrokeCount: number,
+    visibleRegion: PageRenderRegion | null,
+    transform: PageViewportTransform,
+    useFastRendering: boolean
+  ): void {
+    this.clearRecentCommittedLayer();
+    if (visibleRegion === null || flattenedStrokeCount >= strokes.length) {
+      return;
+    }
+
+    const visibleBounds = this.toBoundingBox(visibleRegion);
+    this.recentCommittedContext2D.save();
+    this.applyPageTransformAndClip(this.recentCommittedContext2D, transform);
+    this.drawStrokeRange(
+      this.recentCommittedContext2D,
+      strokes,
+      flattenedStrokeCount,
+      strokes.length,
+      visibleBounds,
+      useFastRendering
+    );
+    this.recentCommittedContext2D.restore();
+  }
+
+  private toPixelAlignedViewportRegion(region: BoundingBox, transform: PageViewportTransform): BoundingBox | null {
+    const viewportRegion = this.toViewportBoundingBox(region, transform);
+    if (viewportRegion === null) {
+      return null;
+    }
+
+    const pixelRegion: BoundingBox = {
+      minX: Math.floor(viewportRegion.minX),
+      minY: Math.floor(viewportRegion.minY),
+      maxX: Math.ceil(viewportRegion.maxX),
+      maxY: Math.ceil(viewportRegion.maxY)
+    };
+
+    return clampBoundingBox(pixelRegion, transform.viewportWidth, transform.viewportHeight);
   }
 
   private expandCommittedTileRegion(region: BoundingBox, transform: PageViewportTransform): BoundingBox {
@@ -3166,6 +3450,10 @@ export struct CanvasBoard {
 
     if (invalidation.reason === 'clear') {
       return true;
+    }
+
+    if (invalidation.reason === 'move' || invalidation.reason === 'resize') {
+      return false;
     }
 
     for (const strokeId of invalidation.removedStrokeIds) {
