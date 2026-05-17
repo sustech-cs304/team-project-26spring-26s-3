@@ -439,6 +439,10 @@ export class DrawingEditorViewModel {
     return this.cloneElements(this.elements);
   }
 
+  getElementsForRendering(): CanvasElement[] {
+    return this.elements;
+  }
+
   getSelectedElementId(): string {
     return this.selectedElementId;
   }
