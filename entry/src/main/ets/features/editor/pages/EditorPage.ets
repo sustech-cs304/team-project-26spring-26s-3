@@ -1079,8 +1079,6 @@ struct EditorPage {
             paperBackgroundColor: this.getPageCanvasBackgroundColor(page.id),
             pageWidth: this.getPageCanvasWidth(page.id),
             pageHeight: this.getPageCanvasHeight(page.id),
-            isPanModeEnabled: this.isCanvasPanModeEnabled,
-            isDocumentViewportMode: this.isContinuousDocumentViewEnabled(),
             activeTool: this.toolSetting.tool,
             editorSnapshot: $editorSnapshot,
             onContentChanged: (immediate: boolean, kind: CanvasBoardContentChangeKind): void => {
