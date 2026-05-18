@@ -54,6 +54,8 @@ interface PageViewportTransform {
 interface TouchPairMetrics {
   centerX: number;
   centerY: number;
+  windowCenterX: number;
+  windowCenterY: number;
   distance: number;
 }
 
@@ -132,9 +134,25 @@ export struct CanvasBoard {
   onContentChanged: (immediate: boolean, kind: CanvasBoardContentChangeKind) => void =
     (_immediate: boolean, _kind: CanvasBoardContentChangeKind): void => {};
   onCanvasMetricsChanged: (width: number, height: number) => void = (_width: number, _height: number): void => {};
-  onDocumentViewportGestureStart: () => void = (): void => {};
-  onDocumentViewportGestureUpdate: (scaleRatio: number, deltaX: number, deltaY: number) => void =
-    (_scaleRatio: number, _deltaX: number, _deltaY: number): void => {};
+  onDocumentViewportGestureStart: (pageId: string, centerX: number, centerY: number) => void =
+    (_pageId: string, _centerX: number, _centerY: number): void => {};
+  onDocumentViewportGestureUpdate:
+    (
+      pageId: string,
+      scaleRatio: number,
+      centerX: number,
+      centerY: number,
+      windowCenterX: number,
+      windowCenterY: number
+    ) => void =
+      (
+        _pageId: string,
+        _scaleRatio: number,
+        _centerX: number,
+        _centerY: number,
+        _windowCenterX: number,
+        _windowCenterY: number
+      ): void => {};
   onDocumentViewportGestureEnd: () => void = (): void => {};
   private viewModel: DrawingEditorViewModel | null = null;
 
@@ -2432,7 +2450,7 @@ export struct CanvasBoard {
     this.viewportGestureStartDistance = Math.max(1, pairMetrics.distance);
     this.viewportGestureLastCenterX = pairMetrics.centerX;
     this.viewportGestureLastCenterY = pairMetrics.centerY;
-    this.onDocumentViewportGestureStart();
+    this.onDocumentViewportGestureStart(this.pageId, pairMetrics.centerX, pairMetrics.centerY);
   }
 
   private updateDocumentViewportGesture(pairMetrics: TouchPairMetrics): void {
@@ -2441,11 +2459,16 @@ export struct CanvasBoard {
     }
 
     const distanceRatio = Math.max(0.1, pairMetrics.distance / Math.max(1, this.viewportGestureStartDistance));
-    const deltaX = pairMetrics.centerX - this.viewportGestureLastCenterX;
-    const deltaY = pairMetrics.centerY - this.viewportGestureLastCenterY;
     this.viewportGestureLastCenterX = pairMetrics.centerX;
     this.viewportGestureLastCenterY = pairMetrics.centerY;
-    this.onDocumentViewportGestureUpdate(distanceRatio, deltaX, deltaY);
+    this.onDocumentViewportGestureUpdate(
+      this.pageId,
+      distanceRatio,
+      pairMetrics.centerX,
+      pairMetrics.centerY,
+      pairMetrics.windowCenterX,
+      pairMetrics.windowCenterY
+    );
   }
 
   private panViewportBy(deltaX: number, deltaY: number): void {
@@ -2481,6 +2504,8 @@ export struct CanvasBoard {
     return {
       centerX: (firstTouch.x + secondTouch.x) / 2,
       centerY: (firstTouch.y + secondTouch.y) / 2,
+      windowCenterX: (firstTouch.windowX + secondTouch.windowX) / 2,
+      windowCenterY: (firstTouch.windowY + secondTouch.windowY) / 2,
       distance: Math.sqrt(deltaX * deltaX + deltaY * deltaY)
     };
   }

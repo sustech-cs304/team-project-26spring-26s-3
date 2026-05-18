@@ -164,16 +164,6 @@ export class StrokeRenderer {
   }
 
   static drawStroke(context: StrokeRenderContext, stroke: Stroke): void {
-    if (stroke.style.tool === 'highlighter') {
-      this.drawHighlighterStroke(context, stroke);
-      return;
-    }
-
-    if (stroke.style.tool === 'pencil') {
-      this.drawDetailedPencilStroke(context, stroke);
-      return;
-    }
-
     const samples = this.buildVisibleSamplesForStroke(stroke);
     if (samples.length === 0) {
       return;
