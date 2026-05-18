@@ -113,6 +113,7 @@ struct EditorPage {
   private isDocumentPanGestureActive: boolean = false;
   private documentPanLastWindowX: number = 0;
   private documentPanLastWindowY: number = 0;
+  private pendingDocumentViewportPageId: string = '';
   private editorViewModel?: EditorViewModel;
   private thumbnailStore?: PageThumbnailStore;
   private drawingViewModel: DrawingEditorViewModel | null = null;
@@ -1583,6 +1584,7 @@ struct EditorPage {
       this.notebookPageList = await this.ensureViewModel().loadNotebookPages(notebookId);
       this.retainThumbnailPages();
       this.syncActivePageId(typeof routeParams.pageId === 'string' ? routeParams.pageId : '');
+      this.queueDocumentViewportRestore(this.activePageId);
       await this.loadActivePageCanvas();
     } catch (_error) {
       this.resetState();
@@ -1609,6 +1611,7 @@ struct EditorPage {
     this.documentGesturePreviewScale = 1;
     this.documentGesturePreviewOffsetX = 0;
     this.documentGesturePreviewOffsetY = 0;
+    this.pendingDocumentViewportPageId = '';
     this.endDocumentPanGesture(false);
     this.resetDeletePageDialogState();
     this.resetDrawingState('');
@@ -1683,6 +1686,7 @@ struct EditorPage {
     }
 
     this.activePageId = page.id;
+    this.pendingDocumentViewportPageId = '';
     this.scrollDocumentToPage(page.id);
     this.closePageActionMenu();
     await this.loadActivePageCanvas();
@@ -1808,6 +1812,7 @@ struct EditorPage {
     } finally {
       if (this.activePageId === targetPageId) {
         this.isCanvasLoading = false;
+        this.restorePendingDocumentViewportIfReady();
       }
     }
   }
@@ -2002,6 +2007,7 @@ struct EditorPage {
     }
     this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset);
     this.applyDocumentScrollOffset(this.documentScrollOffsetY);
+    this.restorePendingDocumentViewportIfReady();
   }
 
   private resolveAreaWidth(area: Area): number {
@@ -2356,6 +2362,30 @@ struct EditorPage {
 
     const targetOffset = this.getDocumentScrollOffsetForPage(pageId);
     this.applyDocumentScrollOffset(targetOffset);
+  }
+
+  private queueDocumentViewportRestore(pageId: string): void {
+    this.pendingDocumentViewportPageId = pageId;
+    this.documentScrollOffsetY = 0;
+    this.documentHorizontalOffset = 0;
+  }
+
+  private restorePendingDocumentViewportIfReady(): void {
+    if (this.pendingDocumentViewportPageId.length === 0) {
+      return;
+    }
+
+    if (this.workspaceViewportWidth <= 0 || this.workspaceViewportHeight <= 0 || this.isCanvasLoading) {
+      return;
+    }
+
+    if (this.pendingDocumentViewportPageId !== this.activePageId) {
+      this.pendingDocumentViewportPageId = '';
+      return;
+    }
+
+    this.scrollDocumentToPage(this.pendingDocumentViewportPageId);
+    this.pendingDocumentViewportPageId = '';
   }
 
   private applyDocumentScrollOffset(offset: number): void {
