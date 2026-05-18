@@ -114,6 +114,8 @@ export struct CanvasBoard {
   @Prop pageId: string = '';
   @Watch('onCanvasVersionChanged')
   @Prop canvasVersion: number = 0;
+  @Watch('onViewportRefreshVersionChanged')
+  @Prop viewportRefreshVersion: number = 0;
   @Watch('onCanvasStyleChanged')
   @Prop templateType: NotebookPageTemplateType = NotebookPageTemplateType.BLANK;
   @Watch('onCanvasStyleChanged')
@@ -531,6 +533,10 @@ export struct CanvasBoard {
       this.redrawCommittedLayer();
     }
     this.redrawOverlayLayer();
+  }
+
+  private onViewportRefreshVersionChanged(): void {
+    this.redrawViewportLayers(false);
   }
 
   private handleTouch(event: TouchEvent): void {
@@ -2447,6 +2453,7 @@ export struct CanvasBoard {
 
   private beginDocumentViewportGesture(pairMetrics: TouchPairMetrics): void {
     this.isViewportGestureActive = true;
+    this.pauseSelectionOverlay();
     this.viewportGestureStartDistance = Math.max(1, pairMetrics.distance);
     this.viewportGestureLastCenterX = pairMetrics.centerX;
     this.viewportGestureLastCenterY = pairMetrics.centerY;

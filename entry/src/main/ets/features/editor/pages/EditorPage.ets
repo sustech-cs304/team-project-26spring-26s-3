@@ -42,6 +42,7 @@ const DOCUMENT_PAGE_SURFACE_MIN_WIDTH = 320;
 const DOCUMENT_PAGE_RENDER_WINDOW_PADDING_FACTOR = 1.25;
 const DOCUMENT_ZOOM_MIN_SCALE = 0.72;
 const DOCUMENT_ZOOM_MAX_SCALE = 2.2;
+const DOCUMENT_GESTURE_PREVIEW_INTERVAL_MS = 16;
 const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser', 'lasso', 'text', 'shape', 'edit'];
 const SHAPE_TOOL_OPTIONS: ShapeType[] = ['rectangle', 'circle', 'line'];
 const PAGE_TEMPLATE_OPTIONS: NotebookPageTemplateType[] = [
@@ -90,6 +91,10 @@ struct EditorPage {
   @State private documentZoomScale: number = 1;
   @State private documentHorizontalOffset: number = 0;
   @State private documentScrollOffsetY: number = 0;
+  @State private documentGesturePreviewScale: number = 1;
+  @State private documentGesturePreviewOffsetX: number = 0;
+  @State private documentGesturePreviewOffsetY: number = 0;
+  @State private documentViewportRefreshVersion: number = 0;
   private workspaceViewportWindowX: number = 0;
   private workspaceViewportWindowY: number = 0;
   private readonly pageCanvasRenderSizeMap: Map<string, PageCanvasRenderSize> = new Map<string, PageCanvasRenderSize>();
@@ -97,12 +102,15 @@ struct EditorPage {
   private thumbnailRenderTimerId: number = -1;
   private lastThumbnailRenderTime: number = 0;
   private documentGestureStartZoomScale: number = 1;
+  private documentGestureStartHorizontalOffset: number = 0;
+  private documentGestureStartScrollOffsetY: number = 0;
   private documentGestureTargetZoomScale: number = 1;
   private documentGestureTargetHorizontalOffset: number = 0;
   private documentGestureTargetScrollOffsetY: number = 0;
   private documentGestureAnchorPageId: string = '';
   private documentGestureAnchorPageUnitX: number = 0.5;
   private documentGestureAnchorPageUnitY: number = 0.5;
+  private lastDocumentGesturePreviewTime: number = 0;
   private editorViewModel?: EditorViewModel;
   private thumbnailStore?: PageThumbnailStore;
   private drawingViewModel: DrawingEditorViewModel | null = null;
@@ -975,7 +983,13 @@ struct EditorPage {
       .alignItems(HorizontalAlign.Center)
       .offset({
         x: this.getDocumentVisualOffsetX(),
-        y: 0
+        y: this.getDocumentVisualOffsetY()
+      })
+      .scale({
+        x: this.documentGesturePreviewScale,
+        y: this.documentGesturePreviewScale,
+        centerX: 0,
+        centerY: 0
       })
     }
     .width('100%')
@@ -1051,6 +1065,7 @@ struct EditorPage {
           CanvasBoard({
             pageId: page.id,
             canvasVersion: this.canvasVersion,
+            viewportRefreshVersion: this.documentViewportRefreshVersion,
             elementVersion: this.elementLayerRefreshVersion,
             selectedShapeType: this.selectedShapeType,
             templateType: this.resolvePageTemplateType(page.templateType),
@@ -2141,9 +2156,15 @@ struct EditorPage {
   ): void {
     this.syncDocumentScrollOffsetFromScroller();
     this.documentGestureStartZoomScale = this.documentZoomScale;
+    this.documentGestureStartHorizontalOffset = this.documentHorizontalOffset;
+    this.documentGestureStartScrollOffsetY = this.documentScrollOffsetY;
     this.documentGestureTargetZoomScale = this.documentZoomScale;
     this.documentGestureTargetHorizontalOffset = this.documentHorizontalOffset;
     this.documentGestureTargetScrollOffsetY = this.documentScrollOffsetY;
+    this.documentGesturePreviewScale = 1;
+    this.documentGesturePreviewOffsetX = 0;
+    this.documentGesturePreviewOffsetY = 0;
+    this.lastDocumentGesturePreviewTime = 0;
 
     const anchorPageId = pageId.length > 0 ? pageId : this.activePageId;
     const surfaceWidth = this.getDocumentPageSurfaceWidthForScale(this.documentGestureStartZoomScale);
@@ -2168,6 +2189,16 @@ struct EditorPage {
     const currentTouchWorkspaceX = windowCenterX - this.workspaceViewportWindowX;
     const currentTouchWorkspaceY = windowCenterY - this.workspaceViewportWindowY;
     const nextZoomScale = this.clampDocumentZoomScale(this.documentGestureStartZoomScale * scaleRatio);
+    const previewScale = nextZoomScale / Math.max(0.001, this.documentGestureStartZoomScale);
+    const startAnchorContentX = this.getDocumentPageAnchorContentXForScale(
+      this.documentGestureAnchorPageUnitX,
+      this.documentGestureStartZoomScale
+    );
+    const startAnchorContentY = this.getDocumentPageAnchorContentYForScale(
+      this.documentGestureAnchorPageId,
+      this.documentGestureAnchorPageUnitY,
+      this.documentGestureStartZoomScale
+    );
     const targetAnchorContentX = this.getDocumentPageAnchorContentXForScale(
       this.documentGestureAnchorPageUnitX,
       nextZoomScale
@@ -2186,19 +2217,19 @@ struct EditorPage {
       targetAnchorContentY - currentTouchWorkspaceY,
       nextZoomScale
     );
-    this.documentZoomScale = nextZoomScale;
-    this.documentHorizontalOffset = this.documentGestureTargetHorizontalOffset;
-    this.documentScrollOffsetY = this.documentGestureTargetScrollOffsetY;
-    this.documentScroller.scrollTo({
-      xOffset: 0,
-      yOffset: this.documentGestureTargetScrollOffsetY,
-      animation: false
-    });
+
+    const nextPreviewOffsetX = currentTouchWorkspaceX -
+      this.documentGestureStartHorizontalOffset - startAnchorContentX * previewScale;
+    const nextPreviewOffsetY = currentTouchWorkspaceY +
+      this.documentGestureStartScrollOffsetY - startAnchorContentY * previewScale;
+    this.applyDocumentGesturePreview(previewScale, nextPreviewOffsetX, nextPreviewOffsetY);
   }
 
   private endDocumentViewportGesture(): void {
-    this.syncDocumentScrollOffsetFromScroller();
     const nextZoomScale = this.documentGestureTargetZoomScale;
+    this.documentGesturePreviewScale = 1;
+    this.documentGesturePreviewOffsetX = 0;
+    this.documentGesturePreviewOffsetY = 0;
     this.documentZoomScale = nextZoomScale;
     this.documentHorizontalOffset = this.clampDocumentHorizontalOffsetForScale(
       this.documentGestureTargetHorizontalOffset,
@@ -2214,7 +2245,25 @@ struct EditorPage {
       yOffset: nextScrollOffset,
       animation: false
     });
+    this.documentViewportRefreshVersion += 1;
     void this.commitViewportCenteredPage();
+  }
+
+  private applyDocumentGesturePreview(
+    previewScale: number,
+    offsetX: number,
+    offsetY: number
+  ): void {
+    const nowTime = Date.now();
+    if (this.lastDocumentGesturePreviewTime > 0 &&
+      nowTime - this.lastDocumentGesturePreviewTime < DOCUMENT_GESTURE_PREVIEW_INTERVAL_MS) {
+      return;
+    }
+
+    this.lastDocumentGesturePreviewTime = nowTime;
+    this.documentGesturePreviewScale = previewScale;
+    this.documentGesturePreviewOffsetX = offsetX;
+    this.documentGesturePreviewOffsetY = offsetY;
   }
 
   private setDocumentZoomScale(scale: number): void {
@@ -2227,7 +2276,11 @@ struct EditorPage {
   }
 
   private getDocumentVisualOffsetX(): number {
-    return this.documentHorizontalOffset;
+    return this.documentHorizontalOffset + this.documentGesturePreviewOffsetX;
+  }
+
+  private getDocumentVisualOffsetY(): number {
+    return this.documentGesturePreviewOffsetY;
   }
 
   private clampDocumentHorizontalOffset(offset: number): number {
