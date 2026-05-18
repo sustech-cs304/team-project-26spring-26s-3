@@ -1,0 +1,46 @@
+import { BoundingBox } from '../../../common/utils/GeometryUtil';
+import { StrokePoint } from '../../../domain/entities/Stroke';
+
+export type SelectionTargetKind = 'strokeGroup' | 'textElement' | 'shapeElement' | 'imageElement';
+export type SelectionContextMenuTarget = 'strokeGroup' | 'element';
+export type SelectionAction = 'delete' | 'copy' | 'resize';
+export type ResizeHandle =
+  'topLeft' |
+  'top' |
+  'topRight' |
+  'right' |
+  'bottomRight' |
+  'bottom' |
+  'bottomLeft' |
+  'left';
+
+export interface ResizeHandlePoint {
+  handle: ResizeHandle;
+  x: number;
+  y: number;
+}
+
+export interface SelectionActionResult {
+  changed: boolean;
+  changedStrokes: boolean;
+  changedElements: boolean;
+  elementSelectionChanged: boolean;
+}
+
+export interface SelectionTarget {
+  id: string;
+  kind: SelectionTargetKind;
+  bounds: BoundingBox;
+  outline: StrokePoint[];
+  strokeIds: string[];
+  elementId: string;
+  canMove: boolean;
+  canShowMenu: boolean;
+}
+
+export interface SelectionHitResult {
+  target: SelectionTarget | null;
+  kind: SelectionTargetKind | 'none';
+  canMove: boolean;
+  canShowMenu: boolean;
+}

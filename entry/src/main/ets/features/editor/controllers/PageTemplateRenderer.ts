@@ -7,6 +7,8 @@ export interface PageTemplateRenderRegion {
   height: number;
 }
 
+type PageTemplateRenderContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
 const TEMPLATE_LINE_COLOR = '#D7E3F3';
 const TEMPLATE_GRID_COLOR = '#D8E5F8';
 const TEMPLATE_DOT_COLOR = '#B8C5D8';
@@ -17,7 +19,7 @@ const DOT_RADIUS = 1.35;
 
 export class PageTemplateRenderer {
   static drawTemplateBackground(
-    context: CanvasRenderingContext2D,
+    context: PageTemplateRenderContext,
     templateType: NotebookPageTemplateType,
     width: number,
     height: number,
@@ -71,7 +73,7 @@ export class PageTemplateRenderer {
   }
 
   private static drawHorizontalLines(
-    context: CanvasRenderingContext2D,
+    context: PageTemplateRenderContext,
     region: PageTemplateRenderRegion,
     spacing: number,
     color: string
@@ -98,7 +100,7 @@ export class PageTemplateRenderer {
   }
 
   private static drawGrid(
-    context: CanvasRenderingContext2D,
+    context: PageTemplateRenderContext,
     region: PageTemplateRenderRegion,
     spacing: number,
     color: string
@@ -136,7 +138,7 @@ export class PageTemplateRenderer {
   }
 
   private static drawDots(
-    context: CanvasRenderingContext2D,
+    context: PageTemplateRenderContext,
     region: PageTemplateRenderRegion,
     spacing: number,
     color: string

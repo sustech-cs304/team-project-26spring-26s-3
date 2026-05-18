@@ -17,7 +17,7 @@ export struct ElementLayer {
   @Prop refreshVersion: number = 0;
   @Prop editingElementId: string = '';
   @State private elements: CanvasElement[] = [];
-  @State private selectedElementId: string = '';
+  @State private selectedElementIds: string[] = [];
   private viewModel: DrawingEditorViewModel | null = null;
 
   aboutToAppear(): void {
@@ -34,7 +34,7 @@ export struct ElementLayer {
       }, (element: CanvasElement): string => `${element.id}_${element.updatedAt}`)
 
       ForEach(this.elements, (element: CanvasElement) => {
-        if (element.id === this.selectedElementId && element.id !== this.editingElementId) {
+        if (this.selectedElementIds.includes(element.id) && element.id !== this.editingElementId) {
           ElementSelectionOverlay({ element: element })
         }
       }, (element: CanvasElement): string => this.getSelectionRenderKey(element))
@@ -93,7 +93,7 @@ export struct ElementLayer {
   }
 
   private getSelectionRenderKey(element: CanvasElement): string {
-    return `selection_${element.id}_${this.selectedElementId}_${element.updatedAt}_${element.x}_${element.y}_${element.width}_${element.height}`;
+    return `selection_${element.id}_${this.selectedElementIds.join('_')}_${element.updatedAt}_${element.x}_${element.y}_${element.width}_${element.height}`;
   }
 
   private onPageIdChanged(): void {
@@ -108,7 +108,7 @@ export struct ElementLayer {
   private reloadElements(): void {
     const viewModel = this.getViewModel();
     this.elements = viewModel === null ? [] : viewModel.getElements();
-    this.selectedElementId = viewModel === null ? '' : viewModel.getSelectedElementId();
+    this.selectedElementIds = viewModel === null ? [] : viewModel.getSelectedElementIds();
   }
 
   private getViewModel(): DrawingEditorViewModel | null {
@@ -123,7 +123,7 @@ export struct ElementLayer {
     if (this.pageId.length === 0) {
       this.viewModel = null;
       this.elements = [];
-      this.selectedElementId = '';
+      this.selectedElementIds = [];
       return;
     }
 

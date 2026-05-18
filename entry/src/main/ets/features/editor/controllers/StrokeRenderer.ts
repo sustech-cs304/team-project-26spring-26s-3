@@ -75,6 +75,7 @@ export interface IncrementalPreviewUpdate {
 }
 
 type BrushLineCap = 'round' | 'butt';
+type StrokeRenderContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
 const PEN_PROFILE: BrushProfile = {
   minWidthFactor: 0.52,
@@ -154,35 +155,15 @@ const INCREMENTAL_PREVIEW_MUTABLE_POINT_WINDOW = 24;
 const INCREMENTAL_PREVIEW_REPAIR_OVERLAP_POINTS = 12;
 const INCREMENTAL_PREVIEW_STABLE_PROMOTION_STEP = 4;
 export class StrokeRenderer {
-  static drawStrokeFast(context: CanvasRenderingContext2D, stroke: Stroke): void {
-    if (stroke.style.tool === 'highlighter') {
-      this.drawHighlighterStroke(context, stroke);
-      return;
-    }
-
-    if (stroke.style.tool === 'pencil') {
-      this.drawFastPencilStroke(context, stroke);
-      return;
-    }
-
+  static drawStrokeFast(context: StrokeRenderContext, stroke: Stroke): void {
     this.drawRawPolyline(context, stroke);
   }
 
-  static drawPreviewStrokeFast(context: CanvasRenderingContext2D, stroke: Stroke): void {
+  static drawPreviewStrokeFast(context: StrokeRenderContext, stroke: Stroke): void {
     this.drawPreviewStroke(context, stroke);
   }
 
-  static drawStroke(context: CanvasRenderingContext2D, stroke: Stroke): void {
-    if (stroke.style.tool === 'highlighter') {
-      this.drawHighlighterStroke(context, stroke);
-      return;
-    }
-
-    if (stroke.style.tool === 'pencil') {
-      this.drawDetailedPencilStroke(context, stroke);
-      return;
-    }
-
+  static drawStroke(context: StrokeRenderContext, stroke: Stroke): void {
     const samples = this.buildVisibleSamplesForStroke(stroke);
     if (samples.length === 0) {
       return;
@@ -193,7 +174,7 @@ export class StrokeRenderer {
     this.drawBrushPasses(context, stroke.style.tool, stroke.style.color, stroke.style.opacity, strokeSeed, samples, passes);
   }
 
-  static drawPreviewStroke(context: CanvasRenderingContext2D, stroke: Stroke): void {
+  static drawPreviewStroke(context: StrokeRenderContext, stroke: Stroke): void {
     if (stroke.style.tool === 'highlighter') {
       this.drawHighlighterStroke(context, stroke);
       return;
@@ -549,7 +530,7 @@ export class StrokeRenderer {
     this.drawBrushPasses(context, stroke.style.tool, stroke.style.color, stroke.style.opacity, strokeSeed, samples, passes);
   }
 
-  private static drawHighlighterStroke(context: CanvasRenderingContext2D, stroke: Stroke): void {
+  private static drawHighlighterStroke(context: StrokeRenderContext, stroke: Stroke): void {
     const points = this.buildHighlighterPathPoints(stroke.points, stroke.style.width);
     if (points.length === 0) {
       return;
@@ -570,7 +551,7 @@ export class StrokeRenderer {
   }
 
   private static drawHighlighterSamples(
-    context: CanvasRenderingContext2D,
+    context: StrokeRenderContext,
     stroke: Stroke,
     samples: RenderSample[]
   ): void {
@@ -593,7 +574,7 @@ export class StrokeRenderer {
   }
 
   private static traceHighlighterPath(
-    context: CanvasRenderingContext2D,
+    context: StrokeRenderContext,
     samples: RenderSample[]
   ): void {
     const firstSample = samples[0];
@@ -647,7 +628,7 @@ export class StrokeRenderer {
   }
 
   private static traceHighlighterPoints(
-    context: CanvasRenderingContext2D,
+    context: StrokeRenderContext,
     points: StrokePoint[]
   ): void {
     const firstPoint = points[0];
@@ -676,7 +657,7 @@ export class StrokeRenderer {
     context.lineTo(tailPoint.x, tailPoint.y);
   }
 
-  private static drawFastPencilStroke(context: CanvasRenderingContext2D, stroke: Stroke): void {
+  private static drawFastPencilStroke(context: StrokeRenderContext, stroke: Stroke): void {
     if (stroke.points.length === 0) {
       return;
     }
@@ -703,7 +684,7 @@ export class StrokeRenderer {
     context.globalAlpha = 1;
   }
 
-  private static drawDetailedPencilStroke(context: CanvasRenderingContext2D, stroke: Stroke): void {
+  private static drawDetailedPencilStroke(context: StrokeRenderContext, stroke: Stroke): void {
     if (stroke.points.length === 0) {
       return;
     }
@@ -757,7 +738,7 @@ export class StrokeRenderer {
   }
 
   private static traceOffsetStrokePoints(
-    context: CanvasRenderingContext2D,
+    context: StrokeRenderContext,
     points: StrokePoint[],
     offsetX: number,
     offsetY: number
@@ -966,7 +947,7 @@ export class StrokeRenderer {
     return this.buildStrokeRange(stroke, 0, session.mutableStartIndex);
   }
 
-  private static drawRawPolyline(context: CanvasRenderingContext2D, stroke: Stroke): void {
+  private static drawRawPolyline(context: StrokeRenderContext, stroke: Stroke): void {
     if (stroke.points.length === 0) {
       return;
     }
@@ -1208,7 +1189,7 @@ export class StrokeRenderer {
   }
 
   private static drawBrushPasses(
-    context: CanvasRenderingContext2D,
+    context: StrokeRenderContext,
     tool: DrawableToolType,
     color: string,
     strokeOpacity: number,
@@ -1247,7 +1228,7 @@ export class StrokeRenderer {
   }
 
   private static drawSingleSample(
-    context: CanvasRenderingContext2D,
+    context: StrokeRenderContext,
     color: string,
     lineCap: BrushLineCap,
     strokeOpacity: number,
@@ -1283,7 +1264,7 @@ export class StrokeRenderer {
   }
 
   private static drawSampleSegment(
-    context: CanvasRenderingContext2D,
+    context: StrokeRenderContext,
     color: string,
     lineCap: BrushLineCap,
     strokeOpacity: number,
