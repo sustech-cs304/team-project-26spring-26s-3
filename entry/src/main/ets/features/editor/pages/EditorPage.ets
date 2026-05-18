@@ -27,6 +27,18 @@ interface PageCanvasRenderSize {
   height: number;
 }
 
+interface DocumentTouchPairMetrics {
+  windowCenterX: number;
+  windowCenterY: number;
+  distance: number;
+}
+
+interface DocumentTouchAnchor {
+  pageId: string;
+  pageX: number;
+  pageY: number;
+}
+
 const SIDEBAR_EXPANDED_PADDING = 16;
 const THUMBNAIL_RENDER_INTERVAL_MS = 320;
 const SIDEBAR_EXPANDED_WIDTH = 232;
@@ -40,7 +52,7 @@ const DOCUMENT_PAGE_HEADER_HEIGHT = 28;
 const DOCUMENT_PAGE_SURFACE_MAX_WIDTH = 980;
 const DOCUMENT_PAGE_SURFACE_MIN_WIDTH = 320;
 const DOCUMENT_PAGE_RENDER_WINDOW_PADDING_FACTOR = 1.25;
-const DOCUMENT_ZOOM_MIN_SCALE = 0.72;
+const DOCUMENT_ZOOM_MIN_SCALE = 1;
 const DOCUMENT_ZOOM_MAX_SCALE = 2.2;
 const DOCUMENT_GESTURE_PREVIEW_INTERVAL_MS = 16;
 const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser', 'lasso', 'text', 'shape', 'edit'];
@@ -113,6 +125,10 @@ struct EditorPage {
   private isDocumentPanGestureActive: boolean = false;
   private documentPanLastWindowX: number = 0;
   private documentPanLastWindowY: number = 0;
+  private isDocumentViewportGestureActive: boolean = false;
+  private documentViewportGestureStartDistance: number = 1;
+  private documentViewportGestureStartWorkspaceX: number = 0;
+  private documentViewportGestureStartWorkspaceY: number = 0;
   private pendingDocumentViewportPageId: string = '';
   private editorViewModel?: EditorViewModel;
   private thumbnailStore?: PageThumbnailStore;
@@ -133,6 +149,10 @@ struct EditorPage {
     this.isShapeDropdownVisible = false;
     this.isPageTemplateDropdownVisible = false;
     this.isCanvasPanModeEnabled = false;
+    this.isDocumentViewportGestureActive = false;
+    this.documentViewportGestureStartDistance = 1;
+    this.documentViewportGestureStartWorkspaceX = 0;
+    this.documentViewportGestureStartWorkspaceY = 0;
     this.endDocumentPanGesture(false);
   }
 
@@ -1003,7 +1023,7 @@ struct EditorPage {
           .height('100%')
           .backgroundColor('#00000000')
           .onTouch((event: TouchEvent) => {
-            this.handleDocumentPanTouch(event);
+            this.handleDocumentNavigationTouch(event);
           })
       }
     }
@@ -1093,23 +1113,6 @@ struct EditorPage {
             },
             onCanvasMetricsChanged: (width: number, height: number): void => {
               this.updatePageCanvasRenderSize(page.id, width, height);
-            },
-            onDocumentViewportGestureStart: (pageId: string, centerX: number, centerY: number): void => {
-              this.beginDocumentViewportGesture(pageId, centerX, centerY);
-            },
-            onDocumentViewportGestureUpdate:
-              (
-                pageId: string,
-                scaleRatio: number,
-                centerX: number,
-                centerY: number,
-                windowCenterX: number,
-                windowCenterY: number
-              ): void => {
-                this.updateDocumentViewportGesture(pageId, scaleRatio, centerX, centerY, windowCenterX, windowCenterY);
-              },
-            onDocumentViewportGestureEnd: (): void => {
-              this.endDocumentViewportGesture();
             }
           })
             .width('100%')
@@ -1609,6 +1612,10 @@ struct EditorPage {
     this.documentGesturePreviewScale = 1;
     this.documentGesturePreviewOffsetX = 0;
     this.documentGesturePreviewOffsetY = 0;
+    this.isDocumentViewportGestureActive = false;
+    this.documentViewportGestureStartDistance = 1;
+    this.documentViewportGestureStartWorkspaceX = 0;
+    this.documentViewportGestureStartWorkspaceY = 0;
     this.pendingDocumentViewportPageId = '';
     this.endDocumentPanGesture(false);
     this.resetDeletePageDialogState();
@@ -2165,8 +2172,18 @@ struct EditorPage {
   private beginDocumentViewportGesture(
     pageId: string,
     centerX: number,
-    centerY: number
+    centerY: number,
+    windowCenterX: number,
+    windowCenterY: number
   ): void {
+    if (!this.isDocumentNavigationModeEnabled()) {
+      return;
+    }
+
+    this.isDocumentViewportGestureActive = true;
+    this.endDocumentPanGesture(false);
+    this.documentViewportGestureStartWorkspaceX = windowCenterX - this.workspaceViewportWindowX;
+    this.documentViewportGestureStartWorkspaceY = windowCenterY - this.workspaceViewportWindowY;
     this.documentGestureStartZoomScale = this.documentZoomScale;
     this.documentGestureStartHorizontalOffset = this.documentHorizontalOffset;
     this.documentGestureStartScrollOffsetY = this.documentScrollOffsetY;
@@ -2187,21 +2204,22 @@ struct EditorPage {
   }
 
   private updateDocumentViewportGesture(
-    pageId: string,
     scaleRatio: number,
-    centerX: number,
-    centerY: number,
     windowCenterX: number,
     windowCenterY: number
   ): void {
-    if (pageId !== this.documentGestureAnchorPageId) {
-      this.beginDocumentViewportGesture(pageId, centerX, centerY);
+    if (!this.isDocumentNavigationModeEnabled() || !this.isDocumentViewportGestureActive) {
+      return;
     }
 
     const currentTouchWorkspaceX = windowCenterX - this.workspaceViewportWindowX;
     const currentTouchWorkspaceY = windowCenterY - this.workspaceViewportWindowY;
+    const centerDeltaX = currentTouchWorkspaceX - this.documentViewportGestureStartWorkspaceX;
+    const centerDeltaY = currentTouchWorkspaceY - this.documentViewportGestureStartWorkspaceY;
     const nextZoomScale = this.clampDocumentZoomScale(this.documentGestureStartZoomScale * scaleRatio);
     const previewScale = nextZoomScale / Math.max(0.001, this.documentGestureStartZoomScale);
+    const startBaseOffsetX = this.getDocumentContentBaseOffsetXForScale(this.documentGestureStartZoomScale);
+    const targetBaseOffsetX = this.getDocumentContentBaseOffsetXForScale(nextZoomScale);
     const startAnchorContentX = this.getDocumentPageAnchorContentXForScale(
       this.documentGestureAnchorPageUnitX,
       this.documentGestureStartZoomScale
@@ -2222,24 +2240,29 @@ struct EditorPage {
     );
     this.documentGestureTargetZoomScale = nextZoomScale;
     this.documentGestureTargetHorizontalOffset = this.clampDocumentHorizontalOffsetForScale(
-      currentTouchWorkspaceX - this.getDocumentContentBaseOffsetXForScale(nextZoomScale) - targetAnchorContentX,
+      this.documentGestureStartHorizontalOffset + centerDeltaX + startBaseOffsetX - targetBaseOffsetX +
+        startAnchorContentX - targetAnchorContentX,
       nextZoomScale
     );
     this.documentGestureTargetScrollOffsetY = this.clampDocumentScrollOffsetForScale(
-      targetAnchorContentY - currentTouchWorkspaceY,
+      this.documentGestureStartScrollOffsetY - centerDeltaY + targetAnchorContentY - startAnchorContentY,
       nextZoomScale
     );
 
-    const nextPreviewOffsetX = currentTouchWorkspaceX -
-      this.getDocumentContentBaseOffsetXForScale(this.documentGestureStartZoomScale) -
-      this.documentGestureStartHorizontalOffset -
-      startAnchorContentX * previewScale;
-    const nextPreviewOffsetY = currentTouchWorkspaceY +
-      this.documentGestureStartScrollOffsetY - startAnchorContentY * previewScale;
+    const nextPreviewOffsetX = centerDeltaX + startAnchorContentX - startAnchorContentX * previewScale;
+    const nextPreviewOffsetY = centerDeltaY + startAnchorContentY - startAnchorContentY * previewScale;
     this.applyDocumentGesturePreview(previewScale, nextPreviewOffsetX, nextPreviewOffsetY);
   }
 
   private endDocumentViewportGesture(): void {
+    if (!this.isDocumentViewportGestureActive) {
+      return;
+    }
+
+    this.isDocumentViewportGestureActive = false;
+    this.documentViewportGestureStartDistance = 1;
+    this.documentViewportGestureStartWorkspaceX = 0;
+    this.documentViewportGestureStartWorkspaceY = 0;
     const nextZoomScale = this.documentGestureTargetZoomScale;
     this.documentGesturePreviewScale = 1;
     this.documentGesturePreviewOffsetX = 0;
@@ -2391,6 +2414,11 @@ struct EditorPage {
   }
 
   private handleDocumentPanTouch(event: TouchEvent): void {
+    if (!this.isDocumentNavigationModeEnabled()) {
+      this.endDocumentPanGesture(false);
+      return;
+    }
+
     const touch = this.getDocumentPanTouch(event);
     if (touch === null) {
       if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
@@ -2412,6 +2440,151 @@ struct EditorPage {
     if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
       this.endDocumentPanGesture(true);
     }
+  }
+
+  private handleDocumentNavigationTouch(event: TouchEvent): void {
+    if (!this.isDocumentNavigationModeEnabled()) {
+      this.endDocumentPanGesture(false);
+      this.endDocumentViewportGesture();
+      return;
+    }
+
+    const activeTouches: TouchObject[] = this.getDocumentActiveTouches(event);
+    if (event.type === TouchType.Cancel) {
+      this.endDocumentPanGesture(false);
+      this.endDocumentViewportGesture();
+      return;
+    }
+
+    if (event.type === TouchType.Up && this.isDocumentViewportGestureActive && activeTouches.length < 2) {
+      this.endDocumentViewportGesture();
+      return;
+    }
+
+    if (activeTouches.length >= 2) {
+      this.endDocumentPanGesture(false);
+      const pairMetrics = this.getDocumentTouchPairMetrics(activeTouches[0], activeTouches[1]);
+
+      if (!this.isDocumentViewportGestureActive || event.type === TouchType.Down) {
+        const anchor = this.resolveDocumentTouchAnchor(
+          pairMetrics.windowCenterX - this.workspaceViewportWindowX,
+          pairMetrics.windowCenterY - this.workspaceViewportWindowY
+        );
+        this.documentViewportGestureStartDistance = Math.max(1, pairMetrics.distance);
+        this.beginDocumentViewportGesture(
+          anchor.pageId,
+          anchor.pageX,
+          anchor.pageY,
+          pairMetrics.windowCenterX,
+          pairMetrics.windowCenterY
+        );
+      } else {
+        const scaleRatio = Math.max(
+          0.1,
+          pairMetrics.distance / Math.max(1, this.documentViewportGestureStartDistance)
+        );
+        this.updateDocumentViewportGesture(
+          scaleRatio,
+          pairMetrics.windowCenterX,
+          pairMetrics.windowCenterY
+        );
+      }
+      return;
+    }
+
+    if (this.isDocumentViewportGestureActive) {
+      this.endDocumentViewportGesture();
+      return;
+    }
+
+    this.handleDocumentPanTouch(event);
+  }
+
+  private getDocumentActiveTouches(event: TouchEvent): TouchObject[] {
+    if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+      return event.touches;
+    }
+
+    if (event.touches.length > 0) {
+      return event.touches;
+    }
+
+    return event.changedTouches;
+  }
+
+  private getDocumentTouchPairMetrics(firstTouch: TouchObject, secondTouch: TouchObject): DocumentTouchPairMetrics {
+    const deltaX = secondTouch.x - firstTouch.x;
+    const deltaY = secondTouch.y - firstTouch.y;
+
+    return {
+      windowCenterX: (firstTouch.windowX + secondTouch.windowX) / 2,
+      windowCenterY: (firstTouch.windowY + secondTouch.windowY) / 2,
+      distance: Math.sqrt(deltaX * deltaX + deltaY * deltaY)
+    };
+  }
+
+  private resolveDocumentTouchAnchor(workspaceX: number, workspaceY: number): DocumentTouchAnchor {
+    if (this.notebookPageList.length === 0) {
+      return {
+        pageId: this.activePageId,
+        pageX: 0,
+        pageY: 0
+      };
+    }
+
+    const scale = this.documentZoomScale;
+    const contentX = workspaceX - this.getDocumentContentBaseOffsetXForScale(scale) - this.documentHorizontalOffset;
+    const contentY = workspaceY + this.documentScrollOffsetY;
+    const pageSurfaceWidth = this.getDocumentPageSurfaceWidthForScale(scale);
+    let fallbackPage = this.notebookPageList[0];
+    let fallbackDistance = Number.MAX_VALUE;
+
+    for (const page of this.notebookPageList) {
+      const pageTop = this.getDocumentPageBlockTopForScale(page.id, scale) + DOCUMENT_PAGE_HEADER_HEIGHT + 10;
+      const pageHeight = this.getDocumentPageSurfaceHeightForScale(page.id, scale);
+      const distance = this.getDistanceToRange(contentY, pageTop, pageTop + pageHeight);
+      if (distance < fallbackDistance) {
+        fallbackDistance = distance;
+        fallbackPage = page;
+      }
+
+      if (contentY >= pageTop && contentY <= pageTop + pageHeight) {
+        return {
+          pageId: page.id,
+          pageX: this.clampDocumentAnchorCoordinate(contentX - DOCUMENT_PAGE_HORIZONTAL_PADDING, pageSurfaceWidth),
+          pageY: this.clampDocumentAnchorCoordinate(contentY - pageTop, pageHeight)
+        };
+      }
+    }
+
+    const fallbackTop =
+      this.getDocumentPageBlockTopForScale(fallbackPage.id, scale) + DOCUMENT_PAGE_HEADER_HEIGHT + 10;
+    const fallbackHeight = this.getDocumentPageSurfaceHeightForScale(fallbackPage.id, scale);
+    return {
+      pageId: fallbackPage.id,
+      pageX: this.clampDocumentAnchorCoordinate(contentX - DOCUMENT_PAGE_HORIZONTAL_PADDING, pageSurfaceWidth),
+      pageY: this.clampDocumentAnchorCoordinate(contentY - fallbackTop, fallbackHeight)
+    };
+  }
+
+  private getDistanceToRange(value: number, minValue: number, maxValue: number): number {
+    if (value < minValue) {
+      return minValue - value;
+    }
+
+    if (value > maxValue) {
+      return value - maxValue;
+    }
+
+    return 0;
+  }
+
+  private clampDocumentAnchorCoordinate(value: number, maxValue: number): number {
+    if (!Number.isFinite(value)) {
+      return 0;
+    }
+
+    return Math.max(0, Math.min(Math.max(0, maxValue), value));
   }
 
   private getDocumentPanTouch(event: TouchEvent): TouchObject | null {
@@ -2683,6 +2856,7 @@ struct EditorPage {
     }
 
     this.isCanvasPanModeEnabled = false;
+    this.endDocumentViewportGesture();
     this.endDocumentPanGesture(false);
     if (commitCenteredPage) {
       await this.commitViewportCenteredPage();
