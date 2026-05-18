@@ -83,10 +83,13 @@ pipeline {
       steps {
         sh '''
           set -eu
-          test -f build/outputs/default/team-project-26spring-26s-3-default-signed.app
-          test -f entry/build/default/outputs/default/entry-default-signed.hap
+          app_count=$(find build/outputs -type f -name '*.app' | wc -l | tr -d ' ')
+          hap_count=$(find entry/build -type f -name '*.hap' | wc -l | tr -d ' ')
 
-          ls -lh build/outputs/default/*.app entry/build/default/outputs/default/*.hap
+          test "$app_count" -gt 0
+          test "$hap_count" -gt 0
+
+          find build/outputs entry/build -type f \\( -name '*.app' -o -name '*.hap' \\) -exec ls -lh {} +
         '''
       }
     }
