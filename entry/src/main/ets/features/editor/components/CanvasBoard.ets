@@ -51,14 +51,6 @@ interface PageViewportTransform {
   offsetY: number;
 }
 
-interface TouchPairMetrics {
-  centerX: number;
-  centerY: number;
-  windowCenterX: number;
-  windowCenterY: number;
-  distance: number;
-}
-
 interface PageRenderRegion {
   x: number;
   y: number;
@@ -82,7 +74,6 @@ const RECENT_COMMITTED_STROKE_LIMIT = 6;
 type StrokeResizeUiMode = 'none' | 'ready' | 'resizing' | 'moving';
 const DEFAULT_VIEWPORT_WIDTH = 1600;
 const DEFAULT_VIEWPORT_HEIGHT = 900;
-const VIEWPORT_REDRAW_INTERVAL_MS = 24;
 const TEXT_EDIT_DOUBLE_TAP_MS = 360;
 const TEXT_EDIT_DOUBLE_TAP_DISTANCE = 18;
 const INLINE_TEXT_LINE_HEIGHT_FACTOR = 1.35;
@@ -127,26 +118,6 @@ export struct CanvasBoard {
   onContentChanged: (immediate: boolean, kind: CanvasBoardContentChangeKind) => void =
     (_immediate: boolean, _kind: CanvasBoardContentChangeKind): void => {};
   onCanvasMetricsChanged: (width: number, height: number) => void = (_width: number, _height: number): void => {};
-  onDocumentViewportGestureStart: (pageId: string, centerX: number, centerY: number) => void =
-    (_pageId: string, _centerX: number, _centerY: number): void => {};
-  onDocumentViewportGestureUpdate:
-    (
-      pageId: string,
-      scaleRatio: number,
-      centerX: number,
-      centerY: number,
-      windowCenterX: number,
-      windowCenterY: number
-    ) => void =
-      (
-        _pageId: string,
-        _scaleRatio: number,
-        _centerX: number,
-        _centerY: number,
-        _windowCenterX: number,
-        _windowCenterY: number
-      ): void => {};
-  onDocumentViewportGestureEnd: () => void = (): void => {};
   private viewModel: DrawingEditorViewModel | null = null;
 
   private readonly committedRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
@@ -175,7 +146,6 @@ export struct CanvasBoard {
   private isSelectionMovePending: boolean = false;
   private isSelectionMoveGestureActive: boolean = false;
   private pendingSelectionHitResult: SelectionHitResult | null = null;
-  private isViewportGestureActive: boolean = false;
   private selectionMoveStartScreenX: number = 0;
   private selectionMoveStartScreenY: number = 0;
   private selectionMoveStartPageX: number = 0;
@@ -183,8 +153,6 @@ export struct CanvasBoard {
   private lassoStartScreenX: number = 0;
   private lassoStartScreenY: number = 0;
   private shouldClearSelectionOnLassoTap: boolean = false;
-  private viewportGestureStartDistance: number = 1;
-  private lastViewportRedrawTime: number = 0;
   private lastEditTapTime: number = 0;
   private lastEditTapElementId: string = '';
   private lastEditTapX: number = 0;
@@ -327,7 +295,7 @@ export struct CanvasBoard {
     .clip(true)
     .onAreaChange((_oldValue: Area, _newValue: Area) => {
       this.notifyCanvasMetricsChanged();
-      this.redrawViewportLayers(this.isViewportGestureActive);
+      this.redrawViewportLayers();
     })
   }
 
@@ -511,7 +479,7 @@ export struct CanvasBoard {
   }
 
   private onViewportRefreshVersionChanged(): void {
-    this.redrawViewportLayers(false);
+    this.redrawViewportLayers();
   }
 
   private handleTouch(event: TouchEvent): void {
@@ -881,19 +849,6 @@ export struct CanvasBoard {
       this.cancelLassoGesture(viewModel);
       this.cancelSelectionMoveGesture(viewModel);
       this.cancelActiveStrokeResizeGesture(viewModel);
-      const pairMetrics: TouchPairMetrics = this.getTouchPairMetrics(activeTouches[0], activeTouches[1]);
-      if (!this.isViewportGestureActive || event.type === TouchType.Down) {
-        this.beginDocumentViewportGesture(pairMetrics);
-      } else {
-        this.updateDocumentViewportGesture(pairMetrics);
-      }
-      return true;
-    }
-
-    if (this.isViewportGestureActive) {
-      if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-        this.endViewportGesture();
-      }
       return true;
     }
 
@@ -1602,8 +1557,7 @@ export struct CanvasBoard {
   }
 
   private hasSelectionOverlayPauseSource(): boolean {
-    return this.isLassoGestureActive || this.isSelectionMovePending || this.isSelectionMoveGestureActive ||
-      this.isViewportGestureActive;
+    return this.isLassoGestureActive || this.isSelectionMovePending || this.isSelectionMoveGestureActive;
   }
 
   private clearSelectionOverlayResumeTimer(): void {
@@ -2152,7 +2106,6 @@ export struct CanvasBoard {
 
   private resetViewportTransform(): void {
     this.hiddenStrokeIdsDuringSelectionMove.clear();
-    this.endViewportGesture();
     this.isDrawingGestureActive = false;
     this.isLassoGestureActive = false;
     this.shouldClearSelectionOnLassoTap = false;
@@ -2221,69 +2174,9 @@ export struct CanvasBoard {
     return pageX >= 0 && pageX <= transform.pageWidth && pageY >= 0 && pageY <= transform.pageHeight;
   }
 
-  private endViewportGesture(): void {
-    const wasGesturing = this.isViewportGestureActive;
-    this.isViewportGestureActive = false;
-    if (wasGesturing) {
-      this.scheduleSelectionOverlayResume();
-      this.onDocumentViewportGestureEnd();
-      return;
-    }
-  }
-
-  private beginDocumentViewportGesture(pairMetrics: TouchPairMetrics): void {
-    this.isViewportGestureActive = true;
-    this.pauseSelectionOverlay();
-    this.viewportGestureStartDistance = Math.max(1, pairMetrics.distance);
-    this.onDocumentViewportGestureStart(this.pageId, pairMetrics.centerX, pairMetrics.centerY);
-  }
-
-  private updateDocumentViewportGesture(pairMetrics: TouchPairMetrics): void {
-    if (!this.isViewportGestureActive) {
-      return;
-    }
-
-    const distanceRatio = Math.max(0.1, pairMetrics.distance / Math.max(1, this.viewportGestureStartDistance));
-    this.onDocumentViewportGestureUpdate(
-      this.pageId,
-      distanceRatio,
-      pairMetrics.centerX,
-      pairMetrics.centerY,
-      pairMetrics.windowCenterX,
-      pairMetrics.windowCenterY
-    );
-  }
-
-  private getTouchPairMetrics(firstTouch: TouchObject, secondTouch: TouchObject): TouchPairMetrics {
-    const deltaX = secondTouch.x - firstTouch.x;
-    const deltaY = secondTouch.y - firstTouch.y;
-
-    return {
-      centerX: (firstTouch.x + secondTouch.x) / 2,
-      centerY: (firstTouch.y + secondTouch.y) / 2,
-      windowCenterX: (firstTouch.windowX + secondTouch.windowX) / 2,
-      windowCenterY: (firstTouch.windowY + secondTouch.windowY) / 2,
-      distance: Math.sqrt(deltaX * deltaX + deltaY * deltaY)
-    };
-  }
-
-  private redrawViewportLayers(useFastRendering: boolean = false): void {
-    if (useFastRendering && !this.shouldRedrawViewportFrame()) {
-      return;
-    }
-
-    this.redrawCommittedLayer(useFastRendering, false);
+  private redrawViewportLayers(): void {
+    this.redrawCommittedLayer(false, false);
     this.redrawOverlayLayer();
-  }
-
-  private shouldRedrawViewportFrame(): boolean {
-    const now = Date.now();
-    if (now - this.lastViewportRedrawTime < VIEWPORT_REDRAW_INTERVAL_MS) {
-      return false;
-    }
-
-    this.lastViewportRedrawTime = now;
-    return true;
   }
 
   private clamp(value: number, minValue: number, maxValue: number): number {
