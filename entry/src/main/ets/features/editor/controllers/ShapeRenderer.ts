@@ -1,4 +1,5 @@
 import { ShapeCanvasElement, ShapeGeometryPoint } from '../../../domain/entities/CanvasElement';
+import { CanvasDrawContext } from './CanvasDrawContext';
 
 interface CanvasResolvedColor {
   fillStyle: string;
@@ -7,7 +8,7 @@ interface CanvasResolvedColor {
 
 export class ShapeRenderer {
   static drawShape(
-    context: CanvasRenderingContext2D,
+    context: CanvasDrawContext,
     element: ShapeCanvasElement,
     originX: number = 0,
     originY: number = 0,
@@ -28,7 +29,7 @@ export class ShapeRenderer {
   }
 
   private static drawRectShape(
-    context: CanvasRenderingContext2D,
+    context: CanvasDrawContext,
     element: ShapeCanvasElement,
     originX: number,
     originY: number,
@@ -48,7 +49,7 @@ export class ShapeRenderer {
   }
 
   private static drawEllipseShape(
-    context: CanvasRenderingContext2D,
+    context: CanvasDrawContext,
     element: ShapeCanvasElement,
     originX: number,
     originY: number,
@@ -74,7 +75,7 @@ export class ShapeRenderer {
   }
 
   private static drawLineShape(
-    context: CanvasRenderingContext2D,
+    context: CanvasDrawContext,
     element: ShapeCanvasElement,
     originX: number,
     originY: number,
@@ -99,7 +100,7 @@ export class ShapeRenderer {
   }
 
   private static fillRect(
-    context: CanvasRenderingContext2D,
+    context: CanvasDrawContext,
     element: ShapeCanvasElement,
     x: number,
     y: number,
@@ -119,7 +120,7 @@ export class ShapeRenderer {
     context.restore();
   }
 
-  private static fillCurrentPath(context: CanvasRenderingContext2D, fillColorValue: string, opacity: number): void {
+  private static fillCurrentPath(context: CanvasDrawContext, fillColorValue: string, opacity: number): void {
     const fillColor = ShapeRenderer.resolveCanvasColor(fillColorValue, '#FFFFFF');
     if (fillColor.alpha <= 0) {
       return;

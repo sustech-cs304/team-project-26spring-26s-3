@@ -1,4 +1,5 @@
 import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
+import { CanvasDrawContext } from './CanvasDrawContext';
 
 export interface PageTemplateRenderRegion {
   x: number;
@@ -7,7 +8,7 @@ export interface PageTemplateRenderRegion {
   height: number;
 }
 
-type PageTemplateRenderContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+type PageTemplateRenderContext = CanvasDrawContext;
 
 const TEMPLATE_LINE_COLOR = '#D7E3F3';
 const TEMPLATE_GRID_COLOR = '#D8E5F8';

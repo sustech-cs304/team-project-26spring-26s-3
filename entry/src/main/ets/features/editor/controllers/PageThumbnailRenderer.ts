@@ -1,6 +1,7 @@
 import { CanvasElement } from '../../../domain/entities/CanvasElement';
 import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
+import { CanvasDrawContext } from './CanvasDrawContext';
 import { CanvasElementRenderer } from './CanvasElementRenderer';
 import { PageTemplateRenderer } from './PageTemplateRenderer';
 
@@ -56,10 +57,12 @@ export function createEmptyPageThumbnailRenderSnapshot(pageId: string = ''): Pag
 }
 
 export class PageThumbnailRenderer {
-  static getViewportSize(context: CanvasRenderingContext2D): PageThumbnailViewportSize {
+  static getViewportSize(context: CanvasDrawContext): PageThumbnailViewportSize {
+    const contextWidth = context.width ?? 0;
+    const contextHeight = context.height ?? 0;
     return {
-      width: context.width > 0 ? context.width : THUMBNAIL_FALLBACK_WIDTH,
-      height: context.height > 0 ? context.height : THUMBNAIL_FALLBACK_HEIGHT
+      width: contextWidth > 0 ? contextWidth : THUMBNAIL_FALLBACK_WIDTH,
+      height: contextHeight > 0 ? contextHeight : THUMBNAIL_FALLBACK_HEIGHT
     };
   }
 
@@ -79,7 +82,7 @@ export class PageThumbnailRenderer {
   }
 
   static draw(
-    context: CanvasRenderingContext2D,
+    context: CanvasDrawContext,
     snapshot: PageThumbnailRenderSnapshot,
     viewportSize: PageThumbnailViewportSize
   ): void {
@@ -130,7 +133,7 @@ export class PageThumbnailRenderer {
   }
 
   private static drawContent(
-    context: CanvasRenderingContext2D,
+    context: CanvasDrawContext,
     snapshot: PageThumbnailRenderSnapshot,
     scale: number
   ): void {
@@ -146,7 +149,7 @@ export class PageThumbnailRenderer {
   }
 
   private static drawStroke(
-    context: CanvasRenderingContext2D,
+    context: CanvasDrawContext,
     stroke: Stroke,
     scale: number,
     opacityMultiplier: number
@@ -175,7 +178,7 @@ export class PageThumbnailRenderer {
   }
 
   private static traceDecimatedPolyline(
-    context: CanvasRenderingContext2D,
+    context: CanvasDrawContext,
     points: StrokePoint[],
     scale: number
   ): void {

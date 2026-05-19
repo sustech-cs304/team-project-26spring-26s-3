@@ -1,4 +1,5 @@
 import { CanvasElement, ImageCanvasElement, ShapeCanvasElement, TextCanvasElement } from '../../../domain/entities/CanvasElement';
+import { CanvasDrawContext } from './CanvasDrawContext';
 import { ShapeRenderer } from './ShapeRenderer';
 
 interface CanvasResolvedColor {
@@ -13,7 +14,7 @@ const TEXT_PADDING_LEFT = 8;
 const TEXT_PADDING_TOP = 6;
 
 export class CanvasElementRenderer {
-  static drawElements(context: CanvasRenderingContext2D, elements: CanvasElement[]): void {
+  static drawElements(context: CanvasDrawContext, elements: CanvasElement[]): void {
     const sortedElements = elements
       .map((element: CanvasElement): CanvasElement => element)
       .sort((left: CanvasElement, right: CanvasElement): number => left.zIndex - right.zIndex);
@@ -23,7 +24,7 @@ export class CanvasElementRenderer {
     }
   }
 
-  private static drawElement(context: CanvasRenderingContext2D, element: CanvasElement): void {
+  private static drawElement(context: CanvasDrawContext, element: CanvasElement): void {
     if (element.type === 'text') {
       CanvasElementRenderer.drawTextElement(context, element);
     } else if (element.type === 'shape') {
@@ -33,7 +34,7 @@ export class CanvasElementRenderer {
     }
   }
 
-  private static drawTextElement(context: CanvasRenderingContext2D, element: TextCanvasElement): void {
+  private static drawTextElement(context: CanvasDrawContext, element: TextCanvasElement): void {
     const fontSize = Math.max(8, element.fontSize);
     const lineHeight = fontSize * TEXT_LINE_HEIGHT_FACTOR;
     const maxLineCount = Math.max(1, Math.floor((element.height - TEXT_VERTICAL_PADDING) / lineHeight));
@@ -54,7 +55,7 @@ export class CanvasElementRenderer {
     context.restore();
   }
 
-  private static drawTextBackground(context: CanvasRenderingContext2D, element: TextCanvasElement): void {
+  private static drawTextBackground(context: CanvasDrawContext, element: TextCanvasElement): void {
     const backgroundColor = CanvasElementRenderer.resolveCanvasColor(element.backgroundColor, '#FFFFFF');
     if (backgroundColor.alpha <= 0) {
       return;
@@ -65,11 +66,11 @@ export class CanvasElementRenderer {
     context.fillRect(element.x, element.y, element.width, element.height);
   }
 
-  private static drawShapeElement(context: CanvasRenderingContext2D, element: ShapeCanvasElement): void {
+  private static drawShapeElement(context: CanvasDrawContext, element: ShapeCanvasElement): void {
     ShapeRenderer.drawShape(context, element);
   }
 
-  private static drawImagePlaceholder(context: CanvasRenderingContext2D, element: ImageCanvasElement): void {
+  private static drawImagePlaceholder(context: CanvasDrawContext, element: ImageCanvasElement): void {
     context.save();
     context.globalAlpha = Math.max(0, Math.min(1, element.opacity));
     context.fillStyle = '#F8FAFC';
@@ -97,7 +98,7 @@ export class CanvasElementRenderer {
     return result.length === 0 ? ['Text'] : result;
   }
 
-  private static buildWrappedTextLines(context: CanvasRenderingContext2D, content: string, width: number): string[] {
+  private static buildWrappedTextLines(context: CanvasDrawContext, content: string, width: number): string[] {
     const hardLines = CanvasElementRenderer.buildTextLines(content);
     const result: string[] = [];
     const contentWidth = Math.max(1, width - TEXT_HORIZONTAL_PADDING);

@@ -1,6 +1,7 @@
 import { BoundingBox, getDistance, getStrokeRenderBoundingBox, mergeBoundingBoxes } from '../../../common/utils/GeometryUtil';
 import { getStrokeRenderKey, Stroke, StrokePoint } from '../../../domain/entities/Stroke';
 import { DrawableToolType } from '../../../domain/entities/ToolSetting';
+import { CanvasDrawContext } from './CanvasDrawContext';
 
 interface RenderPoint {
   x: number;
@@ -75,7 +76,7 @@ export interface IncrementalPreviewUpdate {
 }
 
 type BrushLineCap = 'round' | 'butt';
-type StrokeRenderContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+type StrokeRenderContext = CanvasDrawContext;
 
 const PEN_PROFILE: BrushProfile = {
   minWidthFactor: 0.52,
@@ -189,7 +190,7 @@ export class StrokeRenderer {
   }
 
   static replayInProgressStroke(
-    context: CanvasRenderingContext2D,
+    context: CanvasDrawContext,
     stroke: Stroke
   ): InProgressStrokeRenderSession {
     let session = this.createInProgressStrokeRenderSession(stroke);
@@ -213,7 +214,7 @@ export class StrokeRenderer {
   }
 
   static appendInProgressStroke(
-    context: CanvasRenderingContext2D,
+    context: CanvasDrawContext,
     stroke: Stroke,
     previousSession: InProgressStrokeRenderSession | null
   ): InProgressStrokeRenderSession {
@@ -512,7 +513,7 @@ export class StrokeRenderer {
   }
 
   private static drawEmittedSamples(
-    context: CanvasRenderingContext2D,
+    context: CanvasDrawContext,
     stroke: Stroke,
     samples: RenderSample[]
   ): void {

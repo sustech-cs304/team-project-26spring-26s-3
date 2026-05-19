@@ -1,4 +1,5 @@
 import { StrokePoint } from '../../../domain/entities/Stroke';
+import { CanvasDrawContext } from './CanvasDrawContext';
 
 export const SELECTION_DASH_COLOR = '#64748B';
 export const SELECTION_DASH_WIDTH = 3.5;
@@ -13,7 +14,7 @@ interface DashDrawState {
 
 export class SelectionDashRenderer {
   static drawPath(
-    context: CanvasRenderingContext2D,
+    context: CanvasDrawContext,
     points: StrokePoint[],
     closed: boolean,
     dashOffset: number = 0
@@ -50,7 +51,7 @@ export class SelectionDashRenderer {
   }
 
   private static drawSegment(
-    context: CanvasRenderingContext2D,
+    context: CanvasDrawContext,
     start: StrokePoint,
     end: StrokePoint,
     pathDistance: number,
