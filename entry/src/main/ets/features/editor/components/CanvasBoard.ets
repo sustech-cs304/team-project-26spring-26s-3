@@ -66,6 +66,14 @@ interface ExtendedTouchObject extends TouchObject {
   t?: number;
 }
 
+interface TouchPairMetrics {
+  centerX: number;
+  centerY: number;
+  windowCenterX: number;
+  windowCenterY: number;
+  distance: number;
+}
+
 type CanvasDrawContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
 const COMMITTED_TILE_SIZE = 256;
@@ -118,6 +126,12 @@ export struct CanvasBoard {
   onContentChanged: (immediate: boolean, kind: CanvasBoardContentChangeKind) => void =
     (_immediate: boolean, _kind: CanvasBoardContentChangeKind): void => {};
   onCanvasMetricsChanged: (width: number, height: number) => void = (_width: number, _height: number): void => {};
+  onDocumentViewportGestureStart:
+    (pageId: string, centerX: number, centerY: number, windowCenterX: number, windowCenterY: number) => void =
+      (_pageId: string, _centerX: number, _centerY: number, _windowCenterX: number, _windowCenterY: number): void => {};
+  onDocumentViewportGestureUpdate: (scaleRatio: number, windowCenterX: number, windowCenterY: number) => void =
+    (_scaleRatio: number, _windowCenterX: number, _windowCenterY: number): void => {};
+  onDocumentViewportGestureEnd: () => void = (): void => {};
   private viewModel: DrawingEditorViewModel | null = null;
 
   private readonly committedRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
@@ -141,6 +155,8 @@ export struct CanvasBoard {
   private forceFullCommittedRedrawOnNextCanvasRefresh: boolean = false;
   private flattenedCommittedStrokeCount: number = 0;
   private activePreviewSession: InProgressStrokeRenderSession | null = null;
+  private isDocumentViewportGestureActive: boolean = false;
+  private documentViewportGestureStartDistance: number = 1;
   private isDrawingGestureActive: boolean = false;
   private isLassoGestureActive: boolean = false;
   private isSelectionMovePending: boolean = false;
@@ -849,10 +865,71 @@ export struct CanvasBoard {
       this.cancelLassoGesture(viewModel);
       this.cancelSelectionMoveGesture(viewModel);
       this.cancelActiveStrokeResizeGesture(viewModel);
+      const pairMetrics: TouchPairMetrics = this.getTouchPairMetrics(activeTouches[0], activeTouches[1]);
+      if (!this.isDocumentViewportGestureActive || event.type === TouchType.Down) {
+        this.beginDocumentViewportGesture(pairMetrics);
+      } else {
+        this.updateDocumentViewportGesture(pairMetrics);
+      }
+      return true;
+    }
+
+    if (this.isDocumentViewportGestureActive) {
+      this.endDocumentViewportGesture();
       return true;
     }
 
     return false;
+  }
+
+  private beginDocumentViewportGesture(pairMetrics: TouchPairMetrics): void {
+    this.isDocumentViewportGestureActive = true;
+    this.documentViewportGestureStartDistance = Math.max(1, pairMetrics.distance);
+    const pageCenter = this.toPagePoint(pairMetrics.centerX, pairMetrics.centerY, true);
+    if (pageCenter === null) {
+      this.endDocumentViewportGesture();
+      return;
+    }
+
+    this.onDocumentViewportGestureStart(
+      this.pageId,
+      pageCenter.x,
+      pageCenter.y,
+      pairMetrics.windowCenterX,
+      pairMetrics.windowCenterY
+    );
+  }
+
+  private updateDocumentViewportGesture(pairMetrics: TouchPairMetrics): void {
+    if (!this.isDocumentViewportGestureActive) {
+      return;
+    }
+
+    const scaleRatio = Math.max(0.1, pairMetrics.distance / Math.max(1, this.documentViewportGestureStartDistance));
+    this.onDocumentViewportGestureUpdate(scaleRatio, pairMetrics.windowCenterX, pairMetrics.windowCenterY);
+  }
+
+  private endDocumentViewportGesture(): void {
+    if (!this.isDocumentViewportGestureActive) {
+      return;
+    }
+
+    this.isDocumentViewportGestureActive = false;
+    this.documentViewportGestureStartDistance = 1;
+    this.onDocumentViewportGestureEnd();
+  }
+
+  private getTouchPairMetrics(firstTouch: TouchObject, secondTouch: TouchObject): TouchPairMetrics {
+    const deltaX = secondTouch.x - firstTouch.x;
+    const deltaY = secondTouch.y - firstTouch.y;
+
+    return {
+      centerX: (firstTouch.x + secondTouch.x) / 2,
+      centerY: (firstTouch.y + secondTouch.y) / 2,
+      windowCenterX: (firstTouch.windowX + secondTouch.windowX) / 2,
+      windowCenterY: (firstTouch.windowY + secondTouch.windowY) / 2,
+      distance: Math.sqrt(deltaX * deltaX + deltaY * deltaY)
+    };
   }
 
   private handleStrokeResizeTouch(event: TouchEvent, touch: TouchObject, viewModel: DrawingEditorViewModel): boolean {

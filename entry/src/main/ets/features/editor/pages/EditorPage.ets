@@ -1113,6 +1113,16 @@ struct EditorPage {
             },
             onCanvasMetricsChanged: (width: number, height: number): void => {
               this.updatePageCanvasRenderSize(page.id, width, height);
+            },
+            onDocumentViewportGestureStart:
+              (pageId: string, centerX: number, centerY: number, windowCenterX: number, windowCenterY: number): void => {
+                this.beginDocumentViewportGesture(pageId, centerX, centerY, windowCenterX, windowCenterY);
+              },
+            onDocumentViewportGestureUpdate: (scaleRatio: number, windowCenterX: number, windowCenterY: number): void => {
+              this.updateDocumentViewportGesture(scaleRatio, windowCenterX, windowCenterY);
+            },
+            onDocumentViewportGestureEnd: (): void => {
+              this.endDocumentViewportGesture();
             }
           })
             .width('100%')
@@ -2141,6 +2151,10 @@ struct EditorPage {
     return this.isContinuousDocumentViewEnabled() && this.isCanvasPanModeEnabled;
   }
 
+  private isDocumentViewportGestureEnabled(): boolean {
+    return this.isContinuousDocumentViewEnabled();
+  }
+
   private shouldRenderEditableDocumentPage(pageId: string): boolean {
     return this.isDocumentPageActive(pageId) && !this.isCanvasLoading && !this.isDocumentNavigationModeEnabled();
   }
@@ -2176,7 +2190,7 @@ struct EditorPage {
     windowCenterX: number,
     windowCenterY: number
   ): void {
-    if (!this.isDocumentNavigationModeEnabled()) {
+    if (!this.isDocumentViewportGestureEnabled()) {
       return;
     }
 
@@ -2208,7 +2222,7 @@ struct EditorPage {
     windowCenterX: number,
     windowCenterY: number
   ): void {
-    if (!this.isDocumentNavigationModeEnabled() || !this.isDocumentViewportGestureActive) {
+    if (!this.isDocumentViewportGestureEnabled() || !this.isDocumentViewportGestureActive) {
       return;
     }
 
