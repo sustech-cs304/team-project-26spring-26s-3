@@ -97,7 +97,6 @@ struct EditorPage {
   @State private isToolDropdownVisible: boolean = false;
   @State private isShapeDropdownVisible: boolean = false;
   @State private isPageTemplateDropdownVisible: boolean = false;
-  @State private isCanvasPanModeEnabled: boolean = false;
   @State private workspaceViewportWidth: number = 0;
   @State private workspaceViewportHeight: number = 0;
   @State private documentZoomScale: number = 1;
@@ -148,7 +147,6 @@ struct EditorPage {
     this.isToolDropdownVisible = false;
     this.isShapeDropdownVisible = false;
     this.isPageTemplateDropdownVisible = false;
-    this.isCanvasPanModeEnabled = false;
     this.isDocumentViewportGestureActive = false;
     this.documentViewportGestureStartDistance = 1;
     this.documentViewportGestureStartWorkspaceX = 0;
@@ -557,8 +555,6 @@ struct EditorPage {
                     void this.handleWorkspaceToolButtonClick(tool);
                   })
               }, (tool: ToolType): string => tool)
-
-              this.buildCanvasPanToolbarButton()
 
               Button('Image')
                 .height(32)
@@ -1017,15 +1013,6 @@ struct EditorPage {
         centerY: 0
       })
 
-      if (this.isDocumentNavigationModeEnabled()) {
-        Column()
-          .width('100%')
-          .height('100%')
-          .backgroundColor('#00000000')
-          .onTouch((event: TouchEvent) => {
-            this.handleDocumentNavigationTouch(event);
-          })
-      }
     }
     .width('100%')
     .layoutWeight(1)
@@ -1123,6 +1110,15 @@ struct EditorPage {
             },
             onDocumentViewportGestureEnd: (): void => {
               this.endDocumentViewportGesture();
+            },
+            onDocumentPanStart: (windowX: number, windowY: number): void => {
+              this.beginDocumentPanGestureAt(windowX, windowY);
+            },
+            onDocumentPanUpdate: (windowX: number, windowY: number): void => {
+              this.updateDocumentPanGestureAt(windowX, windowY);
+            },
+            onDocumentPanEnd: (commitCenteredPage: boolean): void => {
+              this.endDocumentPanGesture(commitCenteredPage);
             }
           })
             .width('100%')
@@ -1139,7 +1135,7 @@ struct EditorPage {
             .height('100%')
         }
 
-        if (this.isDocumentPageActive(page.id) && this.isCanvasLoading && !this.isDocumentNavigationModeEnabled()) {
+        if (this.isDocumentPageActive(page.id) && this.isCanvasLoading) {
           Column({ space: 10 }) {
             LoadingProgress()
               .width(28)
@@ -1169,6 +1165,11 @@ struct EditorPage {
         color: '#14000000',
         offsetX: 0,
         offsetY: 6
+      })
+      .onTouch((event: TouchEvent) => {
+        if (!this.shouldRenderEditableDocumentPage(page.id)) {
+          this.handleDocumentNavigationTouch(event);
+        }
       })
     }
     .width('100%')
@@ -1238,28 +1239,6 @@ struct EditorPage {
     .border({
       width: 1,
       color: $r('app.color.editor_sidebar_border')
-    })
-  }
-
-  @Builder
-  private buildCanvasPanToolbarButton(): void {
-    Button('Pan')
-    .height(32)
-    .padding({
-      left: 10,
-      right: 10
-    })
-    .fontSize(12)
-    .backgroundColor(this.isCanvasPanModeEnabled ? '#0F172A' : '#FFFFFF')
-    .fontColor(this.isCanvasPanModeEnabled ? '#FFFFFF' : '#475569')
-    .borderRadius(10)
-    .border({
-      width: 1,
-      color: this.isCanvasPanModeEnabled ? '#0F172A' : '#CBD5E1'
-    })
-    .enabled(!this.isCanvasLoading)
-    .onClick(() => {
-      void this.toggleCanvasPanMode();
     })
   }
 
@@ -1615,7 +1594,6 @@ struct EditorPage {
     this.isUpdatingPageTemplate = false;
     this.pageActionMenuPageId = '';
     this.isPageTemplateDropdownVisible = false;
-    this.isCanvasPanModeEnabled = false;
     this.documentZoomScale = 1;
     this.documentHorizontalOffset = 0;
     this.documentScrollOffsetY = 0;
@@ -2148,7 +2126,7 @@ struct EditorPage {
   }
 
   private isDocumentNavigationModeEnabled(): boolean {
-    return this.isContinuousDocumentViewEnabled() && this.isCanvasPanModeEnabled;
+    return this.isContinuousDocumentViewEnabled();
   }
 
   private isDocumentViewportGestureEnabled(): boolean {
@@ -2156,7 +2134,7 @@ struct EditorPage {
   }
 
   private shouldRenderEditableDocumentPage(pageId: string): boolean {
-    return this.isDocumentPageActive(pageId) && !this.isCanvasLoading && !this.isDocumentNavigationModeEnabled();
+    return this.isDocumentPageActive(pageId) && !this.isCanvasLoading;
   }
 
   private shouldRenderDocumentPagePreview(pageId: string): boolean {
@@ -2613,24 +2591,32 @@ struct EditorPage {
     return null;
   }
 
-  private beginDocumentPanGesture(touch: TouchObject): void {
+  private beginDocumentPanGestureAt(windowX: number, windowY: number): void {
     this.closeTransientDropdowns();
     this.isDocumentPanGestureActive = true;
-    this.documentPanLastWindowX = touch.windowX;
-    this.documentPanLastWindowY = touch.windowY;
+    this.documentPanLastWindowX = windowX;
+    this.documentPanLastWindowY = windowY;
   }
 
-  private updateDocumentPanGesture(touch: TouchObject): void {
+  private beginDocumentPanGesture(touch: TouchObject): void {
+    this.beginDocumentPanGestureAt(touch.windowX, touch.windowY);
+  }
+
+  private updateDocumentPanGestureAt(windowX: number, windowY: number): void {
     if (!this.isDocumentPanGestureActive) {
       return;
     }
 
-    const deltaX = touch.windowX - this.documentPanLastWindowX;
-    const deltaY = touch.windowY - this.documentPanLastWindowY;
-    this.documentPanLastWindowX = touch.windowX;
-    this.documentPanLastWindowY = touch.windowY;
+    const deltaX = windowX - this.documentPanLastWindowX;
+    const deltaY = windowY - this.documentPanLastWindowY;
+    this.documentPanLastWindowX = windowX;
+    this.documentPanLastWindowY = windowY;
     this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset + deltaX);
     this.applyDocumentScrollOffset(this.documentScrollOffsetY - deltaY);
+  }
+
+  private updateDocumentPanGesture(touch: TouchObject): void {
+    this.updateDocumentPanGestureAt(touch.windowX, touch.windowY);
   }
 
   private endDocumentPanGesture(commitCenteredPage: boolean): void {
@@ -2809,10 +2795,8 @@ struct EditorPage {
     }
   }
 
-  private async handleWorkspaceToolButtonClick(tool: ToolType): Promise<void> {
-    const wasPanModeEnabled = this.isCanvasPanModeEnabled;
-    const isCurrentTool = !wasPanModeEnabled && this.toolSetting.tool === tool;
-    await this.exitCanvasPanMode(true);
+  private handleWorkspaceToolButtonClick(tool: ToolType): void {
+    const isCurrentTool = this.toolSetting.tool === tool;
     if (tool === 'text') {
       this.handleWorkspaceToolChange(tool);
       this.closeTransientDropdowns();
@@ -2847,38 +2831,8 @@ struct EditorPage {
     this.isToolDropdownVisible = true;
   }
 
-  private async toggleCanvasPanMode(): Promise<void> {
-    if (this.isCanvasLoading) {
-      return;
-    }
-
-    const enablePanMode = !this.isCanvasPanModeEnabled;
-    if (!enablePanMode) {
-      await this.exitCanvasPanMode(true);
-      return;
-    }
-
-    this.closeToolDropdown();
-    this.closePageActionMenu();
-    this.closePageTemplateDropdown();
-    this.isCanvasPanModeEnabled = true;
-  }
-
-  private async exitCanvasPanMode(commitCenteredPage: boolean): Promise<void> {
-    if (!this.isCanvasPanModeEnabled) {
-      return;
-    }
-
-    this.isCanvasPanModeEnabled = false;
-    this.endDocumentViewportGesture();
-    this.endDocumentPanGesture(false);
-    if (commitCenteredPage) {
-      await this.commitViewportCenteredPage();
-    }
-  }
-
   private isWorkspaceToolActive(tool: ToolType): boolean {
-    return !this.isCanvasPanModeEnabled && this.toolSetting.tool === tool;
+    return this.toolSetting.tool === tool;
   }
 
   private handleWorkspaceToolChange(tool: ToolType): void {

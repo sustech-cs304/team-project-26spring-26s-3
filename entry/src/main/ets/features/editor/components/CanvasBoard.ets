@@ -1,4 +1,5 @@
 import common from '@ohos.app.ability.common';
+import { SourceType as InputSourceType, ToolType as InputToolType } from '@ohos.multimodalInput.touchEvent';
 
 import {
   BoundingBox,
@@ -64,6 +65,8 @@ interface ExtendedTouchObject extends TouchObject {
   timestamp?: number;
   eventTime?: number;
   t?: number;
+  toolType?: InputToolType;
+  sourceType?: InputSourceType;
 }
 
 interface TouchPairMetrics {
@@ -132,6 +135,9 @@ export struct CanvasBoard {
   onDocumentViewportGestureUpdate: (scaleRatio: number, windowCenterX: number, windowCenterY: number) => void =
     (_scaleRatio: number, _windowCenterX: number, _windowCenterY: number): void => {};
   onDocumentViewportGestureEnd: () => void = (): void => {};
+  onDocumentPanStart: (windowX: number, windowY: number) => void = (_windowX: number, _windowY: number): void => {};
+  onDocumentPanUpdate: (windowX: number, windowY: number) => void = (_windowX: number, _windowY: number): void => {};
+  onDocumentPanEnd: (commitCenteredPage: boolean) => void = (_commitCenteredPage: boolean): void => {};
   private viewModel: DrawingEditorViewModel | null = null;
 
   private readonly committedRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
@@ -530,6 +536,11 @@ export struct CanvasBoard {
       return;
     }
 
+    if (!this.isStylusLikeTouch(touch)) {
+      this.handleDocumentPanFromTouch(event, touch, viewModel);
+      return;
+    }
+
     if (this.isStrokeResizeModeVisible() && this.handleStrokeResizeTouch(event, touch, viewModel)) {
       return;
     }
@@ -752,6 +763,29 @@ export struct CanvasBoard {
     }
   }
 
+  private handleDocumentPanFromTouch(event: TouchEvent, touch: TouchObject, viewModel: DrawingEditorViewModel): void {
+    this.cancelDrawingGesture(viewModel);
+    this.cancelLassoGesture(viewModel);
+    this.cancelSelectionMoveGesture(viewModel);
+    this.cancelActiveStrokeResizeGesture(viewModel);
+
+    if (event.type === TouchType.Down) {
+      this.hideSelectionContextMenu();
+      this.commitInlineTextEdit(true);
+      this.onDocumentPanStart(touch.windowX, touch.windowY);
+      return;
+    }
+
+    if (event.type === TouchType.Move) {
+      this.onDocumentPanUpdate(touch.windowX, touch.windowY);
+      return;
+    }
+
+    if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+      this.onDocumentPanEnd(event.type === TouchType.Up);
+    }
+  }
+
   private handleLassoTouch(event: TouchEvent, touch: TouchObject, viewModel: DrawingEditorViewModel): void {
     if (event.type === TouchType.Down) {
       this.hideSelectionContextMenu();
@@ -930,6 +964,24 @@ export struct CanvasBoard {
       windowCenterY: (firstTouch.windowY + secondTouch.windowY) / 2,
       distance: Math.sqrt(deltaX * deltaX + deltaY * deltaY)
     };
+  }
+
+  private isStylusLikeTouch(touch: TouchObject): boolean {
+    const touchRecord = touch as ExtendedTouchObject;
+    if (touchRecord.sourceType === InputSourceType.PEN) {
+      return true;
+    }
+
+    switch (touchRecord.toolType) {
+      case InputToolType.PEN:
+      case InputToolType.PENCIL:
+      case InputToolType.RUBBER:
+      case InputToolType.BRUSH:
+      case InputToolType.AIRBRUSH:
+        return true;
+      default:
+        return false;
+    }
   }
 
   private handleStrokeResizeTouch(event: TouchEvent, touch: TouchObject, viewModel: DrawingEditorViewModel): boolean {
