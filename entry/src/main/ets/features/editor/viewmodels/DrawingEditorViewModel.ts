@@ -494,6 +494,13 @@ export class DrawingEditorViewModel {
   }
 
   updateToolSetting(nextSetting: ToolSetting): void {
+    if (this.toolSetting.tool === nextSetting.tool &&
+      this.toolSetting.color === nextSetting.color &&
+      this.toolSetting.width === nextSetting.width &&
+      this.toolSetting.opacity === nextSetting.opacity) {
+      return;
+    }
+
     if (this.isEraseGestureActive() || this.strokeController.hasActiveStroke()) {
       this.cancelStroke();
     }

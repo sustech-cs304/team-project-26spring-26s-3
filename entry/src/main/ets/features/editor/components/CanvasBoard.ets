@@ -1,5 +1,4 @@
 import common from '@ohos.app.ability.common';
-import { SourceType as InputSourceType, ToolType as InputToolType } from '@ohos.multimodalInput.touchEvent';
 
 import {
   BoundingBox,
@@ -13,7 +12,7 @@ import { CanvasElement, ShapeType, TextCanvasElement } from '../../../domain/ent
 import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { NotebookPageCanvasEntity } from '../../../domain/entities/NotebookPageCanvas';
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
-import { ToolSetting, ToolType } from '../../../domain/entities/ToolSetting';
+import { ToolSetting } from '../../../domain/entities/ToolSetting';
 import { PageTemplateRenderer } from '../controllers/PageTemplateRenderer';
 import { InProgressStrokeRenderSession, StrokeRenderer } from '../controllers/StrokeRenderer';
 import { SelectionDashRenderer } from '../controllers/SelectionDashRenderer';
@@ -65,16 +64,6 @@ interface ExtendedTouchObject extends TouchObject {
   timestamp?: number;
   eventTime?: number;
   t?: number;
-  toolType?: InputToolType;
-  sourceType?: InputSourceType;
-}
-
-interface TouchPairMetrics {
-  centerX: number;
-  centerY: number;
-  windowCenterX: number;
-  windowCenterY: number;
-  distance: number;
 }
 
 type CanvasDrawContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
@@ -105,6 +94,13 @@ const SELECTION_CONTEXT_MENU_ITEM_HEIGHT = 38;
 const SELECTION_CONTEXT_MENU_OFFSET = 8;
 export type CanvasBoardContentChangeKind = 'stroke' | 'element';
 
+const DEFAULT_CANVAS_TOOL_SETTING: ToolSetting = {
+  tool: 'pen',
+  color: '#111827',
+  width: 4,
+  opacity: 1
+};
+
 @Component
 export struct CanvasBoard {
   @Watch('onPageIdChanged')
@@ -121,23 +117,18 @@ export struct CanvasBoard {
   @Prop pageWidth: number = NotebookPageCanvasEntity.DEFAULT_WIDTH;
   @Watch('onPageGeometryChanged')
   @Prop pageHeight: number = NotebookPageCanvasEntity.DEFAULT_HEIGHT;
-  @Watch('onActiveToolChanged')
-  @Prop activeTool: ToolType = 'pen';
+  @Watch('onToolSettingChanged')
+  @Prop toolSetting: ToolSetting = DEFAULT_CANVAS_TOOL_SETTING;
+  @Watch('onActivePageChanged')
+  @Prop isActivePage: boolean = false;
   @Prop elementVersion: number = 0;
   @Prop selectedShapeType: ShapeType = 'rectangle';
   @Link editorSnapshot: EditorDebugSnapshot;
   onContentChanged: (immediate: boolean, kind: CanvasBoardContentChangeKind) => void =
     (_immediate: boolean, _kind: CanvasBoardContentChangeKind): void => {};
   onCanvasMetricsChanged: (width: number, height: number) => void = (_width: number, _height: number): void => {};
-  onDocumentViewportGestureStart:
-    (pageId: string, centerX: number, centerY: number, windowCenterX: number, windowCenterY: number) => void =
-      (_pageId: string, _centerX: number, _centerY: number, _windowCenterX: number, _windowCenterY: number): void => {};
-  onDocumentViewportGestureUpdate: (scaleRatio: number, windowCenterX: number, windowCenterY: number) => void =
-    (_scaleRatio: number, _windowCenterX: number, _windowCenterY: number): void => {};
-  onDocumentViewportGestureEnd: () => void = (): void => {};
-  onDocumentPanStart: (windowX: number, windowY: number) => void = (_windowX: number, _windowY: number): void => {};
-  onDocumentPanUpdate: (windowX: number, windowY: number) => void = (_windowX: number, _windowY: number): void => {};
-  onDocumentPanEnd: (commitCenteredPage: boolean) => void = (_commitCenteredPage: boolean): void => {};
+  onPageInteractionStart: (pageId: string) => void = (_pageId: string): void => {};
+  onDocumentTouch: (event: TouchEvent) => void = (_event: TouchEvent): void => {};
   private viewModel: DrawingEditorViewModel | null = null;
 
   private readonly committedRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
@@ -161,8 +152,6 @@ export struct CanvasBoard {
   private forceFullCommittedRedrawOnNextCanvasRefresh: boolean = false;
   private flattenedCommittedStrokeCount: number = 0;
   private activePreviewSession: InProgressStrokeRenderSession | null = null;
-  private isDocumentViewportGestureActive: boolean = false;
-  private documentViewportGestureStartDistance: number = 1;
   private isDrawingGestureActive: boolean = false;
   private isLassoGestureActive: boolean = false;
   private isSelectionMovePending: boolean = false;
@@ -211,6 +200,7 @@ export struct CanvasBoard {
 
   aboutToAppear(): void {
     this.resolveViewModel();
+    void this.ensurePageSessionLoaded();
   }
 
   aboutToDisappear(): void {
@@ -510,11 +500,26 @@ export struct CanvasBoard {
       return;
     }
 
-    if (this.handleViewportTouch(event, viewModel)) {
+    if (!this.isStylusEvent(event)) {
+      this.onDocumentTouch(event);
+      this.cancelDrawingGesture(viewModel);
+      this.cancelLassoGesture(viewModel);
+      this.cancelSelectionMoveGesture(viewModel);
+      this.cancelActiveStrokeResizeGesture(viewModel);
       return;
     }
 
-    const toolSetting = viewModel.getToolSetting();
+    this.syncViewModelToolSetting(viewModel);
+    if (event.type === TouchType.Down) {
+      this.onPageInteractionStart(this.pageId);
+    }
+
+    if (!viewModel.isLoadedForPage(this.pageId)) {
+      void this.ensurePageSessionLoaded();
+      return;
+    }
+
+    const toolSetting = this.getEffectiveToolSetting();
     const activeTool = toolSetting.tool;
     const touch = event.changedTouches.length > 0 ? event.changedTouches[0] : event.touches[0];
     if (!touch) {
@@ -536,8 +541,7 @@ export struct CanvasBoard {
       return;
     }
 
-    if (!this.isStylusLikeTouch(touch)) {
-      this.handleDocumentPanFromTouch(event, touch, viewModel);
+    if (event.type === TouchType.Down && this.isStrokeInputTool(activeTool) && !this.shouldAcceptStrokeInput(event)) {
       return;
     }
 
@@ -763,29 +767,6 @@ export struct CanvasBoard {
     }
   }
 
-  private handleDocumentPanFromTouch(event: TouchEvent, touch: TouchObject, viewModel: DrawingEditorViewModel): void {
-    this.cancelDrawingGesture(viewModel);
-    this.cancelLassoGesture(viewModel);
-    this.cancelSelectionMoveGesture(viewModel);
-    this.cancelActiveStrokeResizeGesture(viewModel);
-
-    if (event.type === TouchType.Down) {
-      this.hideSelectionContextMenu();
-      this.commitInlineTextEdit(true);
-      this.onDocumentPanStart(touch.windowX, touch.windowY);
-      return;
-    }
-
-    if (event.type === TouchType.Move) {
-      this.onDocumentPanUpdate(touch.windowX, touch.windowY);
-      return;
-    }
-
-    if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-      this.onDocumentPanEnd(event.type === TouchType.Up);
-    }
-  }
-
   private handleLassoTouch(event: TouchEvent, touch: TouchObject, viewModel: DrawingEditorViewModel): void {
     if (event.type === TouchType.Down) {
       this.hideSelectionContextMenu();
@@ -892,96 +873,16 @@ export struct CanvasBoard {
     }
   }
 
-  private handleViewportTouch(event: TouchEvent, viewModel: DrawingEditorViewModel): boolean {
-    const activeTouches: TouchObject[] = this.getActiveTouches(event);
-    if (activeTouches.length >= 2) {
-      this.cancelDrawingGesture(viewModel);
-      this.cancelLassoGesture(viewModel);
-      this.cancelSelectionMoveGesture(viewModel);
-      this.cancelActiveStrokeResizeGesture(viewModel);
-      const pairMetrics: TouchPairMetrics = this.getTouchPairMetrics(activeTouches[0], activeTouches[1]);
-      if (!this.isDocumentViewportGestureActive || event.type === TouchType.Down) {
-        this.beginDocumentViewportGesture(pairMetrics);
-      } else {
-        this.updateDocumentViewportGesture(pairMetrics);
-      }
-      return true;
-    }
-
-    if (this.isDocumentViewportGestureActive) {
-      this.endDocumentViewportGesture();
-      return true;
-    }
-
-    return false;
+  private isStrokeInputTool(activeTool: string): boolean {
+    return activeTool === 'pen' || activeTool === 'pencil' || activeTool === 'highlighter' || activeTool === 'eraser';
   }
 
-  private beginDocumentViewportGesture(pairMetrics: TouchPairMetrics): void {
-    this.isDocumentViewportGestureActive = true;
-    this.documentViewportGestureStartDistance = Math.max(1, pairMetrics.distance);
-    const pageCenter = this.toPagePoint(pairMetrics.centerX, pairMetrics.centerY, true);
-    if (pageCenter === null) {
-      this.endDocumentViewportGesture();
-      return;
-    }
-
-    this.onDocumentViewportGestureStart(
-      this.pageId,
-      pageCenter.x,
-      pageCenter.y,
-      pairMetrics.windowCenterX,
-      pairMetrics.windowCenterY
-    );
+  private shouldAcceptStrokeInput(event: TouchEvent): boolean {
+    return event.sourceTool === SourceTool.Pen;
   }
 
-  private updateDocumentViewportGesture(pairMetrics: TouchPairMetrics): void {
-    if (!this.isDocumentViewportGestureActive) {
-      return;
-    }
-
-    const scaleRatio = Math.max(0.1, pairMetrics.distance / Math.max(1, this.documentViewportGestureStartDistance));
-    this.onDocumentViewportGestureUpdate(scaleRatio, pairMetrics.windowCenterX, pairMetrics.windowCenterY);
-  }
-
-  private endDocumentViewportGesture(): void {
-    if (!this.isDocumentViewportGestureActive) {
-      return;
-    }
-
-    this.isDocumentViewportGestureActive = false;
-    this.documentViewportGestureStartDistance = 1;
-    this.onDocumentViewportGestureEnd();
-  }
-
-  private getTouchPairMetrics(firstTouch: TouchObject, secondTouch: TouchObject): TouchPairMetrics {
-    const deltaX = secondTouch.x - firstTouch.x;
-    const deltaY = secondTouch.y - firstTouch.y;
-
-    return {
-      centerX: (firstTouch.x + secondTouch.x) / 2,
-      centerY: (firstTouch.y + secondTouch.y) / 2,
-      windowCenterX: (firstTouch.windowX + secondTouch.windowX) / 2,
-      windowCenterY: (firstTouch.windowY + secondTouch.windowY) / 2,
-      distance: Math.sqrt(deltaX * deltaX + deltaY * deltaY)
-    };
-  }
-
-  private isStylusLikeTouch(touch: TouchObject): boolean {
-    const touchRecord = touch as ExtendedTouchObject;
-    if (touchRecord.sourceType === InputSourceType.PEN) {
-      return true;
-    }
-
-    switch (touchRecord.toolType) {
-      case InputToolType.PEN:
-      case InputToolType.PENCIL:
-      case InputToolType.RUBBER:
-      case InputToolType.BRUSH:
-      case InputToolType.AIRBRUSH:
-        return true;
-      default:
-        return false;
-    }
+  private isStylusEvent(event: TouchEvent): boolean {
+    return event.sourceTool === SourceTool.Pen;
   }
 
   private handleStrokeResizeTouch(event: TouchEvent, touch: TouchObject, viewModel: DrawingEditorViewModel): boolean {
@@ -1251,14 +1152,6 @@ export struct CanvasBoard {
     this.syncEditorSnapshot();
     this.redrawOverlayLayer();
     this.onContentChanged(false, 'element');
-  }
-
-  private getActiveTouches(event: TouchEvent): TouchObject[] {
-    if (event.touches.length > 0) {
-      return event.touches;
-    }
-
-    return event.changedTouches;
   }
 
   private finishDrawingGestureWithoutPoint(
@@ -3398,18 +3291,36 @@ export struct CanvasBoard {
     this.clearPreviewLayers();
     this.resetActivePreviewSession();
     this.resolveViewModel();
+    void this.ensurePageSessionLoaded();
   }
 
-  private onActiveToolChanged(): void {
-    if (this.activeTool !== 'edit') {
+  private onToolSettingChanged(): void {
+    const activeTool = this.getEffectiveToolSetting().tool;
+    if (activeTool !== 'edit') {
       this.commitInlineTextEdit(true);
     }
     const viewModel = this.getViewModel();
-    if (viewModel !== null && this.activeTool !== 'lasso') {
+    if (viewModel !== null) {
+      this.syncViewModelToolSetting(viewModel);
+    }
+    if (viewModel !== null && activeTool !== 'lasso') {
       this.exitStrokeResizeMode(viewModel);
     }
-    if (viewModel !== null && this.activeTool !== 'lasso') {
+    if (viewModel !== null && activeTool !== 'lasso') {
       this.cancelSelectionMoveGesture(viewModel);
+    }
+  }
+
+  private onActivePageChanged(): void {
+    if (!this.isActivePage) {
+      this.hideSelectionContextMenu();
+      return;
+    }
+
+    const viewModel = this.getViewModel();
+    if (viewModel !== null) {
+      this.syncViewModelToolSetting(viewModel);
+      this.syncEditorSnapshot();
     }
   }
 
@@ -3423,6 +3334,53 @@ export struct CanvasBoard {
     this.notifyCanvasMetricsChanged();
     this.redrawCommittedLayer();
     this.redrawOverlayLayer();
+  }
+
+  private async ensurePageSessionLoaded(): Promise<void> {
+    if (this.pageId.length === 0) {
+      return;
+    }
+
+    const hostContext = this.getUIContext().getHostContext() as common.Context;
+    const viewModel = await EditorSessionRegistry.ensureLoaded(
+      this.pageId,
+      hostContext,
+      this.getEffectiveToolSetting()
+    );
+    if (this.pageId !== viewModel.getDebugSnapshot().pageId) {
+      return;
+    }
+
+    this.viewModel = viewModel;
+    this.forceFullCommittedRedrawOnNextCanvasRefresh = false;
+    this.consumeLatestRenderInvalidationSequence();
+    this.redrawCommittedLayer();
+    this.redrawOverlayLayer();
+    if (this.isActivePage) {
+      this.syncEditorSnapshot();
+    }
+  }
+
+  private syncViewModelToolSetting(viewModel: DrawingEditorViewModel): void {
+    const nextSetting = this.getEffectiveToolSetting();
+    const currentSetting = viewModel.getToolSetting();
+    if (currentSetting.tool === nextSetting.tool &&
+      currentSetting.color === nextSetting.color &&
+      currentSetting.width === nextSetting.width &&
+      currentSetting.opacity === nextSetting.opacity) {
+      return;
+    }
+
+    viewModel.updateToolSetting(nextSetting);
+  }
+
+  private getEffectiveToolSetting(): ToolSetting {
+    return {
+      tool: this.toolSetting.tool,
+      color: this.toolSetting.color,
+      width: this.toolSetting.width,
+      opacity: this.toolSetting.opacity
+    };
   }
 
   private getViewModel(): DrawingEditorViewModel | null {
@@ -3452,5 +3410,6 @@ export struct CanvasBoard {
       this.pageId,
       this.getUIContext().getHostContext() as common.Context
     );
+    this.syncViewModelToolSetting(this.viewModel);
   }
 }

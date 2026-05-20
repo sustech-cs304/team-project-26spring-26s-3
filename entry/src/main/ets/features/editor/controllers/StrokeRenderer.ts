@@ -157,16 +157,6 @@ const INCREMENTAL_PREVIEW_REPAIR_OVERLAP_POINTS = 12;
 const INCREMENTAL_PREVIEW_STABLE_PROMOTION_STEP = 4;
 export class StrokeRenderer {
   static drawStrokeFast(context: StrokeRenderContext, stroke: Stroke): void {
-    if (stroke.style.tool === 'highlighter') {
-      this.drawHighlighterStroke(context, stroke);
-      return;
-    }
-
-    if (stroke.style.tool === 'pencil') {
-      this.drawFastPencilStroke(context, stroke);
-      return;
-    }
-
     this.drawRawPolyline(context, stroke);
   }
 
@@ -175,16 +165,6 @@ export class StrokeRenderer {
   }
 
   static drawStroke(context: StrokeRenderContext, stroke: Stroke): void {
-    if (stroke.style.tool === 'highlighter') {
-      this.drawHighlighterStroke(context, stroke);
-      return;
-    }
-
-    if (stroke.style.tool === 'pencil') {
-      this.drawDetailedPencilStroke(context, stroke);
-      return;
-    }
-
     const samples = this.buildVisibleSamplesForStroke(stroke);
     if (samples.length === 0) {
       return;

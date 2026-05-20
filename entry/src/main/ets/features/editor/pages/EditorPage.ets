@@ -52,9 +52,10 @@ const DOCUMENT_PAGE_HEADER_HEIGHT = 28;
 const DOCUMENT_PAGE_SURFACE_MAX_WIDTH = 980;
 const DOCUMENT_PAGE_SURFACE_MIN_WIDTH = 320;
 const DOCUMENT_PAGE_RENDER_WINDOW_PADDING_FACTOR = 1.25;
-const DOCUMENT_ZOOM_MIN_SCALE = 1;
-const DOCUMENT_ZOOM_MAX_SCALE = 2.2;
+const DOCUMENT_ZOOM_MIN_SCALE = 0.6;
+const DOCUMENT_ZOOM_MAX_SCALE = 2.8;
 const DOCUMENT_GESTURE_PREVIEW_INTERVAL_MS = 16;
+const DOCUMENT_SINGLE_FINGER_PAN_THRESHOLD_SCREEN_PX = 4;
 const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser', 'lasso', 'text', 'shape', 'edit'];
 const SHAPE_TOOL_OPTIONS: ShapeType[] = ['rectangle', 'circle', 'line'];
 const PAGE_TEMPLATE_OPTIONS: NotebookPageTemplateType[] = [
@@ -97,6 +98,7 @@ struct EditorPage {
   @State private isToolDropdownVisible: boolean = false;
   @State private isShapeDropdownVisible: boolean = false;
   @State private isPageTemplateDropdownVisible: boolean = false;
+  @State private isDocumentTouchNavigationActive: boolean = false;
   @State private workspaceViewportWidth: number = 0;
   @State private workspaceViewportHeight: number = 0;
   @State private documentZoomScale: number = 1;
@@ -121,13 +123,18 @@ struct EditorPage {
   private documentGestureAnchorPageUnitX: number = 0.5;
   private documentGestureAnchorPageUnitY: number = 0.5;
   private lastDocumentGesturePreviewTime: number = 0;
+  private isDocumentSingleFingerPanPending: boolean = false;
+  private documentSingleFingerPanTouchId: number = -1;
+  private documentSingleFingerPanStartWindowX: number = 0;
+  private documentSingleFingerPanStartWindowY: number = 0;
   private isDocumentPanGestureActive: boolean = false;
-  private documentPanLastWindowX: number = 0;
-  private documentPanLastWindowY: number = 0;
+  private documentPanStartWindowX: number = 0;
+  private documentPanStartWindowY: number = 0;
   private isDocumentViewportGestureActive: boolean = false;
   private documentViewportGestureStartDistance: number = 1;
   private documentViewportGestureStartWorkspaceX: number = 0;
   private documentViewportGestureStartWorkspaceY: number = 0;
+  private lastDocumentTouchSignature: string = '';
   private pendingDocumentViewportPageId: string = '';
   private editorViewModel?: EditorViewModel;
   private thumbnailStore?: PageThumbnailStore;
@@ -147,6 +154,8 @@ struct EditorPage {
     this.isToolDropdownVisible = false;
     this.isShapeDropdownVisible = false;
     this.isPageTemplateDropdownVisible = false;
+    this.isDocumentTouchNavigationActive = false;
+    this.resetPendingDocumentSingleFingerPan();
     this.isDocumentViewportGestureActive = false;
     this.documentViewportGestureStartDistance = 1;
     this.documentViewportGestureStartWorkspaceX = 0;
@@ -552,7 +561,7 @@ struct EditorPage {
                   })
                   .enabled(!this.isCanvasLoading)
                   .onClick(() => {
-                    void this.handleWorkspaceToolButtonClick(tool);
+                    this.handleWorkspaceToolButtonClick(tool);
                   })
               }, (tool: ToolType): string => tool)
 
@@ -1027,6 +1036,9 @@ struct EditorPage {
     .onAreaChange((_oldValue: Area, newValue: Area) => {
       this.handleWorkspaceAreaChange(newValue);
     })
+    .onTouch((event: TouchEvent) => {
+      this.handleDocumentSurfaceTouch(event);
+    })
   }
 
   @Builder
@@ -1086,8 +1098,15 @@ struct EditorPage {
             paperBackgroundColor: this.getPageCanvasBackgroundColor(page.id),
             pageWidth: this.getPageCanvasWidth(page.id),
             pageHeight: this.getPageCanvasHeight(page.id),
-            activeTool: this.toolSetting.tool,
+            toolSetting: this.toolSetting,
+            isActivePage: this.isDocumentPageActive(page.id),
             editorSnapshot: $editorSnapshot,
+            onPageInteractionStart: (pageId: string): void => {
+              this.activateDocumentPageForInteraction(pageId);
+            },
+            onDocumentTouch: (event: TouchEvent): void => {
+              this.handleDocumentSurfaceTouch(event);
+            },
             onContentChanged: (immediate: boolean, kind: CanvasBoardContentChangeKind): void => {
               if (kind === 'element') {
                 this.refreshElementLayer();
@@ -1100,25 +1119,6 @@ struct EditorPage {
             },
             onCanvasMetricsChanged: (width: number, height: number): void => {
               this.updatePageCanvasRenderSize(page.id, width, height);
-            },
-            onDocumentViewportGestureStart:
-              (pageId: string, centerX: number, centerY: number, windowCenterX: number, windowCenterY: number): void => {
-                this.beginDocumentViewportGesture(pageId, centerX, centerY, windowCenterX, windowCenterY);
-              },
-            onDocumentViewportGestureUpdate: (scaleRatio: number, windowCenterX: number, windowCenterY: number): void => {
-              this.updateDocumentViewportGesture(scaleRatio, windowCenterX, windowCenterY);
-            },
-            onDocumentViewportGestureEnd: (): void => {
-              this.endDocumentViewportGesture();
-            },
-            onDocumentPanStart: (windowX: number, windowY: number): void => {
-              this.beginDocumentPanGestureAt(windowX, windowY);
-            },
-            onDocumentPanUpdate: (windowX: number, windowY: number): void => {
-              this.updateDocumentPanGestureAt(windowX, windowY);
-            },
-            onDocumentPanEnd: (commitCenteredPage: boolean): void => {
-              this.endDocumentPanGesture(commitCenteredPage);
             }
           })
             .width('100%')
@@ -1135,7 +1135,7 @@ struct EditorPage {
             .height('100%')
         }
 
-        if (this.isDocumentPageActive(page.id) && this.isCanvasLoading) {
+        if (this.isDocumentPageActive(page.id) && this.isCanvasLoading && !this.isDocumentNavigationModeEnabled()) {
           Column({ space: 10 }) {
             LoadingProgress()
               .width(28)
@@ -1150,6 +1150,7 @@ struct EditorPage {
           .justifyContent(FlexAlign.Center)
           .alignItems(HorizontalAlign.Center)
           .backgroundColor('#66FFFFFF')
+          .hitTestBehavior(HitTestMode.None)
         }
       }
       .width(this.getDocumentPageSurfaceWidth())
@@ -1166,21 +1167,9 @@ struct EditorPage {
         offsetX: 0,
         offsetY: 6
       })
-      .onTouch((event: TouchEvent) => {
-        if (!this.shouldRenderEditableDocumentPage(page.id)) {
-          this.handleDocumentNavigationTouch(event);
-        }
-      })
     }
     .width('100%')
     .alignItems(HorizontalAlign.Center)
-    .onClick(() => {
-      if (this.isDocumentPageActive(page.id)) {
-        return;
-      }
-      this.closeTransientDropdowns();
-      void this.selectNotebookPage(page);
-    })
   }
 
   @Builder
@@ -1594,6 +1583,8 @@ struct EditorPage {
     this.isUpdatingPageTemplate = false;
     this.pageActionMenuPageId = '';
     this.isPageTemplateDropdownVisible = false;
+    this.isDocumentTouchNavigationActive = false;
+    this.resetPendingDocumentSingleFingerPan();
     this.documentZoomScale = 1;
     this.documentHorizontalOffset = 0;
     this.documentScrollOffsetY = 0;
@@ -1631,7 +1622,7 @@ struct EditorPage {
       }
     }
 
-    this.activePageId = this.notebookPageList[this.notebookPageList.length - 1].id;
+    this.activePageId = this.notebookPageList[0].id;
   }
 
   private async createNotebookPage(): Promise<void> {
@@ -1683,6 +1674,33 @@ struct EditorPage {
     this.scrollDocumentToPage(page.id);
     this.closePageActionMenu();
     await this.loadActivePageCanvas();
+  }
+
+  private activateDocumentPageForInteraction(pageId: string): void {
+    if (pageId.length === 0 || this.isLoading || this.isCreatingPage || this.isDeletingPage ||
+      this.isReorderingPages || this.isUpdatingPageTemplate) {
+      return;
+    }
+
+    const hostContext: common.Context | undefined = this.getUIContext().getHostContext() as common.Context | undefined;
+    if (hostContext === undefined) {
+      return;
+    }
+
+    if (this.activePageId !== pageId) {
+      void this.flushActiveDrawingSession();
+      this.activePageId = pageId;
+      this.pendingDocumentViewportPageId = '';
+      this.closePageActionMenu();
+      void this.loadActivePageCanvas();
+    }
+
+    const viewModel = EditorSessionRegistry.getOrCreate(pageId, hostContext);
+    this.currentDrawingPageId = pageId;
+    this.drawingViewModel = viewModel;
+    this.applySharedToolSettingToViewModel(viewModel);
+    this.syncDrawingSnapshot(false, viewModel, pageId, false);
+    void this.ensureDrawingSessionLoaded(pageId, viewModel);
   }
 
   private openDeletePageDialog(page: NotebookPage): void {
@@ -1823,7 +1841,7 @@ struct EditorPage {
 
     this.currentDrawingPageId = pageId;
     this.drawingViewModel = EditorSessionRegistry.getOrCreate(pageId, hostContext);
-    this.toolSetting = this.buildDefaultToolSetting();
+    this.applySharedToolSettingToViewModel(this.drawingViewModel);
     this.editorSnapshot = this.buildEmptySnapshot(pageId);
     this.canvasVersion += 1;
 
@@ -1831,14 +1849,43 @@ struct EditorPage {
     const viewModel: DrawingEditorViewModel = this.drawingViewModel;
     this.syncDrawingSnapshot(false, viewModel, targetPageId);
     if (!viewModel.isLoadedForPage(targetPageId)) {
-      const loadPageTask = viewModel.loadPage(targetPageId);
-      await loadPageTask;
+      await EditorSessionRegistry.ensureLoaded(targetPageId, hostContext, this.cloneToolSetting(this.toolSetting));
       if (this.activePageId === targetPageId && this.currentDrawingPageId === targetPageId) {
         this.syncDrawingSnapshot(true, viewModel, targetPageId);
       }
     } else {
       this.captureThumbnailSession(targetPageId, viewModel);
       this.requestThumbnailRender(true);
+    }
+  }
+
+  private async ensureDrawingSessionLoaded(
+    pageId: string,
+    existingViewModel?: DrawingEditorViewModel | null
+  ): Promise<void> {
+    const hostContext: common.Context | undefined = this.getUIContext().getHostContext() as common.Context | undefined;
+    if (hostContext === undefined || pageId.length === 0) {
+      return;
+    }
+
+    const wasLoaded = existingViewModel !== undefined && existingViewModel !== null &&
+      existingViewModel.isLoadedForPage(pageId);
+    const viewModel = await EditorSessionRegistry.ensureLoaded(
+      pageId,
+      hostContext,
+      this.cloneToolSetting(this.toolSetting)
+    );
+    const targetViewModel = existingViewModel ?? viewModel;
+    if (targetViewModel !== viewModel) {
+      return;
+    }
+
+    this.captureThumbnailSession(pageId, viewModel);
+    if (this.currentDrawingPageId === pageId) {
+      this.drawingViewModel = viewModel;
+      this.syncDrawingSnapshot(!wasLoaded, viewModel, pageId, false);
+    } else {
+      this.requestThumbnailRender(false);
     }
   }
 
@@ -1849,7 +1896,6 @@ struct EditorPage {
     }
     this.drawingViewModel = null;
     this.currentDrawingPageId = pageId;
-    this.toolSetting = this.buildDefaultToolSetting();
     this.editorSnapshot = this.buildEmptySnapshot(pageId);
     this.canvasVersion += 1;
   }
@@ -1864,7 +1910,6 @@ struct EditorPage {
     const targetPageId: string = pageId ?? this.currentDrawingPageId;
 
     if (targetViewModel === null || targetPageId.length === 0) {
-      this.toolSetting = this.buildDefaultToolSetting();
       this.editorSnapshot = this.buildEmptySnapshot(targetPageId);
       if (redrawCanvas) {
         this.canvasVersion += 1;
@@ -1878,14 +1923,44 @@ struct EditorPage {
       return;
     }
 
-    this.toolSetting = targetViewModel.getToolSetting();
-    this.editorSnapshot = targetViewModel.getDebugSnapshot();
+    this.applySharedToolSettingToViewModel(targetViewModel);
+    this.editorSnapshot = this.buildSnapshotWithSharedToolSetting(targetViewModel);
     if (redrawCanvas) {
       this.captureThumbnailSession(targetPageId, targetViewModel);
       this.canvasVersion += 1;
       this.refreshElementLayer();
       this.requestThumbnailRender(refreshThumbnailImmediately);
     }
+  }
+
+  private applySharedToolSettingToViewModel(viewModel: DrawingEditorViewModel): void {
+    const currentSetting = viewModel.getToolSetting();
+    if (currentSetting.tool === this.toolSetting.tool &&
+      currentSetting.color === this.toolSetting.color &&
+      currentSetting.width === this.toolSetting.width &&
+      currentSetting.opacity === this.toolSetting.opacity) {
+      return;
+    }
+
+    viewModel.updateToolSetting(this.cloneToolSetting(this.toolSetting));
+  }
+
+  private buildSnapshotWithSharedToolSetting(viewModel: DrawingEditorViewModel): EditorDebugSnapshot {
+    const snapshot = viewModel.getDebugSnapshot();
+    return {
+      instanceId: snapshot.instanceId,
+      pageId: snapshot.pageId,
+      toolSetting: this.cloneToolSetting(this.toolSetting),
+      strokeCount: snapshot.strokeCount,
+      elementCount: snapshot.elementCount,
+      selectedElementId: snapshot.selectedElementId,
+      activeStrokeStyle: snapshot.activeStrokeStyle,
+      undoDepth: snapshot.undoDepth,
+      redoDepth: snapshot.redoDepth,
+      recentEvents: snapshot.recentEvents,
+      errorMessage: snapshot.errorMessage,
+      persistenceStatus: snapshot.persistenceStatus
+    };
   }
 
   private refreshElementLayer(): void {
@@ -2126,15 +2201,11 @@ struct EditorPage {
   }
 
   private isDocumentNavigationModeEnabled(): boolean {
-    return this.isContinuousDocumentViewEnabled();
-  }
-
-  private isDocumentViewportGestureEnabled(): boolean {
-    return this.isContinuousDocumentViewEnabled();
+    return this.isContinuousDocumentViewEnabled() && this.isDocumentTouchNavigationActive;
   }
 
   private shouldRenderEditableDocumentPage(pageId: string): boolean {
-    return this.isDocumentPageActive(pageId) && !this.isCanvasLoading;
+    return this.isDocumentPageWithinRenderWindow(pageId);
   }
 
   private shouldRenderDocumentPagePreview(pageId: string): boolean {
@@ -2144,11 +2215,20 @@ struct EditorPage {
   private isDocumentPageWithinRenderWindow(pageId: string): boolean {
     const viewportHeight = Math.max(1, this.workspaceViewportHeight);
     const padding = viewportHeight * DOCUMENT_PAGE_RENDER_WINDOW_PADDING_FACTOR;
-    const renderWindowTop = Math.max(0, this.documentScrollOffsetY - padding);
-    const renderWindowBottom = this.documentScrollOffsetY + viewportHeight + padding;
+    const scrollOffsetY = this.getDocumentRenderWindowScrollOffsetY();
+    const renderWindowTop = Math.max(0, scrollOffsetY - padding);
+    const renderWindowBottom = scrollOffsetY + viewportHeight + padding;
     const pageTop = this.getDocumentPageBlockTop(pageId);
     const pageBottom = pageTop + this.getDocumentPageBlockHeight(pageId);
     return pageBottom >= renderWindowTop && pageTop <= renderWindowBottom;
+  }
+
+  private getDocumentRenderWindowScrollOffsetY(): number {
+    if (this.isDocumentPanGestureActive || this.isDocumentViewportGestureActive) {
+      return this.documentGestureTargetScrollOffsetY;
+    }
+
+    return this.documentScrollOffsetY;
   }
 
   private resetDocumentZoomScale(): void {
@@ -2168,7 +2248,7 @@ struct EditorPage {
     windowCenterX: number,
     windowCenterY: number
   ): void {
-    if (!this.isDocumentViewportGestureEnabled()) {
+    if (!this.isContinuousDocumentViewEnabled()) {
       return;
     }
 
@@ -2200,7 +2280,7 @@ struct EditorPage {
     windowCenterX: number,
     windowCenterY: number
   ): void {
-    if (!this.isDocumentViewportGestureEnabled() || !this.isDocumentViewportGestureActive) {
+    if (!this.isContinuousDocumentViewEnabled() || !this.isDocumentViewportGestureActive) {
       return;
     }
 
@@ -2234,7 +2314,8 @@ struct EditorPage {
     this.documentGestureTargetHorizontalOffset = this.clampDocumentHorizontalOffsetForScale(
       this.documentGestureStartHorizontalOffset + centerDeltaX + startBaseOffsetX - targetBaseOffsetX +
         startAnchorContentX - targetAnchorContentX,
-      nextZoomScale
+      nextZoomScale,
+      this.shouldCenterContentForViewportGesture(nextZoomScale)
     );
     this.documentGestureTargetScrollOffsetY = this.clampDocumentScrollOffsetForScale(
       this.documentGestureStartScrollOffsetY - centerDeltaY + targetAnchorContentY - startAnchorContentY,
@@ -2262,7 +2343,8 @@ struct EditorPage {
     this.documentZoomScale = nextZoomScale;
     this.documentHorizontalOffset = this.clampDocumentHorizontalOffsetForScale(
       this.documentGestureTargetHorizontalOffset,
-      this.documentZoomScale
+      this.documentZoomScale,
+      this.shouldCenterContentForViewportGesture(nextZoomScale)
     );
     const nextScrollOffset = this.clampDocumentScrollOffsetForScale(
       this.documentGestureTargetScrollOffsetY,
@@ -2270,6 +2352,7 @@ struct EditorPage {
     );
     this.applyDocumentScrollOffset(nextScrollOffset);
     this.documentViewportRefreshVersion += 1;
+    this.isDocumentTouchNavigationActive = false;
     void this.commitViewportCenteredPage();
   }
 
@@ -2312,15 +2395,29 @@ struct EditorPage {
     return this.clampDocumentHorizontalOffsetForScale(offset, this.documentZoomScale);
   }
 
-  private clampDocumentHorizontalOffsetForScale(offset: number, scale: number): number {
+  private clampDocumentHorizontalOffsetForScale(
+    offset: number,
+    scale: number,
+    centerContentWhenFits: boolean = true
+  ): number {
     const viewportWidth = Math.max(1, this.workspaceViewportWidth);
-    const overflowWidth = Math.max(0, this.getDocumentContentWidthForScale(scale) - viewportWidth);
+    const contentWidth = this.getDocumentContentWidthForScale(scale);
+    const overflowWidth = Math.max(0, contentWidth - viewportWidth);
     if (overflowWidth <= 0) {
-      return 0;
+      if (centerContentWhenFits) {
+        return 0;
+      }
+
+      const halfUnderflow = Math.max(0, viewportWidth - contentWidth) / 2;
+      return Math.max(-halfUnderflow, Math.min(halfUnderflow, offset));
     }
 
     const halfOverflow = overflowWidth / 2;
     return Math.max(-halfOverflow, Math.min(halfOverflow, offset));
+  }
+
+  private shouldCenterContentForViewportGesture(nextZoomScale: number): boolean {
+    return nextZoomScale <= this.documentGestureStartZoomScale;
   }
 
   private getDocumentContentWidthForScale(scale: number): number {
@@ -2405,46 +2502,20 @@ struct EditorPage {
     this.documentScrollOffsetY = this.clampDocumentScrollOffsetForScale(offset, this.documentZoomScale);
   }
 
-  private handleDocumentPanTouch(event: TouchEvent): void {
-    if (!this.isDocumentNavigationModeEnabled()) {
-      this.endDocumentPanGesture(false);
+  private handleDocumentSurfaceTouch(event: TouchEvent): void {
+    if (!this.isContinuousDocumentViewEnabled() || this.isStylusTouchEvent(event)) {
       return;
     }
 
-    const touch = this.getDocumentPanTouch(event);
-    if (touch === null) {
-      if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-        this.endDocumentPanGesture(true);
-      }
+    const touchSignature = this.buildDocumentTouchSignature(event);
+    if (touchSignature === this.lastDocumentTouchSignature) {
       return;
     }
-
-    if (event.type === TouchType.Down) {
-      this.beginDocumentPanGesture(touch);
-      return;
-    }
-
-    if (event.type === TouchType.Move) {
-      this.updateDocumentPanGesture(touch);
-      return;
-    }
-
-    if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-      this.endDocumentPanGesture(true);
-    }
-  }
-
-  private handleDocumentNavigationTouch(event: TouchEvent): void {
-    if (!this.isDocumentNavigationModeEnabled()) {
-      this.endDocumentPanGesture(false);
-      this.endDocumentViewportGesture();
-      return;
-    }
+    this.lastDocumentTouchSignature = touchSignature;
 
     const activeTouches: TouchObject[] = this.getDocumentActiveTouches(event);
     if (event.type === TouchType.Cancel) {
-      this.endDocumentPanGesture(false);
-      this.endDocumentViewportGesture();
+      this.cancelDocumentTouchNavigation();
       return;
     }
 
@@ -2454,7 +2525,9 @@ struct EditorPage {
     }
 
     if (activeTouches.length >= 2) {
+      this.resetPendingDocumentSingleFingerPan();
       this.endDocumentPanGesture(false);
+      this.isDocumentTouchNavigationActive = true;
       const pairMetrics = this.getDocumentTouchPairMetrics(activeTouches[0], activeTouches[1]);
 
       if (!this.isDocumentViewportGestureActive || event.type === TouchType.Down) {
@@ -2489,7 +2562,86 @@ struct EditorPage {
       return;
     }
 
-    this.handleDocumentPanTouch(event);
+    if (activeTouches.length === 1) {
+      this.handleDocumentSingleFingerPanTouch(event, activeTouches[0]);
+      return;
+    }
+
+    if (event.type === TouchType.Up) {
+      this.finishDocumentSingleFingerPan();
+    }
+  }
+
+  private handleDocumentSingleFingerPanTouch(event: TouchEvent, touch: TouchObject): void {
+    if (event.type === TouchType.Down) {
+      this.beginPendingDocumentSingleFingerPan(touch);
+      return;
+    }
+
+    if (event.type === TouchType.Move) {
+      if (this.isDocumentPanGestureActive) {
+        this.updateDocumentPanGestureAt(touch.windowX, touch.windowY);
+        return;
+      }
+
+      if (!this.isDocumentSingleFingerPanPending || touch.id !== this.documentSingleFingerPanTouchId) {
+        this.beginPendingDocumentSingleFingerPan(touch);
+        return;
+      }
+
+      if (!this.hasDocumentSingleFingerPanExceededThreshold(touch)) {
+        return;
+      }
+
+      this.isDocumentTouchNavigationActive = true;
+      this.isDocumentSingleFingerPanPending = false;
+      this.beginDocumentPanGestureAt(
+        this.documentSingleFingerPanStartWindowX,
+        this.documentSingleFingerPanStartWindowY
+      );
+      this.updateDocumentPanGestureAt(touch.windowX, touch.windowY);
+      return;
+    }
+
+    if (event.type === TouchType.Up) {
+      this.finishDocumentSingleFingerPan();
+    }
+  }
+
+  private beginPendingDocumentSingleFingerPan(touch: TouchObject): void {
+    this.isDocumentSingleFingerPanPending = true;
+    this.documentSingleFingerPanTouchId = touch.id;
+    this.documentSingleFingerPanStartWindowX = touch.windowX;
+    this.documentSingleFingerPanStartWindowY = touch.windowY;
+  }
+
+  private hasDocumentSingleFingerPanExceededThreshold(touch: TouchObject): boolean {
+    const deltaX = touch.windowX - this.documentSingleFingerPanStartWindowX;
+    const deltaY = touch.windowY - this.documentSingleFingerPanStartWindowY;
+    return Math.sqrt(deltaX * deltaX + deltaY * deltaY) >= DOCUMENT_SINGLE_FINGER_PAN_THRESHOLD_SCREEN_PX;
+  }
+
+  private finishDocumentSingleFingerPan(): void {
+    if (this.isDocumentPanGestureActive) {
+      this.endDocumentPanGesture(true);
+    }
+
+    this.resetPendingDocumentSingleFingerPan();
+    this.isDocumentTouchNavigationActive = false;
+  }
+
+  private resetPendingDocumentSingleFingerPan(): void {
+    this.isDocumentSingleFingerPanPending = false;
+    this.documentSingleFingerPanTouchId = -1;
+    this.documentSingleFingerPanStartWindowX = 0;
+    this.documentSingleFingerPanStartWindowY = 0;
+  }
+
+  private cancelDocumentTouchNavigation(): void {
+    this.resetPendingDocumentSingleFingerPan();
+    this.endDocumentPanGesture(false);
+    this.endDocumentViewportGesture();
+    this.isDocumentTouchNavigationActive = false;
   }
 
   private getDocumentActiveTouches(event: TouchEvent): TouchObject[] {
@@ -2502,6 +2654,20 @@ struct EditorPage {
     }
 
     return event.changedTouches;
+  }
+
+  private isStylusTouchEvent(event: TouchEvent): boolean {
+    return event.sourceTool === SourceTool.Pen;
+  }
+
+  private buildDocumentTouchSignature(event: TouchEvent): string {
+    const touches = this.getDocumentActiveTouches(event);
+    const touchSignature = touches
+      .map((touch: TouchObject): string => {
+        return `${touch.id}:${Math.round(touch.windowX)}:${Math.round(touch.windowY)}`;
+      })
+      .join(',');
+    return `${event.type}:${event.sourceTool}:${touchSignature}`;
   }
 
   private getDocumentTouchPairMetrics(firstTouch: TouchObject, secondTouch: TouchObject): DocumentTouchPairMetrics {
@@ -2579,27 +2745,19 @@ struct EditorPage {
     return Math.max(0, Math.min(Math.max(0, maxValue), value));
   }
 
-  private getDocumentPanTouch(event: TouchEvent): TouchObject | null {
-    if (event.changedTouches.length > 0) {
-      return event.changedTouches[0];
-    }
-
-    if (event.touches.length > 0) {
-      return event.touches[0];
-    }
-
-    return null;
-  }
-
   private beginDocumentPanGestureAt(windowX: number, windowY: number): void {
     this.closeTransientDropdowns();
     this.isDocumentPanGestureActive = true;
-    this.documentPanLastWindowX = windowX;
-    this.documentPanLastWindowY = windowY;
-  }
-
-  private beginDocumentPanGesture(touch: TouchObject): void {
-    this.beginDocumentPanGestureAt(touch.windowX, touch.windowY);
+    this.documentPanStartWindowX = windowX;
+    this.documentPanStartWindowY = windowY;
+    this.documentGestureStartHorizontalOffset = this.documentHorizontalOffset;
+    this.documentGestureStartScrollOffsetY = this.documentScrollOffsetY;
+    this.documentGestureTargetHorizontalOffset = this.documentHorizontalOffset;
+    this.documentGestureTargetScrollOffsetY = this.documentScrollOffsetY;
+    this.documentGesturePreviewScale = 1;
+    this.documentGesturePreviewOffsetX = 0;
+    this.documentGesturePreviewOffsetY = 0;
+    this.lastDocumentGesturePreviewTime = 0;
   }
 
   private updateDocumentPanGestureAt(windowX: number, windowY: number): void {
@@ -2607,16 +2765,21 @@ struct EditorPage {
       return;
     }
 
-    const deltaX = windowX - this.documentPanLastWindowX;
-    const deltaY = windowY - this.documentPanLastWindowY;
-    this.documentPanLastWindowX = windowX;
-    this.documentPanLastWindowY = windowY;
-    this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset + deltaX);
-    this.applyDocumentScrollOffset(this.documentScrollOffsetY - deltaY);
-  }
-
-  private updateDocumentPanGesture(touch: TouchObject): void {
-    this.updateDocumentPanGestureAt(touch.windowX, touch.windowY);
+    const deltaX = windowX - this.documentPanStartWindowX;
+    const deltaY = windowY - this.documentPanStartWindowY;
+    this.documentGestureTargetHorizontalOffset = this.clampDocumentHorizontalOffsetForScale(
+      this.documentGestureStartHorizontalOffset + deltaX,
+      this.documentZoomScale
+    );
+    this.documentGestureTargetScrollOffsetY = this.clampDocumentScrollOffsetForScale(
+      this.documentGestureStartScrollOffsetY - deltaY,
+      this.documentZoomScale
+    );
+    this.applyDocumentGesturePreview(
+      1,
+      this.documentGestureTargetHorizontalOffset - this.documentGestureStartHorizontalOffset,
+      this.documentGestureStartScrollOffsetY - this.documentGestureTargetScrollOffsetY
+    );
   }
 
   private endDocumentPanGesture(commitCenteredPage: boolean): void {
@@ -2625,6 +2788,17 @@ struct EditorPage {
     }
 
     this.isDocumentPanGestureActive = false;
+    this.documentPanStartWindowX = 0;
+    this.documentPanStartWindowY = 0;
+    this.documentGesturePreviewScale = 1;
+    this.documentGesturePreviewOffsetX = 0;
+    this.documentGesturePreviewOffsetY = 0;
+    this.documentHorizontalOffset = this.clampDocumentHorizontalOffsetForScale(
+      this.documentGestureTargetHorizontalOffset,
+      this.documentZoomScale
+    );
+    this.applyDocumentScrollOffset(this.documentGestureTargetScrollOffsetY);
+    this.documentViewportRefreshVersion += 1;
     if (commitCenteredPage) {
       void this.commitViewportCenteredPage();
     }
@@ -2671,14 +2845,6 @@ struct EditorPage {
     this.activePageId = targetPageId;
     this.closePageActionMenu();
     await this.loadActivePageCanvas();
-  }
-
-  private canDecreaseDocumentZoom(): boolean {
-    return this.documentZoomScale > DOCUMENT_ZOOM_MIN_SCALE + 0.001;
-  }
-
-  private canIncreaseDocumentZoom(): boolean {
-    return this.documentZoomScale < DOCUMENT_ZOOM_MAX_SCALE - 0.001;
   }
 
   private getDocumentZoomText(): string {
@@ -2797,6 +2963,10 @@ struct EditorPage {
 
   private handleWorkspaceToolButtonClick(tool: ToolType): void {
     const isCurrentTool = this.toolSetting.tool === tool;
+    this.endDocumentPanGesture(false);
+    this.endDocumentViewportGesture();
+    this.resetPendingDocumentSingleFingerPan();
+    this.isDocumentTouchNavigationActive = false;
     if (tool === 'text') {
       this.handleWorkspaceToolChange(tool);
       this.closeTransientDropdowns();
@@ -2853,9 +3023,9 @@ struct EditorPage {
       width: nextSetting.width,
       opacity: nextSetting.opacity
     };
+    EditorSessionRegistry.updateToolSettingForAll(nextSetting);
 
     if (this.drawingViewModel !== null) {
-      this.drawingViewModel.updateToolSetting(nextSetting);
       this.syncDrawingSnapshot(false, this.drawingViewModel, this.currentDrawingPageId);
     }
   }
@@ -2881,9 +3051,9 @@ struct EditorPage {
     };
     this.isToolDropdownVisible = false;
     this.isShapeDropdownVisible = false;
+    EditorSessionRegistry.updateToolSettingForAll(nextSetting);
 
     if (this.drawingViewModel !== null) {
-      this.drawingViewModel.updateToolSetting(nextSetting);
       this.syncDrawingSnapshot(false, this.drawingViewModel, this.currentDrawingPageId);
     }
   }
@@ -3455,11 +3625,20 @@ struct EditorPage {
     };
   }
 
+  private cloneToolSetting(toolSetting: ToolSetting): ToolSetting {
+    return {
+      tool: toolSetting.tool,
+      color: toolSetting.color,
+      width: toolSetting.width,
+      opacity: toolSetting.opacity
+    };
+  }
+
   private buildEmptySnapshot(pageId: string): EditorDebugSnapshot {
     return {
       instanceId: 0,
       pageId,
-      toolSetting: this.buildDefaultToolSetting(),
+      toolSetting: this.cloneToolSetting(this.toolSetting),
       strokeCount: 0,
       elementCount: 0,
       selectedElementId: '',

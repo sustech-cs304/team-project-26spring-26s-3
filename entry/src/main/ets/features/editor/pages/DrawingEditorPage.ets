@@ -253,6 +253,8 @@ struct DrawingEditorPage {
         CanvasBoard({
           pageId: this.pageId,
           canvasVersion: this.canvasVersion,
+          toolSetting: this.toolSetting,
+          isActivePage: true,
           editorSnapshot: $editorSnapshot
         })
       }
@@ -398,6 +400,8 @@ struct DrawingEditorPage {
       pageId,
       toolSetting: this.buildDefaultToolSetting(),
       strokeCount: 0,
+      elementCount: 0,
+      selectedElementId: '',
       activeStrokeStyle: null,
       undoDepth: 0,
       redoDepth: 0,

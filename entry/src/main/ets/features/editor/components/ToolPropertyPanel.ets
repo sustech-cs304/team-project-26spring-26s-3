@@ -268,6 +268,7 @@ export struct ToolPropertyPanel {
     };
 
     this.toolSetting = this.cloneToolSetting(normalizedSetting);
+    EditorSessionRegistry.updateToolSettingForAll(normalizedSetting);
 
     const viewModel = this.getViewModel();
     if (!viewModel) {
