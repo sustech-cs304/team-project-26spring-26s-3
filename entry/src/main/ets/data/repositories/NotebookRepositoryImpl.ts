@@ -17,6 +17,7 @@ import {
   NotebookSortType,
   ReorderNotebookPagesRequest,
   RenameNotebookRequest,
+  UpdateNotebookPageCanvasRequest,
   UpdateNotebookPageTemplateRequest
 } from '../../domain/repositories/NotebookRepository';
 import { FileDataSource } from '../sources/local/FileDataSource';
@@ -369,6 +370,70 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     };
     await this.persistNotebookList(notebookList);
     return updatedNotebookPage;
+  }
+
+  async updateNotebookPageCanvas(request: UpdateNotebookPageCanvasRequest): Promise<NotebookPageCanvas | null> {
+    const notebookList: Notebook[] = await this.loadNotebookList();
+    const notebookIndex: number = this.findNotebookIndexById(notebookList, request.notebookId);
+    if (notebookIndex < 0) {
+      return null;
+    }
+
+    const notebook: Notebook = notebookList[notebookIndex];
+    const notebookPageList: NotebookPage[] = await this.loadOrBootstrapNotebookPageList(notebook);
+    const pageIndex: number = this.findNotebookPageIndexById(notebookPageList, request.pageId);
+    if (pageIndex < 0) {
+      return null;
+    }
+
+    const currentNotebookPage: NotebookPage = notebookPageList[pageIndex];
+    const currentNotebookPageCanvas: NotebookPageCanvas =
+      await this.loadOrBootstrapNotebookPageCanvas(currentNotebookPage);
+    const targetWidth: number = NotebookPageCanvasEntity.normalizeDimension(
+      request.width,
+      currentNotebookPageCanvas.width
+    );
+    const targetHeight: number = NotebookPageCanvasEntity.normalizeDimension(
+      request.height,
+      currentNotebookPageCanvas.height
+    );
+
+    if (currentNotebookPageCanvas.width === targetWidth && currentNotebookPageCanvas.height === targetHeight) {
+      return currentNotebookPageCanvas;
+    }
+
+    const currentTime: number = TimeUtil.now();
+    const updatedNotebookPage: NotebookPage = {
+      id: currentNotebookPage.id,
+      notebookId: currentNotebookPage.notebookId,
+      order: currentNotebookPage.order,
+      createdAt: currentNotebookPage.createdAt,
+      updatedAt: currentTime,
+      templateType: currentNotebookPage.templateType
+    };
+    const updatedNotebookPageCanvas: NotebookPageCanvas = {
+      pageId: currentNotebookPageCanvas.pageId,
+      notebookId: currentNotebookPageCanvas.notebookId,
+      width: targetWidth,
+      height: targetHeight,
+      backgroundColor: currentNotebookPageCanvas.backgroundColor,
+      createdAt: currentNotebookPageCanvas.createdAt,
+      updatedAt: currentTime
+    };
+
+    notebookPageList[pageIndex] = updatedNotebookPage;
+    await this.persistNotebookPageList(request.notebookId, notebookPageList);
+    await this.persistNotebookPageCanvas(updatedNotebookPageCanvas);
+
+    notebookList[notebookIndex] = {
+      id: notebook.id,
+      title: notebook.title,
+      folderId: notebook.folderId,
+      createdAt: notebook.createdAt,
+      updatedAt: currentTime
+    };
+    await this.persistNotebookList(notebookList);
+    return updatedNotebookPageCanvas;
   }
 
   async touchNotebookPageUpdatedAt(pageId: string): Promise<boolean> {

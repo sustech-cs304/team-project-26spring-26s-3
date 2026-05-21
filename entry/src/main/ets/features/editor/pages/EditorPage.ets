@@ -39,6 +39,14 @@ interface DocumentTouchAnchor {
   pageY: number;
 }
 
+interface PaperSizeTemplateOption {
+  id: string;
+  label: string;
+  description: string;
+  width: number;
+  height: number;
+}
+
 const SIDEBAR_EXPANDED_PADDING = 16;
 const THUMBNAIL_RENDER_INTERVAL_MS = 320;
 const SIDEBAR_EXPANDED_WIDTH = 232;
@@ -63,6 +71,50 @@ const PAGE_TEMPLATE_OPTIONS: NotebookPageTemplateType[] = [
   NotebookPageTemplateType.LINED,
   NotebookPageTemplateType.GRID,
   NotebookPageTemplateType.DOTTED
+];
+const PAPER_SIZE_TEMPLATE_OPTIONS: PaperSizeTemplateOption[] = [
+  {
+    id: 'default',
+    label: '默认宽屏',
+    description: '2200 x 1600',
+    width: NotebookPageCanvasEntity.DEFAULT_WIDTH,
+    height: NotebookPageCanvasEntity.DEFAULT_HEIGHT
+  },
+  {
+    id: 'a4',
+    label: 'A4 竖版',
+    description: '2200 x 3112',
+    width: 2200,
+    height: 3112
+  },
+  {
+    id: 'a4_landscape',
+    label: 'A4 横版',
+    description: '2200 x 1556',
+    width: 2200,
+    height: 1556
+  },
+  {
+    id: 'a5',
+    label: 'A5 竖版',
+    description: '1800 x 2546',
+    width: 1800,
+    height: 2546
+  },
+  {
+    id: 'letter',
+    label: 'Letter',
+    description: '2200 x 2847',
+    width: 2200,
+    height: 2847
+  },
+  {
+    id: 'square',
+    label: '方形',
+    description: '2000 x 2000',
+    width: 2000,
+    height: 2000
+  }
 ];
 
 @Entry
@@ -965,25 +1017,40 @@ struct EditorPage {
   @Builder
   private buildPageTemplateDropdown(): void {
     Row() {
-      Column({ space: 7 }) {
-        Text('页面模板')
-          .fontSize(14)
-          .fontWeight(FontWeight.Medium)
-          .fontColor('#111827')
-          .width('100%')
+      Row({ space: 8 }) {
+        Column({ space: 7 }) {
+          this.buildTemplateSectionTitle('线条模板')
 
-        ForEach(PAGE_TEMPLATE_OPTIONS, (templateType: NotebookPageTemplateType) => {
-          this.buildPageTemplateOption(templateType)
-        }, (templateType: NotebookPageTemplateType): string => templateType)
+          ForEach(PAGE_TEMPLATE_OPTIONS, (templateType: NotebookPageTemplateType) => {
+            this.buildPageTemplateOption(templateType)
+          }, (templateType: NotebookPageTemplateType): string => templateType)
+        }
+        .width(204)
+        .padding(7)
+        .backgroundColor('#F8FAFC')
+        .borderRadius(12)
+        .border({
+          width: 1,
+          color: '#E2E8F0'
+        })
+
+        Column({ space: 7 }) {
+          this.buildTemplateSectionTitle('纸张大小')
+
+          ForEach(PAPER_SIZE_TEMPLATE_OPTIONS, (option: PaperSizeTemplateOption) => {
+            this.buildPaperSizeTemplateOption(option)
+          }, (option: PaperSizeTemplateOption): string => option.id)
+        }
+        .width(232)
+        .padding(7)
+        .backgroundColor('#F8FAFC')
+        .borderRadius(12)
+        .border({
+          width: 1,
+          color: '#E2E8F0'
+        })
       }
-      .width(204)
-      .padding(7)
-      .backgroundColor('#F8FAFC')
-      .borderRadius(12)
-      .border({
-        width: 1,
-        color: '#E2E8F0'
-      })
+      .alignItems(VerticalAlign.Top)
     }
     .width('100%')
     .margin({
@@ -992,6 +1059,15 @@ struct EditorPage {
     })
     .justifyContent(FlexAlign.Start)
     .alignItems(VerticalAlign.Top)
+  }
+
+  @Builder
+  private buildTemplateSectionTitle(title: string): void {
+    Text(title)
+      .fontSize(14)
+      .fontWeight(FontWeight.Medium)
+      .fontColor('#111827')
+      .width('100%')
   }
 
   @Builder
@@ -1084,7 +1160,7 @@ struct EditorPage {
         Column()
           .width('100%')
           .height('100%')
-          .backgroundColor(this.getPageCanvasBackgroundColor(page.id))
+          .backgroundColor(this.getPageFrameBackgroundColor(page.id))
           .borderRadius(24)
 
         if (this.shouldRenderEditableDocumentPage(page.id)) {
@@ -1292,6 +1368,74 @@ struct EditorPage {
     .onClick(() => {
       void this.updateActivePageTemplate(templateType);
     })
+  }
+
+  @Builder
+  private buildPaperSizeTemplateOption(option: PaperSizeTemplateOption): void {
+    Button() {
+      Row({ space: 8 }) {
+        this.buildPaperSizeTemplateGlyph(option, this.isActivePaperSizeTemplate(option))
+
+        Column({ space: 2 }) {
+          Text(option.label)
+            .fontSize(13)
+            .fontWeight(this.isActivePaperSizeTemplate(option) ? FontWeight.Medium : FontWeight.Regular)
+            .fontColor(this.isActivePaperSizeTemplate(option) ? '#FFFFFF' : '#334155')
+            .width('100%')
+            .textAlign(TextAlign.Start)
+
+          Text(option.description)
+            .fontSize(11)
+            .fontColor(this.isActivePaperSizeTemplate(option) ? '#E2E8F0' : '#64748B')
+            .width('100%')
+            .textAlign(TextAlign.Start)
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start)
+
+        Text(this.isActivePaperSizeTemplate(option) ? '✓' : '')
+          .fontSize(13)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#FFFFFF')
+          .width(14)
+          .textAlign(TextAlign.Center)
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+    }
+    .width('100%')
+    .height(46)
+    .padding({
+      left: 8,
+      right: 8
+    })
+    .backgroundColor(this.isActivePaperSizeTemplate(option) ? '#0F172A' : '#FFFFFF')
+    .borderRadius(10)
+    .border({
+      width: 1,
+      color: this.isActivePaperSizeTemplate(option) ? '#0F172A' : '#CBD5E1'
+    })
+    .enabled(!this.isUpdatingPageTemplate && !this.isCanvasLoading)
+    .onClick(() => {
+      void this.updateActivePageCanvasSize(option);
+    })
+  }
+
+  @Builder
+  private buildPaperSizeTemplateGlyph(option: PaperSizeTemplateOption, isSelected: boolean): void {
+    Stack({ alignContent: Alignment.Center }) {
+      Column() {}
+        .width(this.getPaperSizeGlyphWidth(option))
+        .height(this.getPaperSizeGlyphHeight(option))
+        .backgroundColor(isSelected ? '#FFFFFF' : '#F8FAFC')
+        .borderRadius(4)
+        .border({
+          width: 1,
+          color: isSelected ? '#E2E8F0' : '#CBD5E1'
+        })
+    }
+    .width(30)
+    .height(24)
   }
 
   @Builder
@@ -1563,6 +1707,7 @@ struct EditorPage {
       this.notebookPageList = await this.ensureViewModel().loadNotebookPages(notebookId);
       this.retainThumbnailPages();
       this.syncActivePageId(typeof routeParams.pageId === 'string' ? routeParams.pageId : '');
+      await this.loadNotebookPageCanvasMetadata();
       this.queueDocumentViewportRestore(this.activePageId);
       await this.loadActivePageCanvas();
     } catch (_error) {
@@ -1828,6 +1973,25 @@ struct EditorPage {
     }
   }
 
+  private async loadNotebookPageCanvasMetadata(): Promise<void> {
+    if (this.notebookId.length === 0 || this.notebookPageList.length === 0) {
+      return;
+    }
+
+    const pageIds: string[] = this.notebookPageList.map((page: NotebookPage): string => page.id);
+    const notebookPageCanvasList: NotebookPageCanvas[] = await this.ensureViewModel().loadNotebookPageCanvases(
+      this.notebookId,
+      pageIds
+    );
+    for (const notebookPageCanvas of notebookPageCanvasList) {
+      this.updatePageCanvasRenderSize(
+        notebookPageCanvas.pageId,
+        notebookPageCanvas.width,
+        notebookPageCanvas.height
+      );
+    }
+  }
+
   private async loadDrawingSession(pageId: string): Promise<void> {
     const hostContext: common.Context | undefined = this.getUIContext().getHostContext() as common.Context | undefined;
     if (hostContext === undefined) {
@@ -2028,10 +2192,10 @@ struct EditorPage {
     await this.drawingViewModel.flushPendingSave();
   }
 
-  private getPageThumbnailHeight(pageId: string): number {
-    const canvasWidth: number = this.getPageCanvasWidth(pageId);
-    const canvasHeight: number = this.getPageCanvasHeight(pageId);
-    return Math.round(PAGE_THUMBNAIL_WIDTH * canvasHeight / Math.max(1, canvasWidth));
+  private getPageThumbnailHeight(_pageId: string): number {
+    return Math.round(
+      PAGE_THUMBNAIL_WIDTH * NotebookPageCanvasEntity.DEFAULT_HEIGHT / NotebookPageCanvasEntity.DEFAULT_WIDTH
+    );
   }
 
   private getActiveCanvasBounds(): PageCanvasRenderSize {
@@ -2044,10 +2208,7 @@ struct EditorPage {
     }
 
     if (this.activePageCanvas !== null) {
-      return {
-        width: this.activePageCanvas.width,
-        height: this.activePageCanvas.height
-      };
+      return this.normalizeCanvasRenderSize(this.activePageCanvas.width, this.activePageCanvas.height);
     }
 
     return {
@@ -2117,10 +2278,11 @@ struct EditorPage {
     return Math.max(DOCUMENT_PAGE_SURFACE_MIN_WIDTH, scaledWidth);
   }
 
-  private getDocumentPageSurfaceHeight(pageId: string, targetWidth: number): number {
-    const pageWidth = this.getPageCanvasWidth(pageId);
-    const pageHeight = this.getPageCanvasHeight(pageId);
-    return Math.max(240, Math.round(targetWidth * pageHeight / Math.max(1, pageWidth)));
+  private getDocumentPageSurfaceHeight(_pageId: string, targetWidth: number): number {
+    return Math.max(
+      240,
+      Math.round(targetWidth * NotebookPageCanvasEntity.DEFAULT_HEIGHT / NotebookPageCanvasEntity.DEFAULT_WIDTH)
+    );
   }
 
   private getDocumentPageSurfaceHeightForPage(pageId: string): number {
@@ -2859,6 +3021,10 @@ struct EditorPage {
     return '#FFFFFF';
   }
 
+  private getPageFrameBackgroundColor(_pageId: string): string {
+    return '#E8EEF6';
+  }
+
   private getPageCanvasWidth(pageId: string): number {
     const cachedSize = this.pageCanvasRenderSizeMap.get(pageId);
     if (cachedSize !== undefined && cachedSize.width > 0) {
@@ -3329,6 +3495,27 @@ struct EditorPage {
     return this.getActivePageTemplateType() === templateType;
   }
 
+  private isActivePaperSizeTemplate(option: PaperSizeTemplateOption): boolean {
+    const activeSize: PageCanvasRenderSize = this.getActiveCanvasBounds();
+    const optionSize: PageCanvasRenderSize = this.normalizeCanvasRenderSize(option.width, option.height);
+    return activeSize.width === optionSize.width && activeSize.height === optionSize.height;
+  }
+
+  private getPaperSizeGlyphScale(option: PaperSizeTemplateOption): number {
+    return Math.min(
+      30 / Math.max(1, option.width),
+      24 / Math.max(1, option.height)
+    );
+  }
+
+  private getPaperSizeGlyphWidth(option: PaperSizeTemplateOption): number {
+    return Math.max(14, Math.round(option.width * this.getPaperSizeGlyphScale(option)));
+  }
+
+  private getPaperSizeGlyphHeight(option: PaperSizeTemplateOption): number {
+    return Math.max(14, Math.round(option.height * this.getPaperSizeGlyphScale(option)));
+  }
+
   private getPageTemplateLabel(templateType: NotebookPageTemplateType): string {
     switch (templateType) {
       case NotebookPageTemplateType.LINED:
@@ -3340,6 +3527,75 @@ struct EditorPage {
       case NotebookPageTemplateType.BLANK:
       default:
         return '空白';
+    }
+  }
+
+  private async updateActivePageCanvasSize(option: PaperSizeTemplateOption): Promise<void> {
+    if (this.isUpdatingPageTemplate || this.isLoading || this.isCreatingPage || this.isDeletingPage ||
+      this.isReorderingPages || this.isCanvasLoading || this.notebookId.length === 0 || this.activePageId.length === 0) {
+      return;
+    }
+
+    const activePage: NotebookPage | null = this.getActivePage();
+    if (activePage === null) {
+      return;
+    }
+
+    const targetSize: PageCanvasRenderSize = this.normalizeCanvasRenderSize(option.width, option.height);
+    if (this.isActivePaperSizeTemplate(option)) {
+      this.closePageTemplateDropdown();
+      return;
+    }
+
+    const pageId: string = activePage.id;
+    const rollbackCanvas: NotebookPageCanvas | null = this.cloneNotebookPageCanvas(this.activePageCanvas);
+    const cachedRollbackSize = this.pageCanvasRenderSizeMap.get(pageId);
+    const rollbackSize: PageCanvasRenderSize | null = cachedRollbackSize === undefined ? null : {
+      width: cachedRollbackSize.width,
+      height: cachedRollbackSize.height
+    };
+
+    this.isUpdatingPageTemplate = true;
+    this.closeToolDropdown();
+    this.closePageActionMenu();
+    this.applyActivePageCanvasSizeLocally(activePage, targetSize.width, targetSize.height);
+    this.canvasVersion += 1;
+    this.documentViewportRefreshVersion += 1;
+    this.requestThumbnailRender(true);
+    this.closePageTemplateDropdown();
+
+    try {
+      const updatedNotebookPageCanvas: NotebookPageCanvas | null = await this.ensureViewModel().updateNotebookPageCanvas(
+        this.notebookId,
+        pageId,
+        targetSize.width,
+        targetSize.height
+      );
+
+      if (updatedNotebookPageCanvas === null) {
+        this.restoreActivePageCanvasAfterFailedSizeUpdate(pageId, rollbackCanvas, rollbackSize);
+        return;
+      }
+
+      const cachedNotebook: Notebook | null = this.ensureViewModel().getCachedNotebook();
+      if (cachedNotebook !== null) {
+        this.notebookTitle = cachedNotebook.title;
+      }
+
+      this.notebookPageList = this.ensureViewModel().getCachedNotebookPages();
+      this.retainThumbnailPages();
+      this.syncActivePageId(pageId);
+      this.activePageCanvas = updatedNotebookPageCanvas;
+      this.updatePageCanvasRenderSize(pageId, updatedNotebookPageCanvas.width, updatedNotebookPageCanvas.height);
+      this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset);
+      this.applyDocumentScrollOffset(this.documentScrollOffsetY);
+      this.canvasVersion += 1;
+      this.documentViewportRefreshVersion += 1;
+      this.requestThumbnailRender(true);
+    } catch (_error) {
+      this.restoreActivePageCanvasAfterFailedSizeUpdate(pageId, rollbackCanvas, rollbackSize);
+    } finally {
+      this.isUpdatingPageTemplate = false;
     }
   }
 
@@ -3456,6 +3712,46 @@ struct EditorPage {
     this.requestThumbnailRender(true);
   }
 
+  private applyActivePageCanvasSizeLocally(activePage: NotebookPage, width: number, height: number): void {
+    const currentTime: number = Date.now();
+    const currentCanvas: NotebookPageCanvas | null = this.activePageCanvas;
+    this.activePageCanvas = {
+      pageId: activePage.id,
+      notebookId: activePage.notebookId,
+      width: width,
+      height: height,
+      backgroundColor: currentCanvas === null
+        ? NotebookPageCanvasEntity.DEFAULT_BACKGROUND_COLOR
+        : currentCanvas.backgroundColor,
+      createdAt: currentCanvas === null ? activePage.createdAt : currentCanvas.createdAt,
+      updatedAt: currentTime
+    };
+    this.updatePageCanvasRenderSize(activePage.id, width, height);
+    this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset);
+    this.applyDocumentScrollOffset(this.documentScrollOffsetY);
+  }
+
+  private restoreActivePageCanvasAfterFailedSizeUpdate(
+    pageId: string,
+    rollbackCanvas: NotebookPageCanvas | null,
+    rollbackSize: PageCanvasRenderSize | null
+  ): void {
+    this.activePageCanvas = this.cloneNotebookPageCanvas(rollbackCanvas);
+    if (rollbackSize === null) {
+      this.pageCanvasRenderSizeMap.delete(pageId);
+    } else {
+      this.pageCanvasRenderSizeMap.set(pageId, {
+        width: rollbackSize.width,
+        height: rollbackSize.height
+      });
+    }
+    this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset);
+    this.applyDocumentScrollOffset(this.documentScrollOffsetY);
+    this.canvasVersion += 1;
+    this.documentViewportRefreshVersion += 1;
+    this.requestThumbnailRender(true);
+  }
+
   private getPageRenderKey(page: NotebookPage): string {
     return `${page.id}_${this.resolvePageTemplateType(page.templateType)}`;
   }
@@ -3494,6 +3790,22 @@ struct EditorPage {
         templateType: this.resolvePageTemplateType(page.templateType)
       };
     });
+  }
+
+  private cloneNotebookPageCanvas(notebookPageCanvas: NotebookPageCanvas | null): NotebookPageCanvas | null {
+    if (notebookPageCanvas === null) {
+      return null;
+    }
+
+    return {
+      pageId: notebookPageCanvas.pageId,
+      notebookId: notebookPageCanvas.notebookId,
+      width: notebookPageCanvas.width,
+      height: notebookPageCanvas.height,
+      backgroundColor: notebookPageCanvas.backgroundColor,
+      createdAt: notebookPageCanvas.createdAt,
+      updatedAt: notebookPageCanvas.updatedAt
+    };
   }
 
   private resolvePageTemplateType(templateType?: NotebookPageTemplateType): NotebookPageTemplateType {
@@ -3593,16 +3905,9 @@ struct EditorPage {
       NotebookPageCanvasEntity.DEFAULT_HEIGHT
     );
 
-    if (normalizedWidth >= normalizedHeight) {
-      return {
-        width: normalizedWidth,
-        height: normalizedHeight
-      };
-    }
-
     return {
-      width: normalizedHeight,
-      height: normalizedWidth
+      width: normalizedWidth,
+      height: normalizedHeight
     };
   }
 

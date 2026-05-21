@@ -26,7 +26,7 @@ export struct PageThumbnailCanvas {
     Canvas(this.thumbnailContext)
       .width('100%')
       .height('100%')
-      .backgroundColor(this.snapshot.paperBackgroundColor)
+      .backgroundColor('#E8EEF6')
       .onReady(() => {
         this.isCanvasReady = true;
         this.requestSnapshotIfNeeded();
