@@ -7,6 +7,7 @@ import { DeleteNotebookPage } from '../../../domain/usecases/DeleteNotebookPage'
 import { GetNotebookPageCanvas } from '../../../domain/usecases/GetNotebookPageCanvas';
 import { GetNotebookPages } from '../../../domain/usecases/GetNotebookPages';
 import { ReorderNotebookPages } from '../../../domain/usecases/ReorderNotebookPages';
+import { UpdateNotebookPageCanvas } from '../../../domain/usecases/UpdateNotebookPageCanvas';
 import { UpdateNotebookPageTemplate } from '../../../domain/usecases/UpdateNotebookPageTemplate';
 import { NotebookRepository } from '../../../domain/repositories/NotebookRepository';
 import { NotebookRepositoryImpl } from '../../../data/repositories/NotebookRepositoryImpl';
@@ -18,6 +19,7 @@ export class EditorViewModel {
   private readonly getNotebookPageCanvasUseCase: GetNotebookPageCanvas;
   private readonly getNotebookPagesUseCase: GetNotebookPages;
   private readonly reorderNotebookPagesUseCase: ReorderNotebookPages;
+  private readonly updateNotebookPageCanvasUseCase: UpdateNotebookPageCanvas;
   private readonly updateNotebookPageTemplateUseCase: UpdateNotebookPageTemplate;
   private notebook: Notebook | null = null;
   private notebookPageList: NotebookPage[] = [];
@@ -30,6 +32,7 @@ export class EditorViewModel {
     this.getNotebookPageCanvasUseCase = new GetNotebookPageCanvas(this.notebookRepository);
     this.getNotebookPagesUseCase = new GetNotebookPages(this.notebookRepository);
     this.reorderNotebookPagesUseCase = new ReorderNotebookPages(this.notebookRepository);
+    this.updateNotebookPageCanvasUseCase = new UpdateNotebookPageCanvas(this.notebookRepository);
     this.updateNotebookPageTemplateUseCase = new UpdateNotebookPageTemplate(this.notebookRepository);
   }
 
@@ -72,6 +75,22 @@ export class EditorViewModel {
     return this.getCachedNotebookPageCanvas();
   }
 
+  async loadNotebookPageCanvases(notebookId: string, pageIds: string[]): Promise<NotebookPageCanvas[]> {
+    const notebookPageCanvasList: NotebookPageCanvas[] = [];
+    for (const pageId of pageIds) {
+      const notebookPageCanvas: NotebookPageCanvas | null = await this.getNotebookPageCanvasUseCase.execute({
+        notebookId: notebookId,
+        pageId: pageId
+      });
+
+      if (notebookPageCanvas !== null) {
+        notebookPageCanvasList.push(this.cloneNotebookPageCanvas(notebookPageCanvas));
+      }
+    }
+
+    return notebookPageCanvasList;
+  }
+
   async reorderNotebookPages(notebookId: string, fromIndex: number, toIndex: number): Promise<boolean> {
     const hasReordered: boolean = await this.reorderNotebookPagesUseCase.execute({
       notebookId: notebookId,
@@ -98,6 +117,24 @@ export class EditorViewModel {
     this.notebook = await this.notebookRepository.getNotebookById(notebookId);
     this.notebookPageList = await this.getNotebookPagesUseCase.execute(notebookId);
     return updatedNotebookPage;
+  }
+
+  async updateNotebookPageCanvas(
+    notebookId: string,
+    pageId: string,
+    width: number,
+    height: number
+  ): Promise<NotebookPageCanvas | null> {
+    this.activeNotebookPageCanvas = await this.updateNotebookPageCanvasUseCase.execute({
+      notebookId: notebookId,
+      pageId: pageId,
+      width: width,
+      height: height
+    });
+
+    this.notebook = await this.notebookRepository.getNotebookById(notebookId);
+    this.notebookPageList = await this.getNotebookPagesUseCase.execute(notebookId);
+    return this.getCachedNotebookPageCanvas();
   }
 
   getCachedNotebook(): Notebook | null {
@@ -132,14 +169,18 @@ export class EditorViewModel {
       return null;
     }
 
+    return this.cloneNotebookPageCanvas(this.activeNotebookPageCanvas);
+  }
+
+  private cloneNotebookPageCanvas(notebookPageCanvas: NotebookPageCanvas): NotebookPageCanvas {
     return {
-      pageId: this.activeNotebookPageCanvas.pageId,
-      notebookId: this.activeNotebookPageCanvas.notebookId,
-      width: this.activeNotebookPageCanvas.width,
-      height: this.activeNotebookPageCanvas.height,
-      backgroundColor: this.activeNotebookPageCanvas.backgroundColor,
-      createdAt: this.activeNotebookPageCanvas.createdAt,
-      updatedAt: this.activeNotebookPageCanvas.updatedAt
+      pageId: notebookPageCanvas.pageId,
+      notebookId: notebookPageCanvas.notebookId,
+      width: notebookPageCanvas.width,
+      height: notebookPageCanvas.height,
+      backgroundColor: notebookPageCanvas.backgroundColor,
+      createdAt: notebookPageCanvas.createdAt,
+      updatedAt: notebookPageCanvas.updatedAt
     };
   }
 }

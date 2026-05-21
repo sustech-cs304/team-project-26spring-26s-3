@@ -53,6 +53,13 @@ export interface GetNotebookPageCanvasRequest {
   pageId: string;
 }
 
+export interface UpdateNotebookPageCanvasRequest {
+  notebookId: string;
+  pageId: string;
+  width: number;
+  height: number;
+}
+
 export interface NotebookRepository {
   getNotebookList(): Promise<Notebook[]>;
   getFolderList(): Promise<NotebookFolder[]>;
@@ -68,6 +75,7 @@ export interface NotebookRepository {
   deleteNotebookPage(request: DeleteNotebookPageRequest): Promise<boolean>;
   reorderNotebookPages(request: ReorderNotebookPagesRequest): Promise<boolean>;
   updateNotebookPageTemplate(request: UpdateNotebookPageTemplateRequest): Promise<NotebookPage | null>;
+  updateNotebookPageCanvas(request: UpdateNotebookPageCanvasRequest): Promise<NotebookPageCanvas | null>;
   touchNotebookPageUpdatedAt(pageId: string): Promise<boolean>;
   getSortType(): Promise<NotebookSortType>;
   saveSortType(sortType: NotebookSortType): Promise<void>;

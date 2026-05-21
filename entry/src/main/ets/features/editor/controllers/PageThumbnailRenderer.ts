@@ -31,6 +31,7 @@ interface PageThumbnailSourceSize {
 
 const THUMBNAIL_FALLBACK_WIDTH = 200;
 const THUMBNAIL_FALLBACK_HEIGHT = 145;
+const THUMBNAIL_FRAME_BACKGROUND_COLOR = '#E8EEF6';
 const MIN_THUMBNAIL_SOURCE_WIDTH = 1;
 const MIN_THUMBNAIL_SOURCE_HEIGHT = 1;
 const MIN_SCREEN_POINT_GAP = 0.8;
@@ -96,7 +97,7 @@ export class PageThumbnailRenderer {
     const offsetY = (height - scaledHeight) / 2;
 
     context.clearRect(0, 0, width, height);
-    context.fillStyle = snapshot.paperBackgroundColor;
+    context.fillStyle = THUMBNAIL_FRAME_BACKGROUND_COLOR;
     context.fillRect(0, 0, width, height);
 
     context.save();
