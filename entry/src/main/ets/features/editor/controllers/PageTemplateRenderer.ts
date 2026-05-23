@@ -25,7 +25,8 @@ export class PageTemplateRenderer {
     width: number,
     height: number,
     backgroundColor: string,
-    region?: PageTemplateRenderRegion
+    region?: PageTemplateRenderRegion,
+    shouldFillBackground: boolean = true
   ): void {
     if (width <= 0 || height <= 0) {
       return;
@@ -38,8 +39,10 @@ export class PageTemplateRenderer {
 
     const normalizedTemplateType: NotebookPageTemplateType = this.normalizeTemplateType(templateType);
     context.save();
-    context.fillStyle = backgroundColor;
-    context.fillRect(renderRegion.x, renderRegion.y, renderRegion.width, renderRegion.height);
+    if (shouldFillBackground) {
+      context.fillStyle = backgroundColor;
+      context.fillRect(renderRegion.x, renderRegion.y, renderRegion.width, renderRegion.height);
+    }
 
     switch (normalizedTemplateType) {
       case NotebookPageTemplateType.LINED:

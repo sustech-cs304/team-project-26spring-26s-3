@@ -30,7 +30,7 @@ export class CanvasElementRenderer {
     } else if (element.type === 'shape') {
       CanvasElementRenderer.drawShapeElement(context, element);
     } else if (element.type === 'image') {
-      CanvasElementRenderer.drawImagePlaceholder(context, element);
+      CanvasElementRenderer.drawImageElement(context, element);
     }
   }
 
@@ -70,20 +70,86 @@ export class CanvasElementRenderer {
     ShapeRenderer.drawShape(context, element);
   }
 
+  private static drawImageElement(context: CanvasDrawContext, element: ImageCanvasElement): void {
+    const candidates: string[] = CanvasElementRenderer.buildImageSourceCandidates(element.uri);
+    for (const candidate of candidates) {
+      let imageBitmap: ImageBitmap | undefined = undefined;
+      let hasSavedContext: boolean = false;
+      try {
+        imageBitmap = new ImageBitmap(candidate);
+        context.save();
+        hasSavedContext = true;
+        context.globalAlpha = Math.max(0, Math.min(1, element.opacity));
+        context.drawImage(imageBitmap, element.x, element.y, element.width, element.height);
+        context.restore();
+        hasSavedContext = false;
+        return;
+      } catch (_error) {
+        if (hasSavedContext) {
+          try {
+            context.restore();
+          } catch (_restoreError) {
+          }
+        }
+      } finally {
+        if (imageBitmap !== undefined) {
+          try {
+            imageBitmap.close();
+          } catch (_closeError) {
+          }
+        }
+      }
+    }
+
+    CanvasElementRenderer.drawImagePlaceholder(context, element);
+  }
+
+  private static buildImageSourceCandidates(path: string): string[] {
+    const candidates: string[] = [];
+    CanvasElementRenderer.appendImageSourceCandidate(candidates, path);
+
+    if (path.startsWith('file://')) {
+      const rawLocalPath: string = path.substring('file://'.length);
+      CanvasElementRenderer.appendImageSourceCandidate(candidates, rawLocalPath);
+      if (!rawLocalPath.startsWith('/')) {
+        CanvasElementRenderer.appendImageSourceCandidate(candidates, `/${rawLocalPath}`);
+      }
+    } else if (!path.startsWith('http://') && !path.startsWith('https://')) {
+      CanvasElementRenderer.appendImageSourceCandidate(candidates, `file://${path}`);
+    }
+
+    return candidates;
+  }
+
+  private static appendImageSourceCandidate(candidates: string[], candidate: string): void {
+    if (candidate.length === 0) {
+      return;
+    }
+    if (!candidates.includes(candidate)) {
+      candidates.push(candidate);
+    }
+  }
+
   private static drawImagePlaceholder(context: CanvasDrawContext, element: ImageCanvasElement): void {
     context.save();
-    context.globalAlpha = Math.max(0, Math.min(1, element.opacity));
-    context.fillStyle = '#F8FAFC';
-    context.fillRect(element.x, element.y, element.width, element.height);
-    context.strokeStyle = '#94A3B8';
-    context.lineWidth = 1;
-    context.strokeRect(element.x, element.y, element.width, element.height);
-    context.fillStyle = '#475569';
-    context.font = '14px sans-serif';
-    context.textBaseline = 'middle';
-    context.textAlign = 'center';
-    context.fillText('Image', element.x + element.width / 2, element.y + element.height / 2);
-    context.restore();
+    try {
+      context.globalAlpha = Math.max(0, Math.min(1, element.opacity));
+      context.fillStyle = '#F8FAFC';
+      context.fillRect(element.x, element.y, element.width, element.height);
+      context.strokeStyle = '#94A3B8';
+      context.lineWidth = 1;
+      context.strokeRect(element.x, element.y, element.width, element.height);
+      context.fillStyle = '#475569';
+      context.font = '14px sans-serif';
+      context.textBaseline = 'middle';
+      context.textAlign = 'center';
+      context.fillText('Image', element.x + element.width / 2, element.y + element.height / 2);
+    } finally {
+      try {
+        context.restore();
+      } catch (_restoreError) {
+      }
+    }
   }
 
   private static buildTextLines(content: string): string[] {

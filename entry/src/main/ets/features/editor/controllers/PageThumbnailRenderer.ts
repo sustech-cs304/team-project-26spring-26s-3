@@ -14,6 +14,7 @@ export interface PageThumbnailRenderSnapshot {
   pageId: string;
   templateType: NotebookPageTemplateType;
   paperBackgroundColor: string;
+  backgroundImageUri: string;
   canvasWidth: number;
   canvasHeight: number;
   contentVersion: number;
@@ -46,6 +47,7 @@ export function createEmptyPageThumbnailRenderSnapshot(pageId: string = ''): Pag
     pageId,
     templateType: NotebookPageTemplateType.BLANK,
     paperBackgroundColor: '#FFFFFF',
+    backgroundImageUri: '',
     canvasWidth: THUMBNAIL_FALLBACK_WIDTH,
     canvasHeight: THUMBNAIL_FALLBACK_HEIGHT,
     contentVersion: 0,
@@ -72,6 +74,7 @@ export class PageThumbnailRenderer {
       snapshot.pageId,
       snapshot.templateType,
       snapshot.paperBackgroundColor,
+      snapshot.backgroundImageUri,
       Math.round(snapshot.canvasWidth),
       Math.round(snapshot.canvasHeight),
       snapshot.contentVersion,
@@ -103,12 +106,15 @@ export class PageThumbnailRenderer {
     context.save();
     context.translate(offsetX, offsetY);
     context.scale(scale, scale);
+    const didDrawBackgroundImage = this.drawBackgroundImage(context, snapshot.backgroundImageUri, sourceSize);
     PageTemplateRenderer.drawTemplateBackground(
       context,
       snapshot.templateType,
       sourceSize.width,
       sourceSize.height,
-      snapshot.paperBackgroundColor
+      snapshot.paperBackgroundColor,
+      undefined,
+      snapshot.backgroundImageUri.length === 0 || !didDrawBackgroundImage
     );
     this.drawContent(context, snapshot, scale);
     context.restore();
@@ -131,6 +137,81 @@ export class PageThumbnailRenderer {
       width: Math.max(MIN_THUMBNAIL_SOURCE_WIDTH, viewportSize.width),
       height: Math.max(MIN_THUMBNAIL_SOURCE_HEIGHT, viewportSize.height)
     };
+  }
+
+  private static drawBackgroundImage(
+    context: CanvasDrawContext,
+    backgroundImageUri: string,
+    sourceSize: PageThumbnailSourceSize
+  ): boolean {
+    const normalizedUri = this.resolveImageUri(backgroundImageUri);
+    if (normalizedUri.length === 0 || sourceSize.width <= 0 || sourceSize.height <= 0) {
+      return false;
+    }
+
+    const candidates = this.buildImageSourceCandidates(normalizedUri);
+    for (const candidate of candidates) {
+      let imageBitmap: ImageBitmap | undefined = undefined;
+      try {
+        imageBitmap = new ImageBitmap(candidate);
+        context.drawImage(imageBitmap, 0, 0, sourceSize.width, sourceSize.height);
+        return true;
+      } catch (_error) {
+      } finally {
+        if (imageBitmap !== undefined) {
+          try {
+            imageBitmap.close();
+          } catch (_closeError) {
+          }
+        }
+      }
+    }
+
+    return false;
+  }
+
+  private static resolveImageUri(uri: string): string {
+    if (typeof uri !== 'string') {
+      return '';
+    }
+
+    const normalizedUri = uri.trim();
+    if (normalizedUri.length === 0) {
+      return '';
+    }
+    if (normalizedUri.startsWith('file://')) {
+      if (normalizedUri.startsWith('file:///')) {
+        return normalizedUri;
+      }
+      const rawLocalPath = normalizedUri.substring('file://'.length);
+      return rawLocalPath.startsWith('/') ? `file://${rawLocalPath}` : `file:///${rawLocalPath}`;
+    }
+    if (normalizedUri.startsWith('http://') || normalizedUri.startsWith('https://')) {
+      return normalizedUri;
+    }
+    return `file://${normalizedUri}`;
+  }
+
+  private static buildImageSourceCandidates(uri: string): string[] {
+    const candidates: string[] = [];
+    this.appendImageSourceCandidate(candidates, uri);
+
+    if (uri.startsWith('file://')) {
+      const rawLocalPath = uri.substring('file://'.length);
+      this.appendImageSourceCandidate(candidates, rawLocalPath);
+      if (!rawLocalPath.startsWith('/')) {
+        this.appendImageSourceCandidate(candidates, `/${rawLocalPath}`);
+      }
+    }
+
+    return candidates;
+  }
+
+  private static appendImageSourceCandidate(candidates: string[], candidate: string): void {
+    if (candidate.length === 0 || candidates.includes(candidate)) {
+      return;
+    }
+    candidates.push(candidate);
   }
 
   private static drawContent(

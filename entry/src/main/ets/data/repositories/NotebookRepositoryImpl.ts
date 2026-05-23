@@ -716,7 +716,9 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       order: currentNotebookPage.order,
       createdAt: currentNotebookPage.createdAt,
       updatedAt: currentTime,
-      templateType: targetTemplateType
+      templateType: targetTemplateType,
+      sourceFileUri: currentNotebookPage.sourceFileUri,
+      sourceFileType: currentNotebookPage.sourceFileType
     };
     notebookPageList[pageIndex] = updatedNotebookPage;
     await this.persistNotebookPageList(request.notebookId, notebookPageList);
@@ -827,7 +829,9 @@ export class NotebookRepositoryImpl implements NotebookRepository {
           order: notebookPage.order,
           createdAt: notebookPage.createdAt,
           updatedAt: currentTime,
-          templateType: notebookPage.templateType
+          templateType: notebookPage.templateType,
+          sourceFileUri: notebookPage.sourceFileUri,
+          sourceFileType: notebookPage.sourceFileType
         };
         notebookPageList[pageIndex] = updatedNotebookPage;
         await this.persistNotebookPageList(notebook.id, notebookPageList);
@@ -839,6 +843,7 @@ export class NotebookRepositoryImpl implements NotebookRepository {
           width: notebookPageCanvas.width,
           height: notebookPageCanvas.height,
           backgroundColor: notebookPageCanvas.backgroundColor,
+          backgroundImageUri: notebookPageCanvas.backgroundImageUri,
           createdAt: notebookPageCanvas.createdAt,
           updatedAt: currentTime
         });
@@ -1207,7 +1212,9 @@ export class NotebookRepositoryImpl implements NotebookRepository {
         order: index,
         createdAt: notebookPage.createdAt,
         updatedAt: notebookPage.updatedAt,
-        templateType: notebookPage.templateType
+        templateType: notebookPage.templateType,
+        sourceFileUri: notebookPage.sourceFileUri,
+        sourceFileType: notebookPage.sourceFileType
       };
     });
   }

@@ -16,6 +16,12 @@ import {
   PageThumbnailRenderSnapshot
 } from '../controllers/PageThumbnailRenderer';
 import { ToolPropertyPanel } from '../components/ToolPropertyPanel';
+import { NotebookExportDialog } from '../../notebook/components/NotebookExportDialog';
+import {
+  buildNotebookExportSuffixChoice,
+  createNotebookExportBaseName,
+  stripNotebookExportExtension
+} from '../../notebook/models/NotebookExportOptions';
 import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
 import { EditorDebugSnapshot } from '../viewmodels/EditorDebugSnapshot';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
@@ -137,6 +143,11 @@ struct EditorPage {
   @State private deleteTargetPageId: string = '';
   @State private deleteTargetPageLabel: string = '';
   @State private deleteTargetPageOrder: number = -1;
+  @State private isExportDialogVisible: boolean = false;
+  @State private isPickingExportPath: boolean = false;
+  @State private draftExportFileName: string = '';
+  @State private draftExportPath: string = '';
+  @State private draftExportFormat: string = 'pdf';
   @State private hasMissingNotebookId: boolean = false;
   @State private isNotebookMissing: boolean = false;
   @State private toolSetting: ToolSetting = this.buildDefaultToolSetting();
@@ -163,6 +174,7 @@ struct EditorPage {
   private workspaceViewportWindowX: number = 0;
   private workspaceViewportWindowY: number = 0;
   private readonly pageCanvasRenderSizeMap: Map<string, PageCanvasRenderSize> = new Map<string, PageCanvasRenderSize>();
+  private readonly pageCanvasMetadataMap: Map<string, NotebookPageCanvas> = new Map<string, NotebookPageCanvas>();
   private thumbnailRenderTimerId: number = -1;
   private lastThumbnailRenderTime: number = 0;
   private documentGestureStartZoomScale: number = 1;
@@ -227,6 +239,10 @@ struct EditorPage {
 
       if (this.isDeletePageDialogVisible) {
         this.buildDeleteDialog();
+      }
+
+      if (this.isExportDialogVisible) {
+        this.buildNotebookExportDialog();
       }
     }
     .width('100%')
@@ -361,6 +377,24 @@ struct EditorPage {
 
         Blank()
           .layoutWeight(1)
+
+        Button() {
+          Image($r('app.media.export_note'))
+            .width(18)
+            .height(18)
+        }
+        .width(34)
+        .height(34)
+        .padding(0)
+        .backgroundColor($r('app.color.surface_background'))
+        .borderRadius(12)
+        .border({
+          width: 1,
+          color: $r('app.color.editor_toolbar_border')
+        })
+        .onClick(() => {
+          this.openNotebookExportDialog();
+        })
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)
@@ -1549,6 +1583,39 @@ struct EditorPage {
   }
 
   @Builder
+  private buildNotebookExportDialog(): void {
+    Column() {
+      NotebookExportDialog({
+        fileName: $draftExportFileName,
+        outputPath: $draftExportPath,
+        selectedFormat: $draftExportFormat,
+        notebookTitle: this.notebookTitle,
+        isChoosingPath: this.isPickingExportPath,
+        onCancel: (): void => {
+          this.closeNotebookExportDialog();
+        },
+        onChoosePath: (): void => {
+          void this.selectNotebookExportPath();
+        },
+        onConfirm: (): void => {
+          this.confirmNotebookExportDialog();
+        }
+      })
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+    .padding({
+      left: $r('app.float.page_padding_horizontal'),
+      right: $r('app.float.page_padding_horizontal'),
+      top: $r('app.float.page_padding_vertical'),
+      bottom: $r('app.float.page_padding_vertical')
+    })
+    .backgroundColor($r('app.color.overlay_mask'))
+  }
+
+  @Builder
   private buildDeleteDialog(): void {
     Stack({ alignContent: Alignment.Center }) {
       Column()
@@ -1632,6 +1699,7 @@ struct EditorPage {
         pageId: page.id,
         templateType: this.resolvePageTemplateType(page.templateType),
         paperBackgroundColor: this.getPageCanvasBackgroundColor(page.id),
+        backgroundImageUri: this.getPageCanvasBackgroundImageUri(page.id),
         canvasWidth: this.getPageCanvasWidth(page.id),
         canvasHeight: this.getPageCanvasHeight(page.id),
         activeSession: page.id === this.currentDrawingPageId ? this.drawingViewModel : null
@@ -1725,6 +1793,8 @@ struct EditorPage {
     this.notebookPageList = [];
     this.activePageId = '';
     this.activePageCanvas = null;
+    this.pageCanvasMetadataMap.clear();
+    this.pageCanvasRenderSizeMap.clear();
     this.isCanvasLoading = false;
     this.isUpdatingPageTemplate = false;
     this.pageActionMenuPageId = '';
@@ -1958,6 +2028,7 @@ struct EditorPage {
 
       this.activePageCanvas = notebookPageCanvas;
       if (notebookPageCanvas !== null) {
+        this.pageCanvasMetadataMap.set(targetPageId, notebookPageCanvas);
         this.updatePageCanvasRenderSize(targetPageId, notebookPageCanvas.width, notebookPageCanvas.height);
       }
       await this.loadDrawingSession(targetPageId);
@@ -1985,6 +2056,7 @@ struct EditorPage {
       pageIds
     );
     for (const notebookPageCanvas of notebookPageCanvasList) {
+      this.pageCanvasMetadataMap.set(notebookPageCanvas.pageId, notebookPageCanvas);
       this.updatePageCanvasRenderSize(
         notebookPageCanvas.pageId,
         notebookPageCanvas.width,
@@ -3019,6 +3091,12 @@ struct EditorPage {
       return this.getActiveCanvasBackgroundColor();
     }
 
+    const cachedCanvas = this.pageCanvasMetadataMap.get(pageId);
+    if (cachedCanvas !== undefined && typeof cachedCanvas.backgroundColor === 'string' &&
+      cachedCanvas.backgroundColor.length > 0) {
+      return cachedCanvas.backgroundColor;
+    }
+
     return '#FFFFFF';
   }
 
@@ -3027,13 +3105,17 @@ struct EditorPage {
   }
 
   private getPageCanvasBackgroundImageUri(pageId: string): string {
-    if (this.activePageCanvas === null || this.activePageCanvas.pageId !== pageId) {
-      return '';
+    if (this.activePageCanvas !== null && this.activePageCanvas.pageId === pageId &&
+      typeof this.activePageCanvas.backgroundImageUri === 'string') {
+      return this.activePageCanvas.backgroundImageUri;
     }
-    if (typeof this.activePageCanvas.backgroundImageUri !== 'string') {
-      return '';
+
+    const cachedCanvas = this.pageCanvasMetadataMap.get(pageId);
+    if (cachedCanvas !== undefined && typeof cachedCanvas.backgroundImageUri === 'string') {
+      return cachedCanvas.backgroundImageUri;
     }
-    return this.activePageCanvas.backgroundImageUri;
+
+    return '';
   }
 
   private getPageCanvasWidth(pageId: string): number {
@@ -3273,6 +3355,76 @@ struct EditorPage {
       default:
         return shapeType;
     }
+  }
+
+  private openNotebookExportDialog(): void {
+    if (this.isLoading || this.hasMissingNotebookId || this.isNotebookMissing || this.notebookId.length === 0 ||
+      this.isPickingExportPath) {
+      return;
+    }
+
+    this.closeTransientDropdowns();
+    this.draftExportFileName = createNotebookExportBaseName(this.notebookTitle);
+    this.draftExportPath = '';
+    this.draftExportFormat = 'pdf';
+    this.isExportDialogVisible = true;
+  }
+
+  private closeNotebookExportDialog(): void {
+    if (this.isPickingExportPath) {
+      return;
+    }
+
+    this.dismissNotebookExportDialog();
+  }
+
+  private confirmNotebookExportDialog(): void {
+    if (this.isPickingExportPath) {
+      return;
+    }
+
+    this.dismissNotebookExportDialog();
+  }
+
+  private dismissNotebookExportDialog(): void {
+    this.isExportDialogVisible = false;
+    this.draftExportFileName = '';
+    this.draftExportPath = '';
+    this.draftExportFormat = 'pdf';
+  }
+
+  private async selectNotebookExportPath(): Promise<void> {
+    if (this.isPickingExportPath) {
+      return;
+    }
+
+    const hostContext: common.Context | undefined = this.getUIContext().getHostContext() as common.Context | undefined;
+    if (hostContext === undefined) {
+      return;
+    }
+
+    this.isPickingExportPath = true;
+    try {
+      const saveOptions = new picker.DocumentSaveOptions();
+      saveOptions.newFileNames = [this.getExportPickerBaseFileName()];
+      saveOptions.fileSuffixChoices = [buildNotebookExportSuffixChoice(this.draftExportFormat)];
+      const documentPicker = new picker.DocumentViewPicker(hostContext);
+      const selectedUris: string[] = await documentPicker.save(saveOptions);
+      if (selectedUris.length > 0) {
+        this.draftExportPath = selectedUris[0];
+      }
+    } catch (_error) {
+    } finally {
+      this.isPickingExportPath = false;
+    }
+  }
+
+  private getExportPickerBaseFileName(): string {
+    const cleanName: string = stripNotebookExportExtension(this.draftExportFileName);
+    if (cleanName.length > 0) {
+      return cleanName;
+    }
+    return createNotebookExportBaseName(this.notebookTitle);
   }
 
   private closePageActionMenu(): void {

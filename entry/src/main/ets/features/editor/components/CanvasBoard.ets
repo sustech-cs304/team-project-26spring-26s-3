@@ -1,4 +1,5 @@
 import common from '@ohos.app.ability.common';
+import image from '@ohos.multimedia.image';
 
 import {
   BoundingBox,
@@ -121,6 +122,7 @@ export struct CanvasBoard {
   @Prop toolSetting: ToolSetting = DEFAULT_CANVAS_TOOL_SETTING;
   @Watch('onActivePageChanged')
   @Prop isActivePage: boolean = false;
+  @Watch('onCanvasStyleChanged')
   @Prop backgroundImageUri: string = '';
   @Prop elementVersion: number = 0;
   @Prop selectedShapeType: ShapeType = 'rectangle';
@@ -173,6 +175,10 @@ export struct CanvasBoard {
   private lastLassoOverlayRedrawTime: number = 0;
   private lastSelectionMoveRedrawTime: number = 0;
   private selectionOverlayResumeTimerId: number = -1;
+  private backgroundPixelMap: image.PixelMap | null = null;
+  private backgroundPixelMapUri: string = '';
+  private backgroundPixelMapLoadingUri: string = '';
+  private backgroundPixelMapFailedUri: string = '';
 
   @State private isCommittedLayerReady: boolean = false;
   @State private isRecentCommittedLayerReady: boolean = false;
@@ -208,10 +214,29 @@ export struct CanvasBoard {
     this.flattenRecentCommittedLayer();
     this.clearSelectionOverlayResumeTimer();
     this.commitInlineTextEdit(true);
+    this.releaseBackgroundPixelMap();
   }
 
   build() {
     Stack() {
+      Stack() {
+        this.buildPageBackgroundImage()
+      }
+        .width(this.elementLayerPageWidth)
+        .height(this.elementLayerPageHeight)
+        .position({
+          x: this.elementLayerOffsetX,
+          y: this.elementLayerOffsetY
+        })
+        .scale({
+          x: this.elementLayerScale,
+          y: this.elementLayerScale,
+          centerX: 0,
+          centerY: 0
+        })
+        .clip(true)
+        .hitTestBehavior(HitTestMode.None)
+
       Canvas(this.committedContext2D)
         .width('100%')
         .height('100%')
@@ -242,8 +267,6 @@ export struct CanvasBoard {
         })
 
       Stack() {
-        this.buildPageBackgroundImage()
-
         ElementLayer({
           pageId: this.pageId,
           refreshVersion: this.elementVersion,
@@ -322,7 +345,14 @@ export struct CanvasBoard {
     if (backgroundImageUri.length === 0) {
       return '';
     }
-    if (backgroundImageUri.startsWith('file://') || backgroundImageUri.startsWith('http://') || backgroundImageUri.startsWith('https://')) {
+    if (backgroundImageUri.startsWith('file://')) {
+      if (backgroundImageUri.startsWith('file:///')) {
+        return backgroundImageUri;
+      }
+      const rawLocalPath: string = backgroundImageUri.substring('file://'.length);
+      return rawLocalPath.startsWith('/') ? `file://${rawLocalPath}` : `file:///${rawLocalPath}`;
+    }
+    if (backgroundImageUri.startsWith('http://') || backgroundImageUri.startsWith('https://')) {
       return backgroundImageUri;
     }
     return `file://${backgroundImageUri}`;
@@ -334,8 +364,141 @@ export struct CanvasBoard {
       Image(this.resolvePageBackgroundImageUri())
         .width('100%')
         .height('100%')
-        .objectFit(ImageFit.Cover)
+        .objectFit(ImageFit.Fill)
         .hitTestBehavior(HitTestMode.None)
+    }
+  }
+
+  private drawPageBackgroundImageOnContext(
+    context: CanvasDrawContext,
+    pageWidth: number,
+    pageHeight: number
+  ): boolean {
+    const backgroundImageUri: string = this.resolvePageBackgroundImageUri();
+    if (backgroundImageUri.length === 0 || pageWidth <= 0 || pageHeight <= 0) {
+      this.releaseBackgroundPixelMap();
+      return false;
+    }
+
+    if (this.backgroundPixelMapFailedUri === backgroundImageUri) {
+      return false;
+    }
+
+    if (this.backgroundPixelMapUri !== backgroundImageUri || this.backgroundPixelMap === null) {
+      void this.ensureBackgroundPixelMapLoaded(backgroundImageUri);
+    }
+
+    const pixelMap: image.PixelMap | null = this.backgroundPixelMap;
+    if (pixelMap === null || this.backgroundPixelMapUri !== backgroundImageUri) {
+      return false;
+    }
+
+    try {
+      context.drawImage(pixelMap, 0, 0, pageWidth, pageHeight);
+      return true;
+    } catch (_drawError) {
+      return false;
+    }
+  }
+
+  private async ensureBackgroundPixelMapLoaded(uri: string): Promise<void> {
+    if (uri.length === 0 || this.backgroundPixelMapLoadingUri === uri) {
+      return;
+    }
+
+    this.backgroundPixelMapLoadingUri = uri;
+    const pixelMap: image.PixelMap | null = await this.createPixelMapFromPath(uri);
+    if (this.resolvePageBackgroundImageUri() !== uri) {
+      if (pixelMap !== null) {
+        this.releasePixelMap(pixelMap);
+      }
+      if (this.backgroundPixelMapLoadingUri === uri) {
+        this.backgroundPixelMapLoadingUri = '';
+      }
+      return;
+    }
+
+    if (pixelMap === null) {
+      if (this.backgroundPixelMapLoadingUri === uri) {
+        this.backgroundPixelMapLoadingUri = '';
+      }
+      this.backgroundPixelMapFailedUri = uri;
+      return;
+    }
+
+    if (this.backgroundPixelMap !== null && this.backgroundPixelMapUri !== uri) {
+      this.releasePixelMap(this.backgroundPixelMap);
+    }
+    this.backgroundPixelMap = pixelMap;
+    this.backgroundPixelMapUri = uri;
+    this.backgroundPixelMapFailedUri = '';
+    if (this.backgroundPixelMapLoadingUri === uri) {
+      this.backgroundPixelMapLoadingUri = '';
+    }
+    this.redrawCommittedLayer();
+    this.redrawOverlayLayer();
+  }
+
+  private async createPixelMapFromPath(path: string): Promise<image.PixelMap | null> {
+    const candidates: string[] = this.buildImageSourceCandidates(path);
+    for (const candidate of candidates) {
+      let imageSource: image.ImageSource | undefined = undefined;
+      try {
+        imageSource = image.createImageSource(candidate);
+        return await imageSource.createPixelMap();
+      } catch (_error) {
+      } finally {
+        if (imageSource !== undefined) {
+          try {
+            await imageSource.release();
+          } catch (_releaseError) {
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  private releaseBackgroundPixelMap(): void {
+    if (this.backgroundPixelMap !== null) {
+      this.releasePixelMap(this.backgroundPixelMap);
+    }
+    this.backgroundPixelMap = null;
+    this.backgroundPixelMapUri = '';
+    this.backgroundPixelMapLoadingUri = '';
+    this.backgroundPixelMapFailedUri = '';
+  }
+
+  private releasePixelMap(pixelMap: image.PixelMap): void {
+    try {
+      void pixelMap.release();
+    } catch (_releaseError) {
+    }
+  }
+
+  private buildImageSourceCandidates(path: string): string[] {
+    const candidates: string[] = [];
+    this.appendImageSourceCandidate(candidates, path);
+
+    if (path.startsWith('file://')) {
+      const rawLocalPath: string = path.substring('file://'.length);
+      this.appendImageSourceCandidate(candidates, rawLocalPath);
+      if (!rawLocalPath.startsWith('/')) {
+        this.appendImageSourceCandidate(candidates, `/${rawLocalPath}`);
+      }
+    } else if (!path.startsWith('http://') && !path.startsWith('https://')) {
+      this.appendImageSourceCandidate(candidates, `file://${path}`);
+    }
+
+    return candidates;
+  }
+
+  private appendImageSourceCandidate(candidates: string[], candidate: string): void {
+    if (candidate.length === 0) {
+      return;
+    }
+    if (!candidates.includes(candidate)) {
+      candidates.push(candidate);
     }
   }
 
@@ -2778,6 +2941,11 @@ export struct CanvasBoard {
       redrawRegion.maxY - redrawRegion.minY
     );
     offscreenContext.clip();
+    const didDrawBackgroundImage: boolean = this.drawPageBackgroundImageOnContext(
+      offscreenContext,
+      transform.pageWidth,
+      transform.pageHeight
+    );
     PageTemplateRenderer.drawTemplateBackground(
       offscreenContext,
       this.templateType,
@@ -2789,7 +2957,8 @@ export struct CanvasBoard {
         y: redrawRegion.minY,
         width: redrawRegion.maxX - redrawRegion.minX,
         height: redrawRegion.maxY - redrawRegion.minY
-      }
+      },
+      this.resolvePageBackgroundImageUri().length === 0 || !didDrawBackgroundImage
     );
 
     for (const strokeId of candidateStrokeIds) {
@@ -2995,13 +3164,19 @@ export struct CanvasBoard {
     const visibleBounds = this.toBoundingBox(visibleRegion);
     context.save();
     this.applyPageTransformAndClip(context, transform);
+    const didDrawBackgroundImage: boolean = this.drawPageBackgroundImageOnContext(
+      context,
+      transform.pageWidth,
+      transform.pageHeight
+    );
     PageTemplateRenderer.drawTemplateBackground(
       context,
       this.templateType,
       transform.pageWidth,
       transform.pageHeight,
       this.paperBackgroundColor,
-      visibleRegion
+      visibleRegion,
+      this.resolvePageBackgroundImageUri().length === 0 || !didDrawBackgroundImage
     );
     this.drawStrokeRange(context, strokes, 0, flattenedStrokeCount, visibleBounds, useFastRendering);
     context.restore();

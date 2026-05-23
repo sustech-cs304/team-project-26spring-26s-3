@@ -8,6 +8,12 @@ import { NotebookSortType } from '../../../domain/repositories/NotebookRepositor
 import { CreateFolderDialog } from './CreateFolderDialog';
 import { CreateNotebookDialog } from './CreateNotebookDialog';
 import { MoveNotebookDialog } from './MoveNotebookDialog';
+import { NotebookExportDialog } from './NotebookExportDialog';
+import {
+  buildNotebookExportSuffixChoice,
+  createNotebookExportBaseName,
+  stripNotebookExportExtension
+} from '../models/NotebookExportOptions';
 import { NotebookImportService } from '../services/NotebookImportService';
 import { NotebookListViewModel } from '../viewmodels/NotebookListViewModel';
 
@@ -66,7 +72,7 @@ export struct NotebookListPanel {
   @Prop @Watch('onRefreshNotebookSignalChanged') refreshNotebookSignal: number = 0;
   @Prop @Watch('onTopSortTypeChanged') topSortType: NotebookSortType = NotebookSortType.UPDATED_DESC;
   private readonly actionMenuWidth: number = 236;
-  private readonly actionMenuHeight: number = 296;
+  private readonly actionMenuHeight: number = 384;
   private readonly actionMenuGap: number = 8;
   private readonly folderActionMenuWidth: number = 188;
   private readonly folderActionMenuHeight: number = 154;
@@ -77,6 +83,7 @@ export struct NotebookListPanel {
   @State private folderList: NotebookFolder[] = [];
   @State private folderListRenderVersion: number = 0;
   @State private isLoading: boolean = true;
+  @State private importFailureMessage: string = '';
   @State private currentSection: SidebarSection = SidebarSection.ALL;
   @State private selectedTag: string = '';
   @State private selectedFolderInSidebar: string = '';
@@ -147,6 +154,14 @@ export struct NotebookListPanel {
   @State private tagDraftText: string = '';
   @State private tagTargetNotebookId: string = '';
   @State private tagTargetNotebookTitle: string = '';
+
+  @State private isExportDialogVisible: boolean = false;
+  @State private isPickingExportPath: boolean = false;
+  @State private exportTargetNotebookId: string = '';
+  @State private exportTargetNotebookTitle: string = '';
+  @State private draftExportFileName: string = '';
+  @State private draftExportPath: string = '';
+  @State private draftExportFormat: string = 'pdf';
 
   private notebookListViewModel?: NotebookListViewModel;
   private notebookImportService?: NotebookImportService;
@@ -248,6 +263,7 @@ export struct NotebookListPanel {
     }
 
     this.isLoading = true;
+    this.importFailureMessage = '';
     try {
       const importResult = await this.ensureImportService().importFromPicker();
       if (importResult !== null) {
@@ -259,8 +275,11 @@ export struct NotebookListPanel {
           notebookTitle: importResult.notebookTitle,
           pageId: importResult.openedPageId
         });
+      } else {
+        this.importFailureMessage = this.ensureImportService().getLastFailureMessage();
       }
     } catch (_error) {
+      this.importFailureMessage = '导入失败，未创建空白笔记本。请尝试其他文件，或先转换为 PDF 再导入。';
     } finally {
       this.isLoading = false;
     }
@@ -269,7 +288,7 @@ export struct NotebookListPanel {
   private isActionBusy(): boolean {
     return this.isDeletingNotebook || this.isSubmittingDialog || this.isCreatingFolder || this.isMovingNotebook || this.isUpdatingTags ||
       this.isRenamingFolder || this.isUpdatingFolderColor || this.isDeletingFolder || this.isPickingNotebookCover ||
-      this.isUpdatingNotebookColor;
+      this.isUpdatingNotebookColor || this.isPickingExportPath;
   }
 
   private isNotebookDeleted(notebook: Notebook): boolean {
@@ -341,6 +360,19 @@ export struct NotebookListPanel {
     this.tagTargetNotebookTitle = '';
   }
 
+  private dismissExportDialog(): void {
+    this.isExportDialogVisible = false;
+    this.exportTargetNotebookId = '';
+    this.exportTargetNotebookTitle = '';
+    this.draftExportFileName = '';
+    this.draftExportPath = '';
+    this.draftExportFormat = 'pdf';
+  }
+
+  private closeImportFailureMessage(): void {
+    this.importFailureMessage = '';
+  }
+
   private closePassiveDialogs(): void {
     this.closeActionMenu();
     this.closeFolderActionMenu();
@@ -375,6 +407,10 @@ export struct NotebookListPanel {
 
     if (!this.isUpdatingNotebookColor) {
       this.dismissNotebookColorDialog();
+    }
+
+    if (!this.isPickingExportPath) {
+      this.dismissExportDialog();
     }
   }
 
@@ -673,6 +709,73 @@ export struct NotebookListPanel {
     } catch (_error) {
       this.isUpdatingTags = false;
     }
+  }
+
+  private openExportDialog(notebook: Notebook): void {
+    if (this.isActionBusy()) {
+      return;
+    }
+    if (notebook.id.length === 0) {
+      return;
+    }
+
+    this.closePassiveDialogs();
+    this.exportTargetNotebookId = notebook.id;
+    this.exportTargetNotebookTitle = notebook.title;
+    this.draftExportFileName = createNotebookExportBaseName(notebook.title);
+    this.draftExportPath = '';
+    this.draftExportFormat = 'pdf';
+    this.isExportDialogVisible = true;
+  }
+
+  private closeExportDialog(): void {
+    if (this.isPickingExportPath) {
+      return;
+    }
+
+    this.dismissExportDialog();
+  }
+
+  private confirmExportDialog(): void {
+    if (this.isPickingExportPath) {
+      return;
+    }
+
+    this.dismissExportDialog();
+  }
+
+  private async selectExportPathFromDialog(): Promise<void> {
+    if (this.isPickingExportPath) {
+      return;
+    }
+
+    const hostContext: common.Context | undefined = this.getUIContext().getHostContext() as common.Context | undefined;
+    if (hostContext === undefined) {
+      return;
+    }
+
+    this.isPickingExportPath = true;
+    try {
+      const saveOptions = new picker.DocumentSaveOptions();
+      saveOptions.newFileNames = [this.getExportPickerBaseFileName()];
+      saveOptions.fileSuffixChoices = [buildNotebookExportSuffixChoice(this.draftExportFormat)];
+      const documentPicker = new picker.DocumentViewPicker(hostContext);
+      const selectedUris: string[] = await documentPicker.save(saveOptions);
+      if (selectedUris.length > 0) {
+        this.draftExportPath = selectedUris[0];
+      }
+    } catch (_error) {
+    } finally {
+      this.isPickingExportPath = false;
+    }
+  }
+
+  private getExportPickerBaseFileName(): string {
+    const cleanName: string = stripNotebookExportExtension(this.draftExportFileName);
+    if (cleanName.length > 0) {
+      return cleanName;
+    }
+    return createNotebookExportBaseName(this.exportTargetNotebookTitle);
   }
 
   private tagsToDraftText(rawTags?: string[]): string {
@@ -1317,6 +1420,14 @@ export struct NotebookListPanel {
     this.closeActionMenu();
     if (notebook !== undefined) {
       this.openMoveDialog(notebook);
+    }
+  }
+
+  private openExportDialogFromActionMenu(): void {
+    const notebook: Notebook | undefined = this.getNotebookById(this.activeActionMenuNotebookId);
+    this.closeActionMenu();
+    if (notebook !== undefined) {
+      this.openExportDialog(notebook);
     }
   }
 
@@ -2639,6 +2750,16 @@ export struct NotebookListPanel {
             this.openMoveDialogFromActionMenu();
           })
 
+        Button('导出为…')
+          .width('100%')
+          .height(42)
+          .backgroundColor('#00FFFFFF')
+          .fontColor($r('app.color.primary_text'))
+          .borderRadius(8)
+          .onClick(() => {
+            this.openExportDialogFromActionMenu();
+          })
+
         Divider()
           .strokeWidth(1)
           .color('#E6EAF2')
@@ -2879,6 +3000,38 @@ export struct NotebookListPanel {
       }
       .width('100%')
       .height('100%')
+
+      if (this.isExportDialogVisible) {
+        Column() {
+          NotebookExportDialog({
+            fileName: $draftExportFileName,
+            outputPath: $draftExportPath,
+            selectedFormat: $draftExportFormat,
+            notebookTitle: this.exportTargetNotebookTitle,
+            isChoosingPath: this.isPickingExportPath,
+            onCancel: (): void => {
+              this.closeExportDialog();
+            },
+            onChoosePath: (): void => {
+              void this.selectExportPathFromDialog();
+            },
+            onConfirm: (): void => {
+              this.confirmExportDialog();
+            }
+          })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .padding({
+          left: $r('app.float.page_padding_horizontal'),
+          right: $r('app.float.page_padding_horizontal'),
+          top: $r('app.float.page_padding_vertical'),
+          bottom: $r('app.float.page_padding_vertical')
+        })
+        .backgroundColor($r('app.color.overlay_mask'))
+      }
 
       if (this.isDeleteDialogVisible) {
         Column() {
@@ -3353,6 +3506,48 @@ export struct NotebookListPanel {
                 })
             }
             .width('100%')
+          }
+          .width('100%')
+          .constraintSize({ maxWidth: 560 })
+          .alignItems(HorizontalAlign.Start)
+          .padding(24)
+          .backgroundColor($r('app.color.surface_background'))
+          .borderRadius($r('app.float.card_radius'))
+          .border({ width: 1, color: $r('app.color.card_border') })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .padding({
+          left: $r('app.float.page_padding_horizontal'),
+          right: $r('app.float.page_padding_horizontal'),
+          top: $r('app.float.page_padding_vertical'),
+          bottom: $r('app.float.page_padding_vertical')
+        })
+        .backgroundColor($r('app.color.overlay_mask'))
+      }
+
+      if (this.importFailureMessage.length > 0) {
+        Column() {
+          Column({ space: 16 }) {
+            Text('导入未完成')
+              .fontSize($r('app.float.section_title_size'))
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.primary_text'))
+
+            Text(this.importFailureMessage)
+              .fontSize($r('app.float.body_text_size'))
+              .fontColor($r('app.color.secondary_text'))
+
+            Button('知道了')
+              .width('100%')
+              .height($r('app.float.button_height'))
+              .backgroundColor($r('app.color.editor_accent'))
+              .fontColor($r('app.color.inverse_text'))
+              .onClick(() => {
+                this.closeImportFailureMessage();
+              })
           }
           .width('100%')
           .constraintSize({ maxWidth: 560 })
