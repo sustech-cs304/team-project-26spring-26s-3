@@ -39,7 +39,15 @@ export struct ImageElementView {
   }
 
   private toImageSourceUri(path: string): string {
-    if (path.startsWith('file://') || path.startsWith('http://') || path.startsWith('https://')) {
+    if (path.startsWith('file://')) {
+      if (path.startsWith('file:///')) {
+        return path;
+      }
+      const rawLocalPath: string = path.substring('file://'.length);
+      return rawLocalPath.startsWith('/') ? `file://${rawLocalPath}` : `file:///${rawLocalPath}`;
+    }
+
+    if (path.startsWith('http://') || path.startsWith('https://')) {
       return path;
     }
 

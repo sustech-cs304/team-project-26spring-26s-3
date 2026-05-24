@@ -14,6 +14,7 @@ export interface PageThumbnailSnapshotRequest {
   pageId: string;
   templateType: NotebookPageTemplateType;
   paperBackgroundColor: string;
+  backgroundImageUri: string;
   canvasWidth: number;
   canvasHeight: number;
   activeSession: DrawingEditorViewModel | null;
@@ -97,6 +98,7 @@ export class PageThumbnailStore {
       pageId: request.pageId,
       templateType: request.templateType,
       paperBackgroundColor: request.paperBackgroundColor,
+      backgroundImageUri: request.backgroundImageUri,
       canvasWidth: request.canvasWidth,
       canvasHeight: request.canvasHeight,
       contentVersion,

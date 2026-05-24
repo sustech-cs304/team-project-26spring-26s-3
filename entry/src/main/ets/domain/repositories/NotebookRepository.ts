@@ -15,6 +15,7 @@ export interface CreateNotebookRequest {
 
 export interface CreateNotebookFolderRequest {
   title: string;
+  color: string;
 }
 
 export interface RenameNotebookRequest {
@@ -22,9 +23,35 @@ export interface RenameNotebookRequest {
   title: string;
 }
 
+export interface RenameNotebookFolderRequest {
+  folderId: string;
+  title: string;
+}
+
+export interface UpdateNotebookFolderColorRequest {
+  folderId: string;
+  color: string;
+}
+
 export interface MoveNotebookToFolderRequest {
   notebookId: string;
   folderId: string;
+}
+
+export interface ToggleNotebookFavoriteRequest {
+  notebookId: string;
+  isFavorite: boolean;
+}
+
+export interface UpdateNotebookTagsRequest {
+  notebookId: string;
+  tags: string[];
+}
+
+export interface UpdateNotebookCoverRequest {
+  notebookId: string;
+  coverImageUri: string;
+  coverColor?: string;
 }
 
 export interface CreateNotebookPageRequest {
@@ -66,8 +93,17 @@ export interface NotebookRepository {
   getNotebookById(notebookId: string): Promise<Notebook | null>;
   createNotebook(request: CreateNotebookRequest): Promise<Notebook>;
   createFolder(request: CreateNotebookFolderRequest): Promise<NotebookFolder>;
+  renameFolder(request: RenameNotebookFolderRequest): Promise<NotebookFolder | null>;
+  updateFolderColor(request: UpdateNotebookFolderColorRequest): Promise<NotebookFolder | null>;
+  deleteFolder(folderId: string): Promise<boolean>;
   renameNotebook(request: RenameNotebookRequest): Promise<Notebook | null>;
   moveNotebookToFolder(request: MoveNotebookToFolderRequest): Promise<Notebook | null>;
+  toggleNotebookFavorite(request: ToggleNotebookFavoriteRequest): Promise<Notebook | null>;
+  updateNotebookTags(request: UpdateNotebookTagsRequest): Promise<Notebook | null>;
+  updateNotebookCover(request: UpdateNotebookCoverRequest): Promise<Notebook | null>;
+  touchNotebookLastOpened(notebookId: string): Promise<Notebook | null>;
+  restoreNotebook(notebookId: string): Promise<boolean>;
+  purgeNotebook(notebookId: string): Promise<boolean>;
   deleteNotebook(notebookId: string): Promise<boolean>;
   getNotebookPages(notebookId: string): Promise<NotebookPage[]>;
   getNotebookPageCanvas(request: GetNotebookPageCanvasRequest): Promise<NotebookPageCanvas | null>;

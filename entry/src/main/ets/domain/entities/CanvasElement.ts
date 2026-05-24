@@ -57,6 +57,8 @@ export interface ImageCanvasElement extends CanvasElementBase {
   originalWidth: number;
   originalHeight: number;
   opacity: number;
+  sourceFileUri?: string;
+  sourceFileType?: string;
 }
 
 export type CanvasElement = TextCanvasElement | ShapeCanvasElement | ImageCanvasElement;

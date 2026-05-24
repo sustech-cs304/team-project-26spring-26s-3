@@ -4,6 +4,7 @@ export interface NotebookPageCanvas {
   width: number;
   height: number;
   backgroundColor: string;
+  backgroundImageUri?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -25,5 +26,12 @@ export class NotebookPageCanvasEntity {
       return backgroundColor;
     }
     return NotebookPageCanvasEntity.DEFAULT_BACKGROUND_COLOR;
+  }
+
+  static normalizeBackgroundImageUri(backgroundImageUri?: string): string {
+    if (typeof backgroundImageUri === 'string') {
+      return backgroundImageUri.trim();
+    }
+    return '';
   }
 }
