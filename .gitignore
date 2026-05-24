@@ -1,6 +1,7 @@
 # DevEco Studio / Hvigor generated files
 .hvigor/
 **/.hvigor/
+**/.test/
 **/build/
 **/.preview/
 .idea/previewer/

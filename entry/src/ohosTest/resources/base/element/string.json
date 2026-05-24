@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_test_desc",
+      "value": "Hosn device test module"
+    },
+    {
+      "name": "TestAbility_desc",
+      "value": "Hosn device test ability"
+    },
+    {
+      "name": "TestAbility_label",
+      "value": "Hosn Test"
+    }
+  ]
+}

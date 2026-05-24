@@ -1,0 +1,21 @@
+{
+  "name": "hosn-ci-tests",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:typecheck": "tsc -p tsconfig.ci.json",
+    "test:smoke": "node tests/ci-smoke.test.mjs",
+    "test:quality": "node tests/ci-quality-gate.mjs",
+    "test:ohos": "node tests/ci-ohos-test-check.mjs",
+    "test:coverage": "vitest run --coverage",
+    "test:package": "node tests/ci-package-check.mjs",
+    "test:ci": "npm run test:typecheck && npm run test:quality && npm run test:smoke && npm run test:ohos && npm run test:coverage"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.130",
+    "@vitest/coverage-v8": "2.1.9",
+    "typescript": "5.6.3",
+    "vitest": "2.1.9"
+  }
+}
