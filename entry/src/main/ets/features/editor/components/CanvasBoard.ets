@@ -15,6 +15,7 @@ import { NotebookPageCanvasEntity } from '../../../domain/entities/NotebookPageC
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
 import { ToolSetting } from '../../../domain/entities/ToolSetting';
 import { PageTemplateRenderer } from '../controllers/PageTemplateRenderer';
+import { CanvasElementRenderer } from '../controllers/CanvasElementRenderer';
 import { InProgressStrokeRenderSession, StrokeRenderer } from '../controllers/StrokeRenderer';
 import { SelectionDashRenderer } from '../controllers/SelectionDashRenderer';
 import { ShapeRenderer } from '../controllers/ShapeRenderer';
@@ -32,6 +33,10 @@ import { EditorDebugSnapshot } from '../viewmodels/EditorDebugSnapshot';
 import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
 import { RenderInvalidation } from '../viewmodels/RenderInvalidation';
+import { XFYUN_FORMULA_CONFIG } from '../services/XfyunFormulaConfig';
+import { XfyunFormulaService } from '../services/XfyunFormulaService';
+import { XFYUN_OCR_CONFIG } from '../services/XfyunOcrConfig';
+import { XfyunOcrService } from '../services/XfyunOcrService';
 import { EditorPerformanceTrace } from '../utils/EditorPerformanceTrace';
 import { ElementLayer } from './ElementLayer';
 import { SelectionTransformOverlay } from './SelectionTransformOverlay';
@@ -55,6 +60,27 @@ interface PageViewportTransform {
 interface PageRenderRegion {
   x: number;
   y: number;
+  width: number;
+  height: number;
+}
+
+interface RecognitionInsertFrame {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface RecognitionSelectionImagePayload {
+  base64Image: string;
+  frame: RecognitionInsertFrame;
+}
+
+interface DataUrlExporter {
+  toDataURL(type?: string): string;
+}
+
+interface SelectionBoundsFrame {
   width: number;
   height: number;
 }
@@ -93,6 +119,8 @@ const SELECTION_MOVE_REDRAW_INTERVAL_MS = 24;
 const SELECTION_CONTEXT_MENU_WIDTH = 128;
 const SELECTION_CONTEXT_MENU_ITEM_HEIGHT = 38;
 const SELECTION_CONTEXT_MENU_OFFSET = 8;
+const FORMULA_EXPORT_PADDING = 16;
+const FORMULA_EXPORT_MIN_EDGE = 48;
 export type CanvasBoardContentChangeKind = 'stroke' | 'element';
 
 const DEFAULT_CANVAS_TOOL_SETTING: ToolSetting = {
@@ -204,6 +232,8 @@ export struct CanvasBoard {
   @State private selectionContextMenuTarget: SelectionContextMenuTarget = 'strokeGroup';
   @State private selectionContextMenuX: number = 0;
   @State private selectionContextMenuY: number = 0;
+  @State private isOcrRecognizing: boolean = false;
+  @State private isFormulaRecognizing: boolean = false;
 
   aboutToAppear(): void {
     this.resolveViewModel();
@@ -526,6 +556,28 @@ export struct CanvasBoard {
             this.handleSelectionContextMenuAction('resize');
           })
 
+        Button(this.isOcrRecognizing ? '识别中...' : 'OCR')
+          .width('100%')
+          .height(SELECTION_CONTEXT_MENU_ITEM_HEIGHT)
+          .fontSize(14)
+          .fontColor('#111827')
+          .backgroundColor('#00000000')
+          .enabled(!this.isOcrRecognizing && !this.isFormulaRecognizing)
+          .onClick(() => {
+            this.handleSelectionContextMenuAction('ocr');
+          })
+
+        Button(this.isFormulaRecognizing ? '识别中...' : '公式识别')
+          .width('100%')
+          .height(SELECTION_CONTEXT_MENU_ITEM_HEIGHT)
+          .fontSize(14)
+          .fontColor('#111827')
+          .backgroundColor('#00000000')
+          .enabled(!this.isOcrRecognizing && !this.isFormulaRecognizing)
+          .onClick(() => {
+            this.handleSelectionContextMenuAction('formula');
+          })
+
         Button('删除')
           .width('100%')
           .height(SELECTION_CONTEXT_MENU_ITEM_HEIGHT)
@@ -768,10 +820,15 @@ export struct CanvasBoard {
 
           const selectedElement = viewModel.getSelectedElement();
           if (this.shouldBeginInlineTextEdit(point, selectedElement, hitTolerance)) {
-            this.beginInlineTextEdit(selectedElement as TextCanvasElement);
-            this.syncEditorSnapshot();
-            this.onContentChanged(false, 'element');
-            return;
+            const textElement = selectedElement as TextCanvasElement;
+            if (textElement.recognition?.source === 'formula' && (textElement.recognition.latex?.trim().length ?? 0) > 0) {
+              this.clearLastEditTap();
+            } else {
+              this.beginInlineTextEdit(textElement);
+              this.syncEditorSnapshot();
+              this.onContentChanged(false, 'element');
+              return;
+            }
           }
 
           viewModel.beginElementEditGesture(point, pageBounds, hitTolerance);
@@ -1634,13 +1691,23 @@ export struct CanvasBoard {
 
   private getSelectionContextMenuHeight(): number {
     if (this.selectionContextMenuTarget === 'strokeGroup') {
-      return SELECTION_CONTEXT_MENU_ITEM_HEIGHT * 3 + 8;
+      return SELECTION_CONTEXT_MENU_ITEM_HEIGHT * 5 + 8;
     }
 
     return SELECTION_CONTEXT_MENU_ITEM_HEIGHT + 8;
   }
 
   private handleSelectionContextMenuAction(action: SelectionAction): void {
+    if (action === 'ocr') {
+      void this.handleOcrRecognitionAction();
+      return;
+    }
+
+    if (action === 'formula') {
+      void this.handleFormulaRecognitionAction();
+      return;
+    }
+
     const viewModel = this.getViewModel();
     if (viewModel === null) {
       this.hideSelectionContextMenu();
@@ -1667,6 +1734,121 @@ export struct CanvasBoard {
     }
     this.redrawOverlayLayer();
     this.onContentChanged(true, result.changedElements || result.elementSelectionChanged ? 'element' : 'stroke');
+  }
+
+  private async handleOcrRecognitionAction(): Promise<void> {
+    const viewModel = this.getViewModel();
+    if (viewModel === null) {
+      this.hideSelectionContextMenu();
+      return;
+    }
+
+    if (this.isOcrRecognizing || this.isFormulaRecognizing) {
+      return;
+    }
+
+    this.hideSelectionContextMenu();
+    this.isOcrRecognizing = true;
+    try {
+      const exportPayload = this.exportRecognitionSelectionImage(viewModel);
+      if (exportPayload === null) {
+        throw new Error('No selectable lasso content was available for OCR recognition.');
+      }
+
+      const ocrService = new XfyunOcrService(XFYUN_OCR_CONFIG);
+      const ocrResult = await ocrService.recognize(exportPayload.base64Image);
+      const insertedElement = viewModel.insertRecognizedTextElement(
+        ocrResult.text,
+        exportPayload.frame,
+        {
+          width: this.pageWidth,
+          height: this.pageHeight
+        },
+        {
+          recognition: {
+            source: 'ocr',
+            sid: ocrResult.sid,
+            recognizedAt: Date.now(),
+            rawText: ocrResult.text
+          }
+        }
+      );
+      if (insertedElement === null) {
+        throw new Error(viewModel.getErrorMessage() || 'Failed to insert OCR recognition result.');
+      }
+
+      this.syncEditorSnapshot();
+      if (!this.tryApplyLatestRenderInvalidation()) {
+        this.redrawCommittedLayer(false);
+      }
+      this.redrawOverlayLayer();
+      this.onContentChanged(true, 'element');
+    } catch (error) {
+      viewModel.appendDebugEvent('ocrRecognition', `failed error=${this.stringifyError(error)}`);
+      this.updateSnapshotErrorMessage(this.stringifyError(error));
+      this.redrawOverlayLayer();
+    } finally {
+      this.isOcrRecognizing = false;
+    }
+  }
+
+  private async handleFormulaRecognitionAction(): Promise<void> {
+    const viewModel = this.getViewModel();
+    if (viewModel === null) {
+      this.hideSelectionContextMenu();
+      return;
+    }
+
+    if (this.isOcrRecognizing || this.isFormulaRecognizing) {
+      return;
+    }
+
+    this.hideSelectionContextMenu();
+    this.isFormulaRecognizing = true;
+    try {
+      const exportPayload = this.exportRecognitionSelectionImage(viewModel);
+      if (exportPayload === null) {
+        throw new Error('No selectable lasso content was available for formula recognition.');
+      }
+
+      const formulaService = new XfyunFormulaService(XFYUN_FORMULA_CONFIG);
+      const formulaResult = await formulaService.recognize(exportPayload.base64Image);
+      const insertedElement = viewModel.insertRecognizedTextElement(
+        formulaResult.latex.length > 0 ? formulaResult.latex : formulaResult.text,
+        exportPayload.frame,
+        {
+          width: this.pageWidth,
+          height: this.pageHeight
+        },
+        {
+          recognition: {
+            source: 'formula',
+            sid: formulaResult.sid,
+            recognizedAt: Date.now(),
+            rawText: formulaResult.text,
+            latex: formulaResult.latex.length > 0 ? formulaResult.latex : undefined
+          }
+        }
+      );
+      if (insertedElement === null) {
+        throw new Error(viewModel.getErrorMessage() || 'Failed to insert formula recognition result.');
+      }
+
+      this.syncEditorSnapshot();
+      if (!this.tryApplyLatestRenderInvalidation()) {
+        this.redrawCommittedLayer(false);
+      }
+      this.redrawOverlayLayer();
+      this.onContentChanged(true, 'element');
+    } catch (error) {
+      if (viewModel !== null) {
+        viewModel.appendDebugEvent('formulaRecognition', `failed error=${this.stringifyError(error)}`);
+      }
+      this.updateSnapshotErrorMessage(this.stringifyError(error));
+      this.redrawOverlayLayer();
+    } finally {
+      this.isFormulaRecognizing = false;
+    }
   }
 
   private beginStrokeResizeMode(viewModel: DrawingEditorViewModel): void {
@@ -1918,7 +2100,14 @@ export struct CanvasBoard {
       content: element.content,
       color: element.color,
       fontSize: element.fontSize,
-      backgroundColor: element.backgroundColor
+      backgroundColor: element.backgroundColor,
+      recognition: element.recognition ? {
+        source: element.recognition.source,
+        sid: element.recognition.sid,
+        recognizedAt: element.recognition.recognizedAt,
+        rawText: element.recognition.rawText,
+        latex: element.recognition.latex
+      } : undefined
     };
   }
 
@@ -3090,6 +3279,129 @@ export struct CanvasBoard {
       viewportRegion.maxX - viewportRegion.minX,
       viewportRegion.maxY - viewportRegion.minY
     );
+  }
+
+  private exportRecognitionSelectionImage(
+    viewModel: DrawingEditorViewModel
+  ): RecognitionSelectionImagePayload | null {
+    const selectionBounds = viewModel.getSelectionBoundingBox();
+    if (selectionBounds === null) {
+      return null;
+    }
+
+    const paddedBounds = clampBoundingBox(
+      {
+        minX: selectionBounds.minX - FORMULA_EXPORT_PADDING,
+        minY: selectionBounds.minY - FORMULA_EXPORT_PADDING,
+        maxX: selectionBounds.maxX + FORMULA_EXPORT_PADDING,
+        maxY: selectionBounds.maxY + FORMULA_EXPORT_PADDING
+      },
+      this.pageWidth,
+      this.pageHeight
+    );
+    if (paddedBounds === null) {
+      return null;
+    }
+
+    const width = Math.max(FORMULA_EXPORT_MIN_EDGE, Math.ceil(paddedBounds.maxX - paddedBounds.minX));
+    const height = Math.max(FORMULA_EXPORT_MIN_EDGE, Math.ceil(paddedBounds.maxY - paddedBounds.minY));
+    const selectedStrokeIds = new Set<string>();
+    for (const target of viewModel.getSelectedStrokeTargets()) {
+      for (const strokeId of target.strokeIds) {
+        selectedStrokeIds.add(strokeId);
+      }
+    }
+
+    const selectedElementIds = new Set<string>(viewModel.getSelectedElementIds());
+    const strokes = viewModel.getStrokesForRendering().filter((stroke: Stroke): boolean => selectedStrokeIds.has(stroke.id));
+    const elements = viewModel.getElementsForRendering().filter((element: CanvasElement): boolean => selectedElementIds.has(element.id));
+    if (strokes.length === 0 && elements.length === 0) {
+      return null;
+    }
+
+    try {
+      const offscreenCanvas = new OffscreenCanvas(width, height);
+      const offscreenContext = offscreenCanvas.getContext('2d', this.committedRenderingSettings);
+      offscreenContext.clearRect(0, 0, width, height);
+      offscreenContext.fillStyle = '#FFFFFF';
+      offscreenContext.globalAlpha = 1;
+      offscreenContext.fillRect(0, 0, width, height);
+      offscreenContext.save();
+      offscreenContext.translate(-paddedBounds.minX, -paddedBounds.minY);
+      for (const stroke of strokes) {
+        this.drawStroke(offscreenContext, stroke);
+      }
+      CanvasElementRenderer.drawElements(offscreenContext, elements);
+      offscreenContext.restore();
+
+      const exporter = offscreenCanvas as Object as DataUrlExporter;
+      const dataUrl = exporter.toDataURL('image/png');
+      if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
+        throw new Error('OffscreenCanvas.toDataURL is unavailable in the current runtime.');
+      }
+
+      const separatorIndex = dataUrl.indexOf(',');
+      if (separatorIndex < 0) {
+        throw new Error('Failed to export selection image.');
+      }
+
+      const frameBounds: SelectionBoundsFrame = {
+        width: this.pageWidth,
+        height: this.pageHeight
+      };
+      const clampedFrame = clampElementFrameToBounds({
+        x: paddedBounds.minX,
+        y: paddedBounds.minY,
+        width: paddedBounds.maxX - paddedBounds.minX,
+        height: paddedBounds.maxY - paddedBounds.minY
+      }, frameBounds);
+      const recognitionFrame: RecognitionInsertFrame = {
+        x: clampedFrame.x,
+        y: clampedFrame.y,
+        width: clampedFrame.width,
+        height: clampedFrame.height
+      };
+      const payload: RecognitionSelectionImagePayload = {
+        base64Image: dataUrl.substring(separatorIndex + 1),
+        frame: recognitionFrame
+      };
+      return payload;
+    } catch (error) {
+      throw new Error(`Selection image export failed: ${this.stringifyError(error)}`);
+    }
+  }
+
+  private stringifyError(error: Object): string {
+    if (error instanceof Error) {
+      return error.message.length > 0 ? error.message : error.name;
+    }
+
+    if (typeof error === 'string') {
+      return error;
+    }
+
+    try {
+      return JSON.stringify(error);
+    } catch (_stringifyError) {
+      return 'Unknown error';
+    }
+  }
+
+  private updateSnapshotErrorMessage(message: string): void {
+    this.editorSnapshot = {
+      instanceId: this.editorSnapshot.instanceId,
+      pageId: this.editorSnapshot.pageId,
+      toolSetting: this.editorSnapshot.toolSetting,
+      strokeCount: this.editorSnapshot.strokeCount,
+      elementCount: this.editorSnapshot.elementCount,
+      selectedElementId: this.editorSnapshot.selectedElementId,
+      activeStrokeStyle: this.editorSnapshot.activeStrokeStyle,
+      undoDepth: this.editorSnapshot.undoDepth,
+      redoDepth: this.editorSnapshot.redoDepth,
+      recentEvents: this.editorSnapshot.recentEvents,
+      errorMessage: message,
+      persistenceStatus: this.editorSnapshot.persistenceStatus
+    };
   }
 
   private redrawCommittedBaseLayerWithBuffer(

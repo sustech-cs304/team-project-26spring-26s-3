@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <link rel="stylesheet" href="./katex.min.css">
+  <script defer src="./katex.min.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: transparent;
+      font-family: monospace;
+    }
+    #root {
+      box-sizing: border-box;
+      width: 100%;
+      height: 100%;
+      padding: 6px 8px;
+      overflow: hidden;
+    }
+    #formula {
+      width: max-content;
+      transform-origin: top left;
+    }
+    #fallback {
+      display: none;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div id="formula"></div>
+    <div id="fallback"></div>
+  </div>
+  <script>
+    window.renderFormulaFromHost = function (payloadJson) {
+      var payload = JSON.parse(payloadJson);
+      var root = document.getElementById('root');
+      var formulaNode = document.getElementById('formula');
+      var fallbackNode = document.getElementById('fallback');
+      root.style.background = payload.backgroundColor || 'transparent';
+      document.body.style.background = payload.backgroundColor || 'transparent';
+      document.body.style.color = payload.textColor || '#111827';
+      formulaNode.style.fontSize = (payload.fontSize || 18) + 'px';
+      formulaNode.style.lineHeight = '1.35';
+      fallbackNode.style.fontSize = (payload.fontSize || 18) + 'px';
+      fallbackNode.style.lineHeight = '1.35';
+      fallbackNode.textContent = payload.fallbackText || '';
+      formulaNode.innerHTML = '';
+      formulaNode.style.display = 'block';
+      fallbackNode.style.display = 'none';
+      try {
+        if (!window.katex || !payload.latex || !payload.latex.trim()) {
+          throw new Error('KaTeX unavailable');
+        }
+        window.katex.render(payload.latex, formulaNode, {
+          throwOnError: true,
+          displayMode: true,
+          strict: 'ignore'
+        });
+      } catch (error) {
+        formulaNode.style.display = 'none';
+        fallbackNode.style.display = 'block';
+      }
+    };
+  </script>
+</body>
+</html>

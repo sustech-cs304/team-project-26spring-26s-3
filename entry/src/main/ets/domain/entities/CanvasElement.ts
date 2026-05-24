@@ -5,9 +5,11 @@ export const TRANSPARENT_ELEMENT_BACKGROUND_COLOR = '#00FFFFFF';
 export const CANVAS_ELEMENT_TYPES = ['text', 'shape', 'image'] as const;
 export const SHAPE_TYPES = ['rectangle', 'circle', 'line'] as const;
 export const SHAPE_GEOMETRY_KINDS = ['rect', 'ellipse', 'line'] as const;
+export const TEXT_RECOGNITION_SOURCES = ['ocr', 'formula'] as const;
 export type CanvasElementType = typeof CANVAS_ELEMENT_TYPES[number];
 export type ShapeType = typeof SHAPE_TYPES[number];
 export type ShapeGeometryKind = typeof SHAPE_GEOMETRY_KINDS[number];
+export type TextRecognitionSource = typeof TEXT_RECOGNITION_SOURCES[number];
 
 export interface CanvasElementBase {
   id: string;
@@ -23,12 +25,21 @@ export interface CanvasElementBase {
   updatedAt: number;
 }
 
+export interface TextRecognitionMetadata {
+  source: TextRecognitionSource;
+  sid: string;
+  recognizedAt: number;
+  rawText: string;
+  latex?: string;
+}
+
 export interface TextCanvasElement extends CanvasElementBase {
   type: 'text';
   content: string;
   color: string;
   fontSize: number;
   backgroundColor: string;
+  recognition?: TextRecognitionMetadata;
 }
 
 export interface ShapeGeometryPoint {

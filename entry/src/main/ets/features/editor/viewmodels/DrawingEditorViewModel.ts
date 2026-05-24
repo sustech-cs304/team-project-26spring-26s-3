@@ -31,6 +31,7 @@ import {
   ShapeGeometryPoint,
   ShapeType,
   TextCanvasElement,
+  TextRecognitionMetadata,
   TRANSPARENT_ELEMENT_BACKGROUND_COLOR
 } from '../../../domain/entities/CanvasElement';
 import { Stroke, StrokePoint, StrokeStyle } from '../../../domain/entities/Stroke';
@@ -90,6 +91,10 @@ interface BoundaryEdge {
 interface BoundaryStartEdge {
   edge: BoundaryEdge | null;
   startKeyIndex: number;
+}
+
+interface InsertRecognizedTextOptions {
+  recognition?: TextRecognitionMetadata;
 }
 
 type ElementEditGestureKind =
@@ -560,6 +565,10 @@ export class DrawingEditorViewModel {
 
   getSelectedStrokeResizeBounds(): BoundingBox | null {
     return this.getSelectionBoundsFromTargets(this.selectedStrokeTargets);
+  }
+
+  getSelectionBoundingBox(): BoundingBox | null {
+    return this.getSelectionBoundsFromTargets(this.buildSelectionTargets());
   }
 
   getSelectionTargets(): SelectionTarget[] {
@@ -1404,6 +1413,66 @@ export class DrawingEditorViewModel {
     this.errorMessage = '';
     this.appendDebugEvent('textEdit', `element=${elementId} length=${content.length}`);
     return updatedTextElement;
+  }
+
+  insertRecognizedTextElement(
+    content: string,
+    frame: ElementFrame,
+    bounds: ElementBounds,
+    options: InsertRecognizedTextOptions = {}
+  ): TextCanvasElement | null {
+    if (this.pageId.length === 0) {
+      this.errorMessage = 'Page is not loaded.';
+      return null;
+    }
+
+    const normalizedContent = content.trim();
+    if (normalizedContent.length === 0) {
+      this.errorMessage = 'Recognition result is empty.';
+      return null;
+    }
+
+    const timestamp = now();
+    const clampedFrame = clampElementFrameToBounds(frame, bounds);
+    const fontSize = Math.max(16, Math.min(28, Math.round(clampedFrame.height / 4)));
+    const nextElement: TextCanvasElement = {
+      id: createId('text'),
+      pageId: this.pageId,
+      type: 'text',
+      x: clampedFrame.x,
+      y: clampedFrame.y,
+      width: clampedFrame.width,
+      height: clampedFrame.height,
+      rotation: 0,
+      zIndex: this.getNextElementZIndex(),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      content: normalizedContent,
+      color: '#111827',
+      fontSize,
+      backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR,
+      recognition: options.recognition
+    };
+
+    const insertionIndex = this.elements.length;
+    this.elements = [...this.elements, nextElement];
+    this.selectedStrokeTargets = [];
+    this.selectedElementIds = [nextElement.id];
+    this.selectedElementId = nextElement.id;
+    this.selectionVersion += 1;
+    this.recordElementDelta('elementInsert', [], [{
+      index: insertionIndex,
+      element: this.cloneElement(nextElement)
+    }]);
+    this.changeSequence += 1;
+    this.persistenceStatus = 'pending recognition text save';
+    this.schedulePersistCurrentStrokes('recognitionText', 0);
+    this.errorMessage = '';
+    this.appendDebugEvent(
+      'formulaRecognition',
+      `element=${nextElement.id} length=${normalizedContent.length} x=${Math.round(nextElement.x)} y=${Math.round(nextElement.y)}`
+    );
+    return this.cloneTextElement(nextElement);
   }
 
   getActiveStroke(): Stroke | null {
@@ -3807,7 +3876,14 @@ export class DrawingEditorViewModel {
       content: element.content,
       color: element.color,
       fontSize: element.fontSize,
-      backgroundColor: element.backgroundColor
+      backgroundColor: element.backgroundColor,
+      recognition: element.recognition ? {
+        source: element.recognition.source,
+        sid: element.recognition.sid,
+        recognizedAt: element.recognition.recognizedAt,
+        rawText: element.recognition.rawText,
+        latex: element.recognition.latex
+      } : undefined
     };
   }
 

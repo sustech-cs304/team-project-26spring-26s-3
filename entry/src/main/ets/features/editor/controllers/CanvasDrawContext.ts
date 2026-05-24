@@ -29,6 +29,7 @@ export interface CanvasDrawContext {
   lineTo(x: number, y: number): void;
   quadraticCurveTo(cpx: number, cpy: number, x: number, y: number): void;
   arc(x: number, y: number, radius: number, startAngle: number, endAngle: number): void;
+  drawImage(image: Object, dx: number, dy: number, dWidth: number, dHeight: number): void;
   stroke(): void;
   fill(): void;
 }

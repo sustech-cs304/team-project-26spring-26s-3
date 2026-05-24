@@ -8,12 +8,15 @@ import {
   ImageCanvasElement,
   isShapeGeometryKind,
   isShapeType,
+  TEXT_RECOGNITION_SOURCES,
   PAGE_CANVAS_CONTENT_VERSION,
   PageCanvasContent,
   ShapeCanvasElement,
   ShapeGeometry,
   ShapeGeometryPoint,
   TextCanvasElement,
+  TextRecognitionSource,
+  TextRecognitionMetadata,
   TRANSPARENT_ELEMENT_BACKGROUND_COLOR
 } from '../../domain/entities/CanvasElement';
 import { Stroke, StrokePoint, StrokeStyle } from '../../domain/entities/Stroke';
@@ -381,6 +384,7 @@ export class EditorRepositoryImpl implements EditorRepository {
     const fontSize = Math.max(8, this.parseFiniteNumber(candidate.fontSize, 18));
     const backgroundColor = typeof candidate.backgroundColor === 'string' && candidate.backgroundColor.length > 0 ?
       candidate.backgroundColor : TRANSPARENT_ELEMENT_BACKGROUND_COLOR;
+    const recognition = this.parseTextRecognitionMetadata(candidate.recognition);
 
     return {
       id,
@@ -397,7 +401,34 @@ export class EditorRepositoryImpl implements EditorRepository {
       content,
       color,
       fontSize,
-      backgroundColor
+      backgroundColor,
+      recognition
+    };
+  }
+
+  private parseTextRecognitionMetadata(value: Object): TextRecognitionMetadata | undefined {
+    if (!value || typeof value !== 'object') {
+      return undefined;
+    }
+
+    const candidate = value as Record<string, Object>;
+    const sourceValue = typeof candidate.source === 'string' ? candidate.source : '';
+    if (!TEXT_RECOGNITION_SOURCES.includes(sourceValue as typeof TEXT_RECOGNITION_SOURCES[number])) {
+      return undefined;
+    }
+    const source: TextRecognitionSource = sourceValue as TextRecognitionSource;
+
+    const sid = typeof candidate.sid === 'string' ? candidate.sid : '';
+    const rawText = typeof candidate.rawText === 'string' ? candidate.rawText : '';
+    const recognizedAt = this.parseFiniteNumber(candidate.recognizedAt, Date.now());
+    const latex = typeof candidate.latex === 'string' && candidate.latex.length > 0 ? candidate.latex : undefined;
+
+    return {
+      source,
+      sid,
+      recognizedAt,
+      rawText,
+      latex
     };
   }
 
