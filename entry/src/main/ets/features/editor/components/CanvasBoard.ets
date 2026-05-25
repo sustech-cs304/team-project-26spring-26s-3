@@ -98,6 +98,7 @@ type CanvasDrawContext = CanvasRenderingContext2D | OffscreenCanvasRenderingCont
 const COMMITTED_TILE_SIZE = 256;
 const PARTIAL_REDRAW_OVERDRAW_VIEWPORT_PX = 2;
 const RECENT_COMMITTED_STROKE_LIMIT = 6;
+const RECENT_COMMITTED_IDLE_FLUSH_DELAY_MS = 420;
 type StrokeResizeUiMode = 'none' | 'ready' | 'resizing' | 'moving';
 const DEFAULT_VIEWPORT_WIDTH = 1600;
 const DEFAULT_VIEWPORT_HEIGHT = 900;
@@ -222,6 +223,7 @@ export struct CanvasBoard {
   private backgroundPixelMapFailedUri: string = '';
   private viewportFastRedrawTimerId: number = -1;
   private viewportQualityRedrawTimerId: number = -1;
+  private recentCommittedFlushTimerId: number = -1;
   private lastHighQualityViewportRenderKey: string = '';
 
   @State private isCommittedLayerReady: boolean = false;
@@ -263,6 +265,7 @@ export struct CanvasBoard {
 
   aboutToDisappear(): void {
     this.clearViewportRedrawTimers();
+    this.clearRecentCommittedIdleFlushTimer();
     this.clearSelectionOverlayResumeTimer();
     this.commitInlineTextEdit(true);
     this.releaseBackgroundPixelMap();
@@ -1007,6 +1010,9 @@ export struct CanvasBoard {
         'CanvasBoard',
         `touchDown tool=${toolSetting.tool} color=${toolSetting.color} width=${toolSetting.width} opacity=${toolSetting.opacity.toFixed(2)}`
       );
+      if (activeTool === 'eraser') {
+        this.stabilizeCommittedLayersForEdit('eraserStart');
+      }
       this.isDrawingGestureActive = true;
       const activeStroke = viewModel.beginStroke(point);
       this.syncEditorSnapshot();
@@ -1060,6 +1066,7 @@ export struct CanvasBoard {
   private handleLassoTouch(event: TouchEvent, touch: TouchObject, viewModel: DrawingEditorViewModel): void {
     if (event.type === TouchType.Down) {
       this.hideSelectionContextMenu();
+      this.stabilizeCommittedLayersForEdit('lassoStart');
       const point = this.buildPoint(touch, false);
       if (point === null) {
         return;
@@ -1459,6 +1466,7 @@ export struct CanvasBoard {
   }
 
   private beginSelectionMovePreview(): void {
+    this.stabilizeCommittedLayersForEdit('selectionMoveStart');
     this.hiddenStrokeIdsDuringSelectionMove.clear();
     for (const target of this.selectedStrokeTargets) {
       if (target.kind !== 'strokeGroup') {
@@ -1572,9 +1580,11 @@ export struct CanvasBoard {
     } else if (completedStroke !== null && this.areCommittedLayersReady()) {
       this.appendRenderedStroke(completedStroke);
       if (this.canAppendToRecentCommittedLayer()) {
-      this.drawStrokeOnViewport(this.recentCommittedContext2D, completedStroke);
+        this.drawStrokeOnViewport(this.recentCommittedContext2D, completedStroke);
+        this.scheduleRecentCommittedIdleFlush();
       } else if (this.trimRecentCommittedLayerIntoBase()) {
         this.redrawRecentCommittedLayer(false);
+        this.scheduleRecentCommittedIdleFlush();
       } else {
         this.redrawCommittedLayer();
       }
@@ -1753,7 +1763,85 @@ export struct CanvasBoard {
     this.recentCommittedContext2D.clearRect(0, 0, size.width, size.height);
   }
 
+  private flushRecentCommittedLayerIntoBase(reason: string = 'manual'): boolean {
+    this.clearRecentCommittedIdleFlushTimer();
+    if (!this.areCommittedLayersReady()) {
+      return false;
+    }
+
+    if (!this.hasActiveRecentCommittedLayer()) {
+      this.clearRecentCommittedLayer();
+      this.flattenedCommittedStrokeCount = Math.min(
+        this.flattenedCommittedStrokeCount,
+        this.renderedStrokeOrder.length
+      );
+      return true;
+    }
+
+    const flushStartedAt = Date.now();
+    let flushedStrokeCount = 0;
+    const startIndex = Math.max(0, Math.min(this.flattenedCommittedStrokeCount, this.renderedStrokeOrder.length));
+    for (let index = startIndex; index < this.renderedStrokeOrder.length; index += 1) {
+      const strokeId = this.renderedStrokeOrder[index];
+      const stroke = this.renderedStrokesById.get(strokeId);
+      if (stroke === undefined) {
+        continue;
+      }
+
+      this.drawStrokeOnViewport(this.committedContext2D, stroke);
+      flushedStrokeCount += 1;
+    }
+
+    this.clearRecentCommittedLayer();
+    this.flattenedCommittedStrokeCount = this.renderedStrokeOrder.length;
+    EditorPerformanceTrace.record(
+      'committed.recentFlush',
+      Date.now() - flushStartedAt,
+      `reason=${reason} strokes=${flushedStrokeCount} flattened=${this.flattenedCommittedStrokeCount}`,
+      4
+    );
+    return true;
+  }
+
+  private stabilizeCommittedLayersForEdit(reason: string): void {
+    this.clearViewportRedrawTimers();
+    if (!this.flushRecentCommittedLayerIntoBase(reason)) {
+      this.redrawCommittedLayer(false);
+    }
+  }
+
+  private scheduleRecentCommittedIdleFlush(): void {
+    if (!this.hasActiveRecentCommittedLayer()) {
+      return;
+    }
+
+    this.clearRecentCommittedIdleFlushTimer();
+    this.recentCommittedFlushTimerId = setTimeout(() => {
+      this.recentCommittedFlushTimerId = -1;
+      if (this.shouldDeferRecentCommittedIdleFlush()) {
+        this.scheduleRecentCommittedIdleFlush();
+        return;
+      }
+
+      this.flushRecentCommittedLayerIntoBase('idle');
+    }, RECENT_COMMITTED_IDLE_FLUSH_DELAY_MS);
+  }
+
+  private shouldDeferRecentCommittedIdleFlush(): boolean {
+    return this.hasActiveCanvasGesture();
+  }
+
+  private clearRecentCommittedIdleFlushTimer(): void {
+    if (this.recentCommittedFlushTimerId < 0) {
+      return;
+    }
+
+    clearTimeout(this.recentCommittedFlushTimerId);
+    this.recentCommittedFlushTimerId = -1;
+  }
+
   private clearCommittedLayer(): void {
+    this.clearRecentCommittedIdleFlushTimer();
     if (!this.isCommittedLayerReady) {
       return;
     }
@@ -1858,6 +1946,9 @@ export struct CanvasBoard {
       return;
     }
 
+    if (target === 'strokeGroup') {
+      this.stabilizeCommittedLayersForEdit(`selectionAction:${action}`);
+    }
     const result = viewModel.applySelectionAction(action, target);
     if (!result.changed) {
       this.syncEditorSnapshot();
@@ -1989,6 +2080,7 @@ export struct CanvasBoard {
   }
 
   private beginStrokeResizeMode(viewModel: DrawingEditorViewModel): void {
+    this.stabilizeCommittedLayersForEdit('strokeResizeMode');
     const resizeBounds = viewModel.beginStrokeResizeMode();
     if (resizeBounds === null) {
       this.strokeResizeUiMode = 'none';
@@ -3015,8 +3107,18 @@ export struct CanvasBoard {
 
   private applyPartialRenderInvalidation(invalidation: RenderInvalidation): boolean {
     const redrawStartedAt = Date.now();
+    const shouldKeepStableCommittedLayer = this.shouldStabilizeBeforeRenderInvalidation(invalidation);
+    if (shouldKeepStableCommittedLayer && !this.flushRecentCommittedLayerIntoBase(`invalidation:${invalidation.reason}`)) {
+      return false;
+    }
+
     const previousRecentStrokeIds = this.getRecentCommittedStrokeIdSet();
     this.applyRenderedStrokeMutation(invalidation);
+    if (shouldKeepStableCommittedLayer) {
+      this.clearRecentCommittedLayer();
+      this.flattenedCommittedStrokeCount = this.renderedStrokeOrder.length;
+    }
+
     if (this.canUseRecentCommittedFastPath(invalidation, previousRecentStrokeIds)) {
       this.redrawRecentCommittedLayer(false);
       EditorPerformanceTrace.record(
@@ -3080,6 +3182,22 @@ export struct CanvasBoard {
     );
 
     return true;
+  }
+
+  private shouldStabilizeBeforeRenderInvalidation(invalidation: RenderInvalidation): boolean {
+    switch (invalidation.reason) {
+      case 'delete':
+      case 'copy':
+      case 'undo':
+      case 'redo':
+      case 'clear':
+      case 'move':
+      case 'resize':
+      case 'erase':
+        return true;
+      default:
+        return false;
+    }
   }
 
   private shouldUseUnifiedCommittedRedraw(
@@ -3467,10 +3585,6 @@ export struct CanvasBoard {
     transform: PageViewportTransform,
     candidateStrokeIds: string[]
   ): boolean {
-    if (!this.hasActiveRecentCommittedLayer()) {
-      return true;
-    }
-
     const viewportRegion = this.toPixelAlignedViewportRegion(redrawRegion, transform);
     if (viewportRegion === null) {
       return true;
@@ -3479,6 +3593,16 @@ export struct CanvasBoard {
     const width = viewportRegion.maxX - viewportRegion.minX;
     const height = viewportRegion.maxY - viewportRegion.minY;
     if (width <= 0 || height <= 0) {
+      return true;
+    }
+
+    this.recentCommittedContext2D.clearRect(
+      viewportRegion.minX,
+      viewportRegion.minY,
+      width,
+      height
+    );
+    if (!this.hasActiveRecentCommittedLayer()) {
       return true;
     }
 
@@ -3519,12 +3643,6 @@ export struct CanvasBoard {
 
     offscreenContext.restore();
     const bitmap = offscreenCanvas.transferToImageBitmap();
-    this.recentCommittedContext2D.clearRect(
-      viewportRegion.minX,
-      viewportRegion.minY,
-      width,
-      height
-    );
     this.recentCommittedContext2D.drawImage(bitmap, viewportRegion.minX, viewportRegion.minY, width, height);
     bitmap.close();
     return true;
@@ -4127,6 +4245,9 @@ export struct CanvasBoard {
 
   private onToolSettingChanged(): void {
     const activeTool = this.getEffectiveToolSetting().tool;
+    if (!this.isRecentCommittedWritingTool(activeTool)) {
+      this.stabilizeCommittedLayersForEdit(`tool:${activeTool}`);
+    }
     if (activeTool !== 'edit') {
       this.commitInlineTextEdit(true);
     }
@@ -4160,6 +4281,10 @@ export struct CanvasBoard {
     if (this.isActivePage) {
       this.hideSelectionContextMenu();
     }
+  }
+
+  private isRecentCommittedWritingTool(tool: string): boolean {
+    return tool === 'pen' || tool === 'pencil' || tool === 'highlighter';
   }
 
   private onAutoLoadSessionChanged(): void {

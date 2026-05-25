@@ -21,6 +21,7 @@ yarn-error.log*
 pnpm-debug.log*
 
 # Local IDE state
+.idea/modules/*.iml
 .idea/**/workspace.xml
 .idea/**/tasks.xml
 .idea/**/usage.statistics.xml
