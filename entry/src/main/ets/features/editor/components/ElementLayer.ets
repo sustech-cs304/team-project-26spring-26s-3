@@ -1,7 +1,10 @@
 import common from '@ohos.app.ability.common';
 
-import { CanvasElement, TextCanvasElement } from '../../../domain/entities/CanvasElement';
-import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
+import { CanvasElement, ImageCanvasElement, TextCanvasElement } from '../../../domain/entities/CanvasElement';
+import {
+  DrawingEditorViewModel,
+  ImageElementEditDraft
+} from '../viewmodels/DrawingEditorViewModel';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
 import { ElementSelectionOverlay } from './ElementSelectionOverlay';
 import { FormulaElementView } from './FormulaElementView';
@@ -21,6 +24,7 @@ export struct ElementLayer {
   @Prop editingElementId: string = '';
   @State private elements: CanvasElement[] = [];
   @State private selectedElementIds: string[] = [];
+  @State private imageElementEditDraft: ImageElementEditDraft | null = null;
   private viewModel: DrawingEditorViewModel | null = null;
 
   aboutToAppear(): void {
@@ -38,9 +42,9 @@ export struct ElementLayer {
 
       ForEach(this.elements, (element: CanvasElement) => {
         if (this.selectedElementIds.includes(element.id) && element.id !== this.editingElementId) {
-          ElementSelectionOverlay({ element: element })
+          ElementSelectionOverlay({ element: this.applyImageElementEditDraftFrame(element) })
         }
-      }, (element: CanvasElement): string => this.getSelectionRenderKey(element))
+      }, (element: CanvasElement): string => this.getSelectionRenderKey(this.applyImageElementEditDraftFrame(element)))
     }
     .width('100%')
     .height('100%')
@@ -58,7 +62,14 @@ export struct ElementLayer {
     } else if (element.type === 'shape') {
       ShapeElementView({ element: element, renderVersion: this.refreshVersion })
     } else if (element.type === 'image') {
-      ImageElementView({ element: element, renderVersion: this.refreshVersion })
+      ImageElementView({
+        element: element,
+        renderVersion: this.refreshVersion,
+        translateX: this.getImageElementDraftTranslateX(element),
+        translateY: this.getImageElementDraftTranslateY(element),
+        scaleX: this.getImageElementDraftScaleX(element),
+        scaleY: this.getImageElementDraftScaleY(element)
+      })
     }
   }
 
@@ -144,6 +155,67 @@ export struct ElementLayer {
     const viewModel = this.getViewModel();
     this.elements = viewModel === null ? [] : viewModel.getElements();
     this.selectedElementIds = viewModel === null ? [] : viewModel.getSelectedElementIds();
+    this.imageElementEditDraft = viewModel === null ? null : viewModel.getImageElementEditDraft();
+  }
+
+  private applyImageElementEditDraftFrame(element: CanvasElement): CanvasElement {
+    if (this.imageElementEditDraft === null || element.type !== 'image' || element.id !== this.imageElementEditDraft.elementId) {
+      return element;
+    }
+
+    const imageElement = element as ImageCanvasElement;
+    return {
+      id: imageElement.id,
+      pageId: imageElement.pageId,
+      type: imageElement.type,
+      x: this.imageElementEditDraft.currentFrame.x,
+      y: this.imageElementEditDraft.currentFrame.y,
+      width: this.imageElementEditDraft.currentFrame.width,
+      height: this.imageElementEditDraft.currentFrame.height,
+      rotation: imageElement.rotation,
+      zIndex: imageElement.zIndex,
+      createdAt: imageElement.createdAt,
+      updatedAt: imageElement.updatedAt,
+      uri: imageElement.uri,
+      originalWidth: imageElement.originalWidth,
+      originalHeight: imageElement.originalHeight,
+      opacity: imageElement.opacity,
+      outline: imageElement.outline,
+      sourceFileUri: imageElement.sourceFileUri,
+      sourceFileType: imageElement.sourceFileType
+    };
+  }
+
+  private getImageElementDraftTranslateX(element: CanvasElement): number {
+    if (this.imageElementEditDraft === null || element.type !== 'image' || element.id !== this.imageElementEditDraft.elementId) {
+      return 0;
+    }
+
+    return this.imageElementEditDraft.currentFrame.x - this.imageElementEditDraft.originalFrame.x;
+  }
+
+  private getImageElementDraftTranslateY(element: CanvasElement): number {
+    if (this.imageElementEditDraft === null || element.type !== 'image' || element.id !== this.imageElementEditDraft.elementId) {
+      return 0;
+    }
+
+    return this.imageElementEditDraft.currentFrame.y - this.imageElementEditDraft.originalFrame.y;
+  }
+
+  private getImageElementDraftScaleX(element: CanvasElement): number {
+    if (this.imageElementEditDraft === null || element.type !== 'image' || element.id !== this.imageElementEditDraft.elementId) {
+      return 1;
+    }
+
+    return this.imageElementEditDraft.currentFrame.width / Math.max(1, this.imageElementEditDraft.originalFrame.width);
+  }
+
+  private getImageElementDraftScaleY(element: CanvasElement): number {
+    if (this.imageElementEditDraft === null || element.type !== 'image' || element.id !== this.imageElementEditDraft.elementId) {
+      return 1;
+    }
+
+    return this.imageElementEditDraft.currentFrame.height / Math.max(1, this.imageElementEditDraft.originalFrame.height);
   }
 
   private getViewModel(): DrawingEditorViewModel | null {
@@ -159,6 +231,7 @@ export struct ElementLayer {
       this.viewModel = null;
       this.elements = [];
       this.selectedElementIds = [];
+      this.imageElementEditDraft = null;
       return;
     }
 
@@ -170,6 +243,7 @@ export struct ElementLayer {
 
     if (!this.autoCreateSession) {
       this.viewModel = null;
+      this.imageElementEditDraft = null;
       return;
     }
 

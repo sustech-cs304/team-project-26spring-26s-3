@@ -31,6 +31,10 @@ export struct ImageElementView {
   @Prop element: ImageCanvasElement = DEFAULT_IMAGE_ELEMENT;
   @Watch('onRenderVersionChanged')
   @Prop renderVersion: number = 0;
+  @Prop translateX: number = 0;
+  @Prop translateY: number = 0;
+  @Prop scaleX: number = 1;
+  @Prop scaleY: number = 1;
 
   @State private isOutlineCanvasReady: boolean = false;
   private readonly outlineRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
@@ -38,21 +42,31 @@ export struct ImageElementView {
 
   build() {
     Stack() {
-      Image(this.toImageSourceUri(this.element.uri))
-        .width(this.element.width)
-        .height(this.element.height)
-        .objectFit(ImageFit.Fill)
-        .opacity(this.element.opacity)
-        .hitTestBehavior(HitTestMode.None)
+      Stack() {
+        Image(this.toImageSourceUri(this.element.uri))
+          .width(this.element.width)
+          .height(this.element.height)
+          .objectFit(ImageFit.Fill)
+          .opacity(this.element.opacity)
+          .hitTestBehavior(HitTestMode.None)
 
-      Canvas(this.outlineContext)
+        Canvas(this.outlineContext)
+          .width(this.element.width)
+          .height(this.element.height)
+          .backgroundColor('#00000000')
+          .hitTestBehavior(HitTestMode.None)
+          .onReady(() => {
+            this.isOutlineCanvasReady = true;
+            this.redrawOutline();
+          })
+      }
         .width(this.element.width)
         .height(this.element.height)
-        .backgroundColor('#00000000')
-        .hitTestBehavior(HitTestMode.None)
-        .onReady(() => {
-          this.isOutlineCanvasReady = true;
-          this.redrawOutline();
+        .scale({
+          x: this.scaleX,
+          y: this.scaleY,
+          centerX: 0,
+          centerY: 0
         })
     }
       .width(this.element.width)
@@ -60,6 +74,10 @@ export struct ImageElementView {
       .position({
         x: this.element.x,
         y: this.element.y
+      })
+      .translate({
+        x: this.translateX,
+        y: this.translateY
       })
       .zIndex(this.element.zIndex)
       .hitTestBehavior(HitTestMode.None)

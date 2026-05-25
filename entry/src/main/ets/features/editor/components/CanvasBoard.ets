@@ -1137,6 +1137,7 @@ export struct CanvasBoard {
         if (point !== null && viewModel.updateElementEditGesture(point, pageBounds)) {
           this.hideSelectionContextMenu();
           this.syncEditorSnapshot();
+          this.elementLayerLocalRefreshVersion += 1;
           this.onContentChanged(false, 'element');
         }
         return;
@@ -1155,6 +1156,7 @@ export struct CanvasBoard {
       if (event.type === TouchType.Cancel) {
         viewModel.cancelElementEditGesture();
         this.syncEditorSnapshot();
+        this.elementLayerLocalRefreshVersion += 1;
         this.onContentChanged(false, 'element');
       }
       return;
