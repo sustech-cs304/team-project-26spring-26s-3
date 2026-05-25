@@ -9,7 +9,13 @@ import {
   getStrokeRenderBoundingBox
 } from '../../../common/utils/GeometryUtil';
 import { clampElementFrameToBounds } from '../../../common/utils/ElementBoundsUtil';
-import { CanvasElement, ImageCanvasElement, ShapeType, TextCanvasElement } from '../../../domain/entities/CanvasElement';
+import {
+  CanvasElement,
+  ElementOutlineLineStyle,
+  ImageCanvasElement,
+  ShapeType,
+  TextCanvasElement
+} from '../../../domain/entities/CanvasElement';
 import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { NotebookPageCanvasEntity } from '../../../domain/entities/NotebookPageCanvas';
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
@@ -100,6 +106,7 @@ const PARTIAL_REDRAW_OVERDRAW_VIEWPORT_PX = 2;
 const RECENT_COMMITTED_STROKE_LIMIT = 6;
 const RECENT_COMMITTED_IDLE_FLUSH_DELAY_MS = 420;
 type StrokeResizeUiMode = 'none' | 'ready' | 'resizing' | 'moving';
+type ElementStylePanelMode = 'none' | 'fill' | 'outline';
 const DEFAULT_VIEWPORT_WIDTH = 1600;
 const DEFAULT_VIEWPORT_HEIGHT = 900;
 const TEXT_EDIT_DOUBLE_TAP_MS = 360;
@@ -117,9 +124,26 @@ const MIN_SELECTION_MOVE_HIT_TOLERANCE_PAGE = 2;
 const MAX_SELECTION_MOVE_HIT_TOLERANCE_PAGE = 8;
 const SELECTION_MOVE_START_THRESHOLD_SCREEN_PX = 4;
 const SELECTION_MOVE_REDRAW_INTERVAL_MS = 24;
-const SELECTION_CONTEXT_MENU_WIDTH = 128;
+const SELECTION_CONTEXT_MENU_WIDTH = 144;
 const SELECTION_CONTEXT_MENU_ITEM_HEIGHT = 38;
 const SELECTION_CONTEXT_MENU_OFFSET = 8;
+const ELEMENT_STYLE_PANEL_WIDTH = 220;
+const ELEMENT_STYLE_PANEL_COLOR_OPTIONS: string[] = [
+  '#00FFFFFF',
+  '#111827',
+  '#FFFFFF',
+  '#EF4444',
+  '#F59E0B',
+  '#22C55E',
+  '#3B82F6',
+  '#8B5CF6'
+];
+const ELEMENT_OUTLINE_COLOR_OPTIONS: string[] = ['#111827', '#FFFFFF', '#EF4444', '#F59E0B', '#22C55E', '#3B82F6', '#8B5CF6'];
+const ELEMENT_OUTLINE_WIDTH_OPTIONS: number[] = [1, 2, 4, 6, 8];
+const ELEMENT_OUTLINE_WIDTH_MIN = 1;
+const ELEMENT_OUTLINE_WIDTH_MAX = 16;
+const ELEMENT_OUTLINE_WIDTH_STEP = 1;
+const ELEMENT_OUTLINE_LINE_STYLE_OPTIONS: ElementOutlineLineStyle[] = ['none', 'solid', 'dashed', 'dotted'];
 const FORMULA_EXPORT_PADDING = 16;
 const FORMULA_EXPORT_MIN_EDGE = 48;
 const VIEWPORT_INACTIVE_FAST_REDRAW_BASE_DELAY_MS = 32;
@@ -248,6 +272,12 @@ export struct CanvasBoard {
   @State private isSelectionOverlayPaused: boolean = false;
   @State private isSelectionContextMenuVisible: boolean = false;
   @State private selectionContextMenuTarget: SelectionContextMenuTarget = 'strokeGroup';
+  @State private selectionContextMenuElementId: string = '';
+  @State private elementStylePanelMode: ElementStylePanelMode = 'none';
+  @State private selectionContextFillColor: string = '#00FFFFFF';
+  @State private selectionContextOutlineLineStyle: ElementOutlineLineStyle = 'solid';
+  @State private selectionContextOutlineColor: string = '#111827';
+  @State private selectionContextOutlineWidth: number = 2;
   @State private selectionContextMenuX: number = 0;
   @State private selectionContextMenuY: number = 0;
   @State private isOcrRecognizing: boolean = false;
@@ -560,7 +590,11 @@ export struct CanvasBoard {
   @Builder
   private buildSelectionContextMenu(): void {
     Column() {
-      if (this.selectionContextMenuTarget === 'strokeGroup') {
+      if (this.elementStylePanelMode === 'fill') {
+        this.buildFillStylePanel()
+      } else if (this.elementStylePanelMode === 'outline') {
+        this.buildOutlineStylePanel()
+      } else if (this.selectionContextMenuTarget === 'strokeGroup') {
         Button('拷贝')
           .width('100%')
           .height(SELECTION_CONTEXT_MENU_ITEM_HEIGHT)
@@ -612,9 +646,17 @@ export struct CanvasBoard {
           .onClick(() => {
             this.handleSelectionContextMenuAction('delete');
           })
+      } else {
+        if (this.isSelectionContextElementShape()) {
+          this.buildSelectionMenuButton('填充', 'fill')
+        }
+        if (this.isSelectionContextElementOutlineEditable()) {
+          this.buildSelectionMenuButton('轮廓', 'outline')
+        }
+        this.buildSelectionMenuButton('删除', 'delete', '#DC2626')
       }
     }
-      .width(SELECTION_CONTEXT_MENU_WIDTH)
+      .width(this.getSelectionContextMenuWidth())
       .padding(4)
       .backgroundColor('#FFFFFF')
       .border({
@@ -627,6 +669,214 @@ export struct CanvasBoard {
         y: this.selectionContextMenuY
       })
       .zIndex(20)
+  }
+
+  @Builder
+  private buildSelectionMenuButton(
+    label: string,
+    action: SelectionAction,
+    color: string = '#111827',
+    enabled: boolean = true
+  ): void {
+    Button(label)
+      .width('100%')
+      .height(SELECTION_CONTEXT_MENU_ITEM_HEIGHT)
+      .fontSize(14)
+      .fontColor(color)
+      .backgroundColor('#00000000')
+      .enabled(enabled)
+      .onClick(() => {
+        this.handleSelectionContextMenuAction(action);
+      })
+  }
+
+  @Builder
+  private buildFillStylePanel(): void {
+    Column({ space: 8 }) {
+      Text('填充')
+        .fontSize(12)
+        .fontColor('#475569')
+        .width('100%')
+
+      Flex({ wrap: FlexWrap.Wrap }) {
+        ForEach(ELEMENT_STYLE_PANEL_COLOR_OPTIONS, (color: string) => {
+          this.buildFillColorSwatch(color)
+        }, (color: string): string => color)
+      }
+        .width('100%')
+    }
+      .width('100%')
+      .padding(4)
+  }
+
+  @Builder
+  private buildOutlineStylePanel(): void {
+    Column({ space: 10 }) {
+      Text('轮廓')
+        .fontSize(12)
+        .fontColor('#475569')
+        .width('100%')
+
+      Row({ space: 4 }) {
+        ForEach(ELEMENT_OUTLINE_LINE_STYLE_OPTIONS, (lineStyle: ElementOutlineLineStyle) => {
+          Button() {
+            this.buildOutlineLineStyleGlyph(lineStyle)
+          }
+            .layoutWeight(1)
+            .height(28)
+            .backgroundColor(this.isSelectedOutlineLineStyle(lineStyle) ? '#0F172A' : '#FFFFFF')
+            .border({
+              width: 1,
+              color: '#CBD5E1'
+            })
+            .borderRadius(8)
+            .accessibilityText(this.getOutlineLineStyleLabel(lineStyle))
+            .onClick(() => {
+              this.updateSelectionContextElementOutline(lineStyle, null, null);
+            })
+        }, (lineStyle: ElementOutlineLineStyle): string => lineStyle)
+      }
+        .width('100%')
+
+      Flex({ wrap: FlexWrap.Wrap }) {
+        ForEach(ELEMENT_OUTLINE_COLOR_OPTIONS, (color: string) => {
+          this.buildOutlineColorSwatch(color)
+        }, (color: string): string => color)
+      }
+        .width('100%')
+
+      Column({ space: 6 }) {
+        Text(`粗细 ${this.getSelectionContextOutlineWidth()}px`)
+          .fontSize(12)
+          .fontColor('#475569')
+          .width('100%')
+
+        Row({ space: 5 }) {
+          ForEach(ELEMENT_OUTLINE_WIDTH_OPTIONS, (width: number) => {
+            Button() {
+              this.buildOutlineWidthGlyph(width)
+            }
+              .layoutWeight(1)
+              .height(28)
+              .backgroundColor(this.getSelectionContextOutlineWidth() === width ? '#0F172A' : '#FFFFFF')
+              .border({
+                width: 1,
+                color: '#CBD5E1'
+              })
+              .borderRadius(8)
+              .onClick(() => {
+                this.updateSelectionContextElementOutline(null, null, width);
+              })
+          }, (width: number): string => `${width}`)
+        }
+          .width('100%')
+
+        Slider({
+          value: this.getSelectionContextOutlineWidth(),
+          min: ELEMENT_OUTLINE_WIDTH_MIN,
+          max: ELEMENT_OUTLINE_WIDTH_MAX,
+          step: ELEMENT_OUTLINE_WIDTH_STEP,
+          style: SliderStyle.OutSet
+        })
+          .showTips(false)
+          .onChange((value: number) => {
+            this.updateSelectionContextElementOutline(null, null, Math.round(value));
+          })
+      }
+        .width('100%')
+    }
+      .width('100%')
+      .padding(4)
+  }
+
+  @Builder
+  private buildFillColorSwatch(color: string): void {
+    Stack({ alignContent: Alignment.Center }) {
+      if (color === '#00FFFFFF') {
+        Text('/')
+          .fontSize(16)
+          .fontColor('#DC2626')
+      }
+    }
+      .width(24)
+      .height(24)
+      .margin({ right: 6, bottom: 6 })
+      .backgroundColor(color === '#00FFFFFF' ? '#FFFFFF' : color)
+      .borderRadius(12)
+      .border({
+        width: this.getSelectionContextFillColor() === color ? 3 : 1,
+        color: this.getSelectionContextFillColor() === color ? '#111827' : '#CBD5E1'
+      })
+      .onClick(() => {
+        this.updateSelectionContextElementFill(color);
+      })
+  }
+
+  @Builder
+  private buildOutlineColorSwatch(color: string): void {
+    Stack() {}
+      .width(24)
+      .height(24)
+      .margin({ right: 6, bottom: 6 })
+      .backgroundColor(color)
+      .borderRadius(12)
+      .border({
+        width: this.getSelectionContextOutlineColor() === color ? 3 : 1,
+        color: this.getSelectionContextOutlineColor() === color ? '#111827' : '#CBD5E1'
+      })
+      .onClick(() => {
+        this.updateSelectionContextElementOutline(null, color, null);
+      })
+  }
+
+  @Builder
+  private buildOutlineWidthGlyph(width: number): void {
+    Column() {}
+      .width(16)
+      .height(Math.max(2, Math.min(14, width)))
+      .backgroundColor(this.getSelectionContextOutlineWidth() === width ? '#FFFFFF' : '#111827')
+      .borderRadius(7)
+  }
+
+  @Builder
+  private buildOutlineLineStyleGlyph(lineStyle: ElementOutlineLineStyle): void {
+    Stack({ alignContent: Alignment.Center }) {
+      if (lineStyle === 'none') {
+        Column() {}
+          .width(22)
+          .height(2)
+          .backgroundColor(this.getOutlineLineStyleGlyphColor(lineStyle))
+          .rotate({ angle: -35 })
+      } else if (lineStyle === 'dashed') {
+        Row({ space: 3 }) {
+          ForEach([0, 1, 2], (dashIndex: number) => {
+            Column() {}
+              .width(6)
+              .height(2)
+              .backgroundColor(this.getOutlineLineStyleGlyphColor(lineStyle))
+              .borderRadius(1)
+          }, (dashIndex: number): string => `${dashIndex}`)
+        }
+      } else if (lineStyle === 'dotted') {
+        Row({ space: 4 }) {
+          ForEach([0, 1, 2, 3], (dotIndex: number) => {
+            Column() {}
+              .width(3)
+              .height(3)
+              .backgroundColor(this.getOutlineLineStyleGlyphColor(lineStyle))
+              .borderRadius(2)
+          }, (dotIndex: number): string => `${dotIndex}`)
+        }
+      } else {
+        Column() {}
+          .width(24)
+          .height(2)
+          .backgroundColor(this.getOutlineLineStyleGlyphColor(lineStyle))
+          .borderRadius(1)
+      }
+    }
+    .width('100%')
+    .height('100%')
   }
 
   @Builder
@@ -855,14 +1105,6 @@ export struct CanvasBoard {
             this.commitInlineTextEdit(true);
           }
 
-          if (viewModel.isSelectedElementDeleteHit(point, hitTolerance)) {
-            this.commitInlineTextEdit(false);
-            viewModel.deleteSelectedElement();
-            this.syncEditorSnapshot();
-            this.onContentChanged(true, 'element');
-            return;
-          }
-
           const selectedElement = viewModel.getSelectedElement();
           if (this.shouldBeginInlineTextEdit(point, selectedElement, hitTolerance)) {
             const textElement = selectedElement as TextCanvasElement;
@@ -876,7 +1118,11 @@ export struct CanvasBoard {
             }
           }
 
+          const contextMenuCandidate = viewModel.getElementContextMenuCandidate(point, hitTolerance);
           viewModel.beginElementEditGesture(point, pageBounds, hitTolerance);
+          if (contextMenuCandidate !== null) {
+            this.showElementContextMenu(contextMenuCandidate);
+          }
           this.recordEditTap(point, viewModel.getSelectedElement());
         }
 
@@ -887,6 +1133,7 @@ export struct CanvasBoard {
 
       if (event.type === TouchType.Move) {
         if (point !== null && viewModel.updateElementEditGesture(point, pageBounds)) {
+          this.hideSelectionContextMenu();
           this.syncEditorSnapshot();
           this.onContentChanged(false, 'element');
         }
@@ -1888,6 +2135,8 @@ export struct CanvasBoard {
     }
 
     this.selectionContextMenuTarget = SelectionController.getContextMenuTarget(hitResult.target);
+    this.selectionContextMenuElementId = '';
+    this.elementStylePanelMode = 'none';
     const menuHeight = this.getSelectionContextMenuHeight();
     const size = this.getCanvasSize(this.overlayContext2D);
     const transform = this.getPageViewportTransform(size);
@@ -1896,7 +2145,31 @@ export struct CanvasBoard {
     this.selectionContextMenuX = this.clamp(
       screenX + SELECTION_CONTEXT_MENU_OFFSET,
       4,
-      Math.max(4, size.width - SELECTION_CONTEXT_MENU_WIDTH - 4)
+      Math.max(4, size.width - this.getSelectionContextMenuWidth() - 4)
+    );
+    this.selectionContextMenuY = this.clamp(
+      screenY - menuHeight - SELECTION_CONTEXT_MENU_OFFSET,
+      4,
+      Math.max(4, size.height - menuHeight - 4)
+    );
+    this.isSelectionContextMenuVisible = true;
+  }
+
+  private showElementContextMenu(element: CanvasElement): void {
+    const size = this.getCanvasSize(this.overlayContext2D);
+    const transform = this.getPageViewportTransform(size);
+    this.selectionContextMenuTarget = 'element';
+    this.selectionContextMenuElementId = element.id;
+    this.elementStylePanelMode = 'none';
+    this.syncSelectionContextElementStyleState(element);
+    const menuHeight = this.getSelectionContextMenuHeight();
+    const menuWidth = this.getSelectionContextMenuWidth();
+    const screenX = transform.offsetX + (element.x + element.width) * transform.scale;
+    const screenY = transform.offsetY + element.y * transform.scale;
+    this.selectionContextMenuX = this.clamp(
+      screenX + SELECTION_CONTEXT_MENU_OFFSET,
+      4,
+      Math.max(4, size.width - menuWidth - 4)
     );
     this.selectionContextMenuY = this.clamp(
       screenY - menuHeight - SELECTION_CONTEXT_MENU_OFFSET,
@@ -1912,14 +2185,39 @@ export struct CanvasBoard {
     }
 
     this.isSelectionContextMenuVisible = false;
+    this.elementStylePanelMode = 'none';
+    this.selectionContextMenuElementId = '';
+    this.selectionContextFillColor = '#00FFFFFF';
+    this.selectionContextOutlineLineStyle = 'solid';
+    this.selectionContextOutlineColor = '#111827';
+    this.selectionContextOutlineWidth = 2;
   }
 
   private getSelectionContextMenuHeight(): number {
+    if (this.elementStylePanelMode === 'fill') {
+      return 96;
+    }
+
+    if (this.elementStylePanelMode === 'outline') {
+      return 230;
+    }
+
     if (this.selectionContextMenuTarget === 'strokeGroup') {
       return SELECTION_CONTEXT_MENU_ITEM_HEIGHT * 5 + 8;
     }
 
-    return SELECTION_CONTEXT_MENU_ITEM_HEIGHT + 8;
+    let itemCount = 1;
+    if (this.isSelectionContextElementShape()) {
+      itemCount += 1;
+    }
+    if (this.isSelectionContextElementOutlineEditable()) {
+      itemCount += 1;
+    }
+    return SELECTION_CONTEXT_MENU_ITEM_HEIGHT * itemCount + 8;
+  }
+
+  private getSelectionContextMenuWidth(): number {
+    return this.elementStylePanelMode === 'none' ? SELECTION_CONTEXT_MENU_WIDTH : ELEMENT_STYLE_PANEL_WIDTH;
   }
 
   private handleSelectionContextMenuAction(action: SelectionAction): void {
@@ -1940,6 +2238,11 @@ export struct CanvasBoard {
     }
 
     const target = this.selectionContextMenuTarget;
+    if (target === 'element') {
+      this.handleElementContextMenuAction(viewModel, action);
+      return;
+    }
+
     this.hideSelectionContextMenu();
     if (action === 'resize' && target === 'strokeGroup') {
       this.beginStrokeResizeMode(viewModel);
@@ -1962,6 +2265,162 @@ export struct CanvasBoard {
     }
     this.redrawOverlayLayer();
     this.onContentChanged(true, result.changedElements || result.elementSelectionChanged ? 'element' : 'stroke');
+  }
+
+  private handleElementContextMenuAction(viewModel: DrawingEditorViewModel, action: SelectionAction): void {
+    if (action === 'fill') {
+      if (this.isSelectionContextElementShape()) {
+        this.elementStylePanelMode = 'fill';
+        this.clampSelectionContextMenuToCanvas();
+      }
+      return;
+    }
+
+    if (action === 'outline') {
+      if (this.isSelectionContextElementOutlineEditable()) {
+        this.elementStylePanelMode = 'outline';
+        this.clampSelectionContextMenuToCanvas();
+      }
+      return;
+    }
+
+    if (action !== 'delete' || this.selectionContextMenuElementId.length === 0) {
+      this.hideSelectionContextMenu();
+      return;
+    }
+
+    const result = viewModel.deleteElementById(this.selectionContextMenuElementId);
+    this.hideSelectionContextMenu();
+    this.syncEditorSnapshot();
+    this.redrawOverlayLayer();
+    if (result.changed) {
+      this.onContentChanged(true, 'element');
+    }
+  }
+
+  private updateSelectionContextElementFill(color: string): void {
+    const viewModel = this.getViewModel();
+    if (viewModel === null || this.selectionContextMenuElementId.length === 0) {
+      return;
+    }
+
+    this.selectionContextFillColor = color;
+    const result = viewModel.updateShapeFillColorById(this.selectionContextMenuElementId, color);
+    this.syncEditorSnapshot();
+    this.redrawOverlayLayer();
+    if (result.changed) {
+      this.onContentChanged(true, 'element');
+    }
+  }
+
+  private updateSelectionContextElementOutline(
+    lineStyle: ElementOutlineLineStyle | null,
+    color: string | null,
+    width: number | null
+  ): void {
+    const viewModel = this.getViewModel();
+    if (viewModel === null || this.selectionContextMenuElementId.length === 0) {
+      return;
+    }
+
+    const currentElement = this.getSelectionContextElement();
+    const nextLineStyle = lineStyle ?? (
+      currentElement !== null && currentElement.type !== 'text' && currentElement.outline.lineStyle === 'none' &&
+        (color !== null || width !== null) ? 'solid' : null
+    );
+    this.selectionContextOutlineLineStyle = nextLineStyle ?? this.selectionContextOutlineLineStyle;
+    this.selectionContextOutlineColor = color ?? this.selectionContextOutlineColor;
+    this.selectionContextOutlineWidth = width ?? this.selectionContextOutlineWidth;
+    const result = viewModel.updateElementOutlineById(this.selectionContextMenuElementId, {
+      lineStyle: nextLineStyle ?? undefined,
+      color: color ?? undefined,
+      width: width ?? undefined
+    });
+    this.syncEditorSnapshot();
+    this.redrawOverlayLayer();
+    if (result.changed) {
+      this.onContentChanged(true, 'element');
+    }
+  }
+
+  private getSelectionContextElement(): CanvasElement | null {
+    const viewModel = this.getViewModel();
+    if (viewModel === null || this.selectionContextMenuElementId.length === 0) {
+      return null;
+    }
+
+    return viewModel.getElementForRendering(this.selectionContextMenuElementId);
+  }
+
+  private isSelectionContextElementShape(): boolean {
+    return this.getSelectionContextElement()?.type === 'shape';
+  }
+
+  private isSelectionContextElementOutlineEditable(): boolean {
+    const element = this.getSelectionContextElement();
+    return element !== null && (element.type === 'shape' || element.type === 'image');
+  }
+
+  private getSelectionContextFillColor(): string {
+    return this.selectionContextFillColor;
+  }
+
+  private getSelectionContextOutlineColor(): string {
+    return this.selectionContextOutlineColor;
+  }
+
+  private getSelectionContextOutlineWidth(): number {
+    return Math.max(0, Math.round(this.selectionContextOutlineWidth));
+  }
+
+  private isSelectedOutlineLineStyle(lineStyle: ElementOutlineLineStyle): boolean {
+    return this.selectionContextOutlineLineStyle === lineStyle;
+  }
+
+  private getOutlineLineStyleGlyphColor(lineStyle: ElementOutlineLineStyle): string {
+    return this.isSelectedOutlineLineStyle(lineStyle) ? '#FFFFFF' : '#111827';
+  }
+
+  private syncSelectionContextElementStyleState(element: CanvasElement): void {
+    this.selectionContextFillColor = element.type === 'shape' ? element.fillColor : '#00FFFFFF';
+    if (element.type === 'text') {
+      this.selectionContextOutlineLineStyle = 'solid';
+      this.selectionContextOutlineColor = '#111827';
+      this.selectionContextOutlineWidth = 2;
+      return;
+    }
+
+    this.selectionContextOutlineLineStyle = element.outline.lineStyle;
+    this.selectionContextOutlineColor = element.outline.color;
+    this.selectionContextOutlineWidth = element.outline.width;
+  }
+
+  private getOutlineLineStyleLabel(lineStyle: ElementOutlineLineStyle): string {
+    switch (lineStyle) {
+      case 'none':
+        return '无';
+      case 'dashed':
+        return '虚线';
+      case 'dotted':
+        return '点线';
+      case 'solid':
+      default:
+        return '实线';
+    }
+  }
+
+  private clampSelectionContextMenuToCanvas(): void {
+    const size = this.getCanvasSize(this.overlayContext2D);
+    this.selectionContextMenuX = this.clamp(
+      this.selectionContextMenuX,
+      4,
+      Math.max(4, size.width - this.getSelectionContextMenuWidth() - 4)
+    );
+    this.selectionContextMenuY = this.clamp(
+      this.selectionContextMenuY,
+      4,
+      Math.max(4, size.height - this.getSelectionContextMenuHeight() - 4)
+    );
   }
 
   private async handleOcrRecognitionAction(): Promise<void> {

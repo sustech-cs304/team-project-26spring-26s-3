@@ -23,6 +23,7 @@ import { now } from '../../../common/utils/TimeUtil';
 import { EditorRepositoryImpl } from '../../../data/repositories/EditorRepositoryImpl';
 import {
   CanvasElement,
+  ElementOutlineStyle,
   ImageCanvasElement,
   PAGE_CANVAS_CONTENT_VERSION,
   PageCanvasContent,
@@ -148,8 +149,16 @@ const SAVE_DEBOUNCE_MS = 900;
 const INTERACTION_SAVE_DEBOUNCE_MS = 180;
 const EDITOR_BUILD_MARKER = 'editor-build-2026-04-20-state-link-sync-v1';
 const DEFAULT_TEXT_ELEMENT_TOP_OFFSET = 24;
-const DEFAULT_SHAPE_STROKE_COLOR = '#111827';
-const DEFAULT_SHAPE_STROKE_WIDTH = 2;
+const DEFAULT_SHAPE_OUTLINE: ElementOutlineStyle = {
+  lineStyle: 'solid',
+  color: '#111827',
+  width: 2
+};
+const DEFAULT_IMAGE_OUTLINE: ElementOutlineStyle = {
+  lineStyle: 'none',
+  color: '#111827',
+  width: 2
+};
 const MIN_SHAPE_DRAG_DISTANCE = 8;
 const ELEMENT_LINE_HIT_TOLERANCE = 8;
 const MIN_TEXT_FONT_SIZE = 8;
@@ -598,6 +607,22 @@ export class DrawingEditorViewModel {
     return selectedElement === undefined ? null : this.cloneElement(selectedElement);
   }
 
+  getElementForRendering(elementId: string): CanvasElement | null {
+    const element = this.getElementById(elementId);
+    return element === null ? null : this.cloneElement(element);
+  }
+
+  getElementContextMenuCandidate(point: StrokePoint, hitTolerance: number): CanvasElement | null {
+    for (const selectedElement of this.getSelectedElementsInZOrderDescending()) {
+      if (this.hitTestElementEditHandle(point, selectedElement, hitTolerance) !== null) {
+        return null;
+      }
+    }
+
+    const hitElement = this.hitTestElement(point);
+    return hitElement === null ? null : this.cloneElement(hitElement);
+  }
+
   selectElement(elementId: string): CanvasElement | null {
     if (elementId.length === 0) {
       this.clearElementSelection();
@@ -655,28 +680,11 @@ export class DrawingEditorViewModel {
       this.elements.some((element: CanvasElement): boolean => this.selectedElementIds.includes(element.id));
   }
 
-  isSelectedElementDeleteHit(point: StrokePoint, hitTolerance: number): boolean {
-    const radius = Math.max(12, hitTolerance);
-    const selectedElements = this.getSelectedElementsInZOrderDescending();
-    for (const selectedElement of selectedElements) {
-      const center = this.getDeleteButtonCenter(selectedElement);
-      const deltaX = point.x - center.x;
-      const deltaY = point.y - center.y;
-      if (Math.sqrt(deltaX * deltaX + deltaY * deltaY) <= radius) {
-        this.selectedElementId = selectedElement.id;
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  deleteSelectedElement(): CanvasElement | null {
+  deleteElementById(elementId: string): SelectionActionResult {
     const beforeSelection = this.getCurrentSelectionSnapshot();
-    const selectedElement = this.getElementById(this.selectedElementId);
+    const selectedElement = this.getElementById(elementId);
     if (selectedElement === null) {
-      this.clearElementSelection();
-      return null;
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
     }
 
     const selectedElementIndex = this.getElementIndexById(selectedElement.id);
@@ -694,7 +702,53 @@ export class DrawingEditorViewModel {
     this.schedulePersistCurrentStrokes('elementDelete', 0);
     this.errorMessage = '';
     this.appendDebugEvent('deleteElement', `element=${selectedElement.id} type=${selectedElement.type}`);
-    return this.cloneElement(selectedElement);
+    return {
+      changed: true,
+      changedStrokes: false,
+      changedElements: true,
+      elementSelectionChanged: true
+    };
+  }
+
+  updateShapeFillColorById(elementId: string, fillColor: string): SelectionActionResult {
+    const element = this.getElementById(elementId);
+    if (element === null || element.type !== 'shape' || element.fillColor === fillColor) {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    const nextElement: ShapeCanvasElement = {
+      ...this.cloneShapeElement(element),
+      fillColor,
+      updatedAt: now()
+    };
+    return this.replaceElementWithDelta('elementStyle', element, nextElement, 'elementStyle');
+  }
+
+  updateElementOutlineById(elementId: string, patch: Partial<ElementOutlineStyle>): SelectionActionResult {
+    const element = this.getElementById(elementId);
+    if (element === null || element.type === 'text') {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    const nextOutline: ElementOutlineStyle = {
+      lineStyle: patch.lineStyle ?? element.outline.lineStyle,
+      color: patch.color ?? element.outline.color,
+      width: Math.max(0, patch.width ?? element.outline.width)
+    };
+    if (JSON.stringify(nextOutline) === JSON.stringify(element.outline)) {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    const nextElement: CanvasElement = element.type === 'shape' ? {
+      ...this.cloneShapeElement(element),
+      outline: nextOutline,
+      updatedAt: now()
+    } : {
+      ...this.cloneImageElement(element),
+      outline: nextOutline,
+      updatedAt: now()
+    };
+    return this.replaceElementWithDelta('elementStyle', element, nextElement, 'elementStyle');
   }
 
   beginLassoSelection(point: StrokePoint): void {
@@ -1046,8 +1100,7 @@ export class DrawingEditorViewModel {
 
     this.selectedElementId = hitElement.id;
     if (!this.selectedElementIds.includes(hitElement.id)) {
-      this.selectedElementIds = [hitElement.id];
-      this.selectedStrokeTargets = [];
+      this.selectedElementIds = [...this.selectedElementIds, hitElement.id];
       this.selectionVersion += 1;
     }
     this.elementEditGesture = {
@@ -1199,7 +1252,8 @@ export class DrawingEditorViewModel {
       uri: asset.uri,
       originalWidth: asset.originalWidth,
       originalHeight: asset.originalHeight,
-      opacity: 1
+      opacity: 1,
+      outline: { ...DEFAULT_IMAGE_OUTLINE }
     };
 
     const insertionIndex = this.elements.length;
@@ -1338,9 +1392,8 @@ export class DrawingEditorViewModel {
       updatedAt: timestamp,
       shapeType: draft.shapeType,
       geometry: this.buildShapeGeometry(draft.shapeType, startPoint, currentPoint),
-      strokeColor: DEFAULT_SHAPE_STROKE_COLOR,
       fillColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR,
-      strokeWidth: DEFAULT_SHAPE_STROKE_WIDTH,
+      outline: { ...DEFAULT_SHAPE_OUTLINE },
       opacity
     };
   }
@@ -2143,9 +2196,112 @@ export class DrawingEditorViewModel {
       return this.buildResizedTextElement(gesture.originalElement, gesture.kind, targetFrame, bounds);
     }
 
-    const minSize = gesture.originalElement.type === 'image' ? MIN_IMAGE_ELEMENT_SIZE : MIN_SHAPE_ELEMENT_SIZE;
-    const frame = this.clampFrameWithMinimumSize(targetFrame, bounds, minSize, minSize);
+    if (gesture.originalElement.type === 'image') {
+      return this.buildAspectRatioResizedImageElement(gesture.originalElement, gesture.kind, targetFrame, bounds);
+    }
+
+    const frame = this.clampFrameWithMinimumSize(targetFrame, bounds, MIN_SHAPE_ELEMENT_SIZE, MIN_SHAPE_ELEMENT_SIZE);
     return this.cloneElementWithFrame(gesture.originalElement, frame);
+  }
+
+  private buildAspectRatioResizedImageElement(
+    originalElement: ImageCanvasElement,
+    kind: ElementEditGestureKind,
+    targetFrame: ElementFrame,
+    bounds: ElementBounds
+  ): ImageCanvasElement {
+    const aspectRatio = this.getImageAspectRatio(originalElement);
+    let width = Math.max(MIN_IMAGE_ELEMENT_SIZE, targetFrame.width);
+    let height = Math.max(MIN_IMAGE_ELEMENT_SIZE, targetFrame.height);
+
+    if (kind === 'resizeLeft' || kind === 'resizeRight') {
+      height = width / aspectRatio;
+    } else if (kind === 'resizeTop' || kind === 'resizeBottom') {
+      width = height * aspectRatio;
+    } else if (width / Math.max(1, height) > aspectRatio) {
+      width = height * aspectRatio;
+    } else {
+      height = width / aspectRatio;
+    }
+
+    const constrainedSize = this.constrainImageSizeToBounds(width, height, aspectRatio, bounds);
+    width = constrainedSize.width;
+    height = constrainedSize.height;
+
+    const frame = clampElementFrameToBounds({
+      x: this.resolveAspectResizeX(originalElement, kind, width),
+      y: this.resolveAspectResizeY(originalElement, kind, height),
+      width,
+      height
+    }, bounds);
+    return this.cloneElementWithFrame(originalElement, frame) as ImageCanvasElement;
+  }
+
+  private getImageAspectRatio(element: ImageCanvasElement): number {
+    if (element.originalWidth > 0 && element.originalHeight > 0) {
+      return element.originalWidth / element.originalHeight;
+    }
+
+    return Math.max(1, element.width) / Math.max(1, element.height);
+  }
+
+  private constrainImageSizeToBounds(
+    width: number,
+    height: number,
+    aspectRatio: number,
+    bounds: ElementBounds
+  ): ElementBounds {
+    const maxWidth = Math.max(MIN_IMAGE_ELEMENT_SIZE, bounds.width);
+    const maxHeight = Math.max(MIN_IMAGE_ELEMENT_SIZE, bounds.height);
+    let nextWidth = Math.max(MIN_IMAGE_ELEMENT_SIZE, width);
+    let nextHeight = Math.max(MIN_IMAGE_ELEMENT_SIZE, height);
+    const scale = Math.min(1, maxWidth / nextWidth, maxHeight / nextHeight);
+    nextWidth *= scale;
+    nextHeight *= scale;
+
+    if (nextWidth < MIN_IMAGE_ELEMENT_SIZE) {
+      nextWidth = MIN_IMAGE_ELEMENT_SIZE;
+      nextHeight = nextWidth / aspectRatio;
+    }
+    if (nextHeight < MIN_IMAGE_ELEMENT_SIZE) {
+      nextHeight = MIN_IMAGE_ELEMENT_SIZE;
+      nextWidth = nextHeight * aspectRatio;
+    }
+
+    return {
+      width: Math.min(maxWidth, nextWidth),
+      height: Math.min(maxHeight, nextHeight)
+    };
+  }
+
+  private resolveAspectResizeX(
+    originalElement: ImageCanvasElement,
+    kind: ElementEditGestureKind,
+    width: number
+  ): number {
+    if (kind === 'resizeTopLeft' || kind === 'resizeBottomLeft' || kind === 'resizeLeft') {
+      return originalElement.x + originalElement.width - width;
+    }
+    if (kind === 'resizeTop' || kind === 'resizeBottom') {
+      return originalElement.x + originalElement.width / 2 - width / 2;
+    }
+
+    return originalElement.x;
+  }
+
+  private resolveAspectResizeY(
+    originalElement: ImageCanvasElement,
+    kind: ElementEditGestureKind,
+    height: number
+  ): number {
+    if (kind === 'resizeTopLeft' || kind === 'resizeTopRight' || kind === 'resizeTop') {
+      return originalElement.y + originalElement.height - height;
+    }
+    if (kind === 'resizeLeft' || kind === 'resizeRight') {
+      return originalElement.y + originalElement.height / 2 - height / 2;
+    }
+
+    return originalElement.y;
   }
 
   private buildResizeFrame(
@@ -3110,6 +3266,35 @@ export class DrawingEditorViewModel {
     );
   }
 
+  private replaceElementWithDelta(
+    label: EditorDeltaLabel,
+    originalElement: CanvasElement,
+    nextElement: CanvasElement,
+    persistenceLabel: string
+  ): SelectionActionResult {
+    const beforeSelection = this.getCurrentSelectionSnapshot();
+    const elementIndex = this.getElementIndexById(originalElement.id);
+    this.replaceElementInMemory(nextElement);
+    this.recordElementDelta(label, [{
+      index: elementIndex,
+      element: this.cloneElement(originalElement)
+    }], [{
+      index: elementIndex,
+      element: this.cloneElement(nextElement)
+    }], beforeSelection, this.getCurrentSelectionSnapshot());
+    this.changeSequence += 1;
+    this.persistenceStatus = `pending ${persistenceLabel} save`;
+    this.schedulePersistCurrentStrokes(persistenceLabel, 0);
+    this.errorMessage = '';
+    this.appendDebugEvent(persistenceLabel, `element=${nextElement.id} type=${nextElement.type}`);
+    return {
+      changed: true,
+      changedStrokes: false,
+      changedElements: true,
+      elementSelectionChanged: false
+    };
+  }
+
   private getElementIndexById(elementId: string): number {
     const elementIndex = this.elements.findIndex((element: CanvasElement): boolean => element.id === elementId);
     return elementIndex < 0 ? this.elements.length : elementIndex;
@@ -3677,7 +3862,7 @@ export class DrawingEditorViewModel {
         minY: Math.min(startPoint.y, endPoint.y),
         maxX: Math.max(startPoint.x, endPoint.x),
         maxY: Math.max(startPoint.y, endPoint.y)
-      }, Math.max(ELEMENT_LINE_HIT_TOLERANCE, element.strokeWidth));
+      }, Math.max(ELEMENT_LINE_HIT_TOLERANCE, element.outline.width));
     }
 
     return {
@@ -3777,22 +3962,6 @@ export class DrawingEditorViewModel {
   private getElementById(elementId: string): CanvasElement | null {
     const element = this.elements.find((candidate: CanvasElement): boolean => candidate.id === elementId);
     return element === undefined ? null : element;
-  }
-
-  private getDeleteButtonCenter(element: CanvasElement): ShapeGeometryPoint {
-    if (element.type === 'shape' && element.shapeType === 'line' && element.geometry.points.length >= 2) {
-      const startPoint = element.geometry.points[0];
-      const endPoint = element.geometry.points[1];
-      return {
-        x: Math.max(startPoint.x, endPoint.x) - 8,
-        y: Math.min(startPoint.y, endPoint.y) + 8
-      };
-    }
-
-    return {
-      x: element.x + Math.max(12, element.width - 18),
-      y: element.y + 18
-    };
   }
 
   private areElementsEquivalent(left: CanvasElement, right: CanvasElement): boolean {
@@ -3917,10 +4086,17 @@ export class DrawingEditorViewModel {
       updatedAt: element.updatedAt,
       shapeType: element.shapeType,
       geometry: this.cloneShapeGeometry(element.geometry),
-      strokeColor: element.strokeColor,
       fillColor: element.fillColor,
-      strokeWidth: element.strokeWidth,
+      outline: this.cloneElementOutline(element.outline),
       opacity: element.opacity
+    };
+  }
+
+  private cloneElementOutline(outline: ElementOutlineStyle): ElementOutlineStyle {
+    return {
+      lineStyle: outline.lineStyle,
+      color: outline.color,
+      width: outline.width
     };
   }
 
@@ -3952,7 +4128,8 @@ export class DrawingEditorViewModel {
       uri: element.uri,
       originalWidth: element.originalWidth,
       originalHeight: element.originalHeight,
-      opacity: element.opacity
+      opacity: element.opacity,
+      outline: this.cloneElementOutline(element.outline)
     };
   }
 

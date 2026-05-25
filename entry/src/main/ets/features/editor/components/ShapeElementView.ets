@@ -24,9 +24,12 @@ const DEFAULT_SHAPE_ELEMENT: ShapeCanvasElement = {
       { x: 1, y: 1 }
     ]
   },
-  strokeColor: '#111827',
   fillColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR,
-  strokeWidth: 2,
+  outline: {
+    lineStyle: 'solid',
+    color: '#111827',
+    width: 2
+  },
   opacity: 1
 };
 
@@ -88,6 +91,6 @@ export struct ShapeElementView {
   }
 
   private getRenderPadding(): number {
-    return Math.max(1, this.element.strokeWidth) / 2 + 2;
+    return Math.max(1, this.element.outline.width) / 2 + 2;
   }
 }

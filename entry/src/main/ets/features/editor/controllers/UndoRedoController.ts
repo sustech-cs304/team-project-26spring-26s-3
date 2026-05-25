@@ -1,6 +1,7 @@
 import { Stroke, StrokePoint, StrokeStyle } from '../../../domain/entities/Stroke';
 import {
   CanvasElement,
+  ElementOutlineStyle,
   ImageCanvasElement,
   ShapeCanvasElement,
   ShapeGeometry,
@@ -19,6 +20,7 @@ export type EditorDeltaLabel =
   'resize' |
   'elementInsert' |
   'elementEdit' |
+  'elementStyle' |
   'elementDelete' |
   'textEdit';
 
@@ -506,10 +508,17 @@ export class UndoRedoController {
       updatedAt: element.updatedAt,
       shapeType: element.shapeType,
       geometry: this.cloneShapeGeometry(element.geometry),
-      strokeColor: element.strokeColor,
       fillColor: element.fillColor,
-      strokeWidth: element.strokeWidth,
+      outline: this.cloneElementOutline(element.outline),
       opacity: element.opacity
+    };
+  }
+
+  private cloneElementOutline(outline: ElementOutlineStyle): ElementOutlineStyle {
+    return {
+      lineStyle: outline.lineStyle,
+      color: outline.color,
+      width: outline.width
     };
   }
 
@@ -541,7 +550,8 @@ export class UndoRedoController {
       uri: element.uri,
       originalWidth: element.originalWidth,
       originalHeight: element.originalHeight,
-      opacity: element.opacity
+      opacity: element.opacity,
+      outline: this.cloneElementOutline(element.outline)
     };
   }
 
