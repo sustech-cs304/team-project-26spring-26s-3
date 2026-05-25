@@ -1492,6 +1492,21 @@ export class DrawingEditorViewModel {
     await this.persistCurrentStrokes('flush');
   }
 
+  requestDeferredSave(reason: string = 'deferred'): void {
+    if (this.pageId.length === 0) {
+      return;
+    }
+
+    if (!this.isPersisting &&
+      !this.hasQueuedPersistence &&
+      this.saveTimerId < 0 &&
+      this.changeSequence === this.lastPersistedChangeSequence) {
+      return;
+    }
+
+    this.schedulePersistCurrentStrokes(reason, INTERACTION_SAVE_DEBOUNCE_MS);
+  }
+
   private beginErase(point: StrokePoint): void {
     this.strokeController.cancelStroke();
     this.activeErasePath = [this.clonePoint(point)];

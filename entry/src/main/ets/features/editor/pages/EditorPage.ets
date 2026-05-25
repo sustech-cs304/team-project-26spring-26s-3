@@ -9,7 +9,7 @@ import { NotebookPage, NotebookPageTemplateType } from '../../../domain/entities
 import { ShapeType } from '../../../domain/entities/CanvasElement';
 import { NotebookPageCanvas, NotebookPageCanvasEntity } from '../../../domain/entities/NotebookPageCanvas';
 import { ToolSetting, ToolType } from '../../../domain/entities/ToolSetting';
-import { CanvasBoard, CanvasBoardContentChangeKind } from '../components/CanvasBoard';
+import { CanvasBoard, CanvasBoardContentChangeKind, CanvasInputMode } from '../components/CanvasBoard';
 import { PageThumbnailCanvas } from '../components/PageThumbnailCanvas';
 import {
   createEmptyPageThumbnailRenderSnapshot,
@@ -60,9 +60,13 @@ const DOCUMENT_PAGE_HEADER_HEIGHT = 28;
 const DOCUMENT_PAGE_SURFACE_MAX_WIDTH = 980;
 const DOCUMENT_PAGE_SURFACE_MIN_WIDTH = 320;
 const DOCUMENT_PAGE_RENDER_WINDOW_PADDING_FACTOR = 1.25;
+const DOCUMENT_PAGE_EDITABLE_WINDOW_PADDING_FACTOR = 1.25;
 const DOCUMENT_ZOOM_MIN_SCALE = 0.6;
 const DOCUMENT_ZOOM_MAX_SCALE = 2.8;
+const DOCUMENT_ZOOM_COMMIT_EPSILON = 0.015;
 const DOCUMENT_GESTURE_PREVIEW_INTERVAL_MS = 16;
+const DOCUMENT_NAVIGATION_FOCUS_INTERVAL_MS = 48;
+const ACTIVE_PAGE_CANVAS_LOAD_DELAY_MS = 360;
 const DOCUMENT_SINGLE_FINGER_PAN_THRESHOLD_SCREEN_PX = 4;
 const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser', 'lasso', 'text', 'shape', 'edit'];
 const SHAPE_TOOL_OPTIONS: ShapeType[] = ['rectangle', 'circle', 'line'];
@@ -140,6 +144,8 @@ struct EditorPage {
   @State private hasMissingNotebookId: boolean = false;
   @State private isNotebookMissing: boolean = false;
   @State private toolSetting: ToolSetting = this.buildDefaultToolSetting();
+  @State private canvasInputMode: CanvasInputMode = 'stylus';
+  @State private focusedPageId: string = '';
   private lastWritingTool: ToolType = 'pen';
   @State private selectedShapeType: ShapeType = 'rectangle';
   @State private editorSnapshot: EditorDebugSnapshot = this.buildEmptySnapshot('');
@@ -150,7 +156,7 @@ struct EditorPage {
   @State private isToolDropdownVisible: boolean = false;
   @State private isShapeDropdownVisible: boolean = false;
   @State private isPageTemplateDropdownVisible: boolean = false;
-  @State private isDocumentTouchNavigationActive: boolean = false;
+  private isDocumentTouchNavigationActive: boolean = false;
   @State private workspaceViewportWidth: number = 0;
   @State private workspaceViewportHeight: number = 0;
   @State private documentZoomScale: number = 1;
@@ -160,11 +166,19 @@ struct EditorPage {
   @State private documentGesturePreviewOffsetX: number = 0;
   @State private documentGesturePreviewOffsetY: number = 0;
   @State private documentViewportRefreshVersion: number = 0;
+  @State private hasWorkspaceViewport: boolean = false;
+  @State private retainedEditablePageVersion: number = 0;
   private workspaceViewportWindowX: number = 0;
   private workspaceViewportWindowY: number = 0;
   private readonly pageCanvasRenderSizeMap: Map<string, PageCanvasRenderSize> = new Map<string, PageCanvasRenderSize>();
+  private readonly pageCanvasByPageId: Map<string, NotebookPageCanvas> = new Map<string, NotebookPageCanvas>();
+  private readonly knownPageCanvasMetadataPageIds: Set<string> = new Set<string>();
+  private readonly retainedEditablePageIds: Set<string> = new Set<string>();
+  private readonly canvasVersionByPageId: Map<string, number> = new Map<string, number>();
   private thumbnailRenderTimerId: number = -1;
+  private activePageCanvasLoadTimerId: number = -1;
   private lastThumbnailRenderTime: number = 0;
+  private lastNavigationFocusUpdateTime: number = 0;
   private documentGestureStartZoomScale: number = 1;
   private documentGestureStartHorizontalOffset: number = 0;
   private documentGestureStartScrollOffsetY: number = 0;
@@ -199,10 +213,12 @@ struct EditorPage {
 
   aboutToDisappear(): void {
     this.clearScheduledThumbnailRender();
+    this.clearScheduledActivePageCanvasLoad();
     void this.flushActiveDrawingSession();
     EditorSessionRegistry.clearAll();
     this.drawingViewModel = null;
     this.currentDrawingPageId = '';
+    this.focusedPageId = '';
     this.isToolDropdownVisible = false;
     this.isShapeDropdownVisible = false;
     this.isPageTemplateDropdownVisible = false;
@@ -540,18 +556,18 @@ struct EditorPage {
         .borderRadius(18)
         .border({
           width: 1,
-          color: page.id === this.activePageId ? $r('app.color.editor_accent') :
+          color: this.isPageVisuallySelected(page.id) ? $r('app.color.editor_accent') :
             $r('app.color.editor_paper_border')
         })
 
         Text(this.getPageOrderText(page.id, pageIndex))
           .fontSize(12)
           .fontWeight(FontWeight.Medium)
-          .fontColor(page.id === this.activePageId ? '#FFFFFF' : $r('app.color.primary_text'))
+          .fontColor(this.isPageVisuallySelected(page.id) ? '#FFFFFF' : $r('app.color.primary_text'))
           .width(24)
           .height(24)
           .textAlign(TextAlign.Center)
-          .backgroundColor(page.id === this.activePageId ? $r('app.color.editor_accent') : '#FFFFFF')
+          .backgroundColor(this.isPageVisuallySelected(page.id) ? $r('app.color.editor_accent') : '#FFFFFF')
           .borderRadius(6)
           .margin({
             right: 8,
@@ -583,7 +599,7 @@ struct EditorPage {
     .backgroundColor(this.getPageThumbnailBackgroundColor(page))
     .borderRadius(22)
     .border({
-      width: page.id === this.activePageId ? 2 : 1,
+      width: 2,
       color: this.getPageThumbnailBorderColor(page)
     })
   }
@@ -637,6 +653,8 @@ struct EditorPage {
                 })
 
               this.buildPageTemplateToolbarButton()
+
+              this.buildInputModeToggleButton()
             }
             .alignItems(VerticalAlign.Center)
 
@@ -799,6 +817,8 @@ struct EditorPage {
 
       if (this.notebookPageList.length === 0) {
         this.buildWorkspaceEmptyState()
+      } else if (!this.isWorkspaceViewportReady()) {
+        this.buildWorkspaceLoadingState()
       } else {
         Row() {
           this.buildPaperSurface()
@@ -812,6 +832,9 @@ struct EditorPage {
     .width('100%')
     .clip(true)
     .zIndex(0)
+    .onAreaChange((_oldValue: Area, newValue: Area) => {
+      this.handleWorkspaceAreaChange(newValue);
+    })
     .onClick(() => {
       this.closeTransientDropdowns();
     })
@@ -1092,8 +1115,8 @@ struct EditorPage {
         y: this.getDocumentContentOffsetY()
       })
       .scale({
-        x: this.documentGesturePreviewScale,
-        y: this.documentGesturePreviewScale,
+        x: this.getDocumentVisualScale(),
+        y: this.getDocumentVisualScale(),
         centerX: 0,
         centerY: 0
       })
@@ -1109,9 +1132,6 @@ struct EditorPage {
       width: 1,
       color: $r('app.color.editor_paper_border')
     })
-    .onAreaChange((_oldValue: Area, newValue: Area) => {
-      this.handleWorkspaceAreaChange(newValue);
-    })
     .onTouch((event: TouchEvent) => {
       this.handleDocumentSurfaceTouch(event);
     })
@@ -1124,30 +1144,29 @@ struct EditorPage {
         Text(this.getPageOrderText(page.id, pageIndex))
           .fontSize(12)
           .fontWeight(FontWeight.Medium)
-          .fontColor(this.isDocumentPageActive(page.id) ? '#FFFFFF' : '#475569')
+          .fontColor(this.isPageVisuallySelected(page.id) ? '#FFFFFF' : '#475569')
           .padding({
             left: 10,
             right: 10,
             top: 5,
             bottom: 5
           })
-          .backgroundColor(this.isDocumentPageActive(page.id) ? $r('app.color.editor_accent') : '#FFFFFF')
+          .backgroundColor(this.isPageVisuallySelected(page.id) ? $r('app.color.editor_accent') : '#FFFFFF')
           .borderRadius(999)
 
-        if (this.isDocumentPageActive(page.id)) {
-          Text('Current')
-            .fontSize(11)
-            .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.editor_accent'))
-            .padding({
-              left: 8,
-              right: 8,
-              top: 4,
-              bottom: 4
-            })
-            .backgroundColor($r('app.color.editor_accent_soft'))
-            .borderRadius(999)
-        }
+        Text('Current')
+          .fontSize(11)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.editor_accent'))
+          .padding({
+            left: 8,
+            right: 8,
+            top: 4,
+            bottom: 4
+          })
+          .backgroundColor($r('app.color.editor_accent_soft'))
+          .borderRadius(999)
+          .opacity(this.isPageVisuallySelected(page.id) ? 1 : 0)
 
         Blank()
           .layoutWeight(1)
@@ -1163,10 +1182,22 @@ struct EditorPage {
           .backgroundColor(this.getPageFrameBackgroundColor(page.id))
           .borderRadius(24)
 
+        if (this.shouldRenderDocumentPagePreviewBacking(page.id)) {
+          PageThumbnailCanvas({
+            snapshot: this.buildPageThumbnailSnapshot(page),
+            renderTick: this.thumbnailRenderTick,
+            onNeedSnapshot: (pageId: string): void => {
+              this.requestThumbnailSnapshot(pageId);
+            }
+          })
+            .width('100%')
+            .height('100%')
+        }
+
         if (this.shouldRenderEditableDocumentPage(page.id)) {
           CanvasBoard({
             pageId: page.id,
-            canvasVersion: this.canvasVersion,
+            canvasVersion: this.getCanvasVersionForPage(page.id),
             viewportRefreshVersion: this.documentViewportRefreshVersion,
             elementVersion: this.elementLayerRefreshVersion,
             selectedShapeType: this.selectedShapeType,
@@ -1175,7 +1206,9 @@ struct EditorPage {
             pageWidth: this.getPageCanvasWidth(page.id),
             pageHeight: this.getPageCanvasHeight(page.id),
             toolSetting: this.toolSetting,
+            inputMode: this.canvasInputMode,
             isActivePage: this.isDocumentPageActive(page.id),
+            autoLoadSession: this.shouldAutoLoadDocumentPageSession(page.id),
             editorSnapshot: $editorSnapshot,
             onPageInteractionStart: (pageId: string): void => {
               this.activateDocumentPageForInteraction(pageId);
@@ -1234,8 +1267,8 @@ struct EditorPage {
       .borderRadius(24)
       .clip(true)
       .border({
-        width: this.isDocumentPageActive(page.id) ? 2 : 1,
-        color: this.isDocumentPageActive(page.id) ? $r('app.color.editor_accent') : $r('app.color.editor_paper_border')
+        width: 2,
+        color: this.isPageVisuallySelected(page.id) ? $r('app.color.editor_accent') : $r('app.color.editor_paper_border')
       })
       .shadow({
         radius: 18,
@@ -1326,6 +1359,28 @@ struct EditorPage {
     .enabled(!this.isUpdatingPageTemplate && !this.isCanvasLoading)
     .onClick(() => {
       this.togglePageTemplateDropdown();
+    })
+  }
+
+  @Builder
+  private buildInputModeToggleButton(): void {
+    Button(this.getInputModeButtonLabel())
+    .height(32)
+    .padding({
+      left: 10,
+      right: 10
+    })
+    .fontSize(12)
+    .backgroundColor(this.canvasInputMode === 'touch' ? '#0F172A' : '#FFFFFF')
+    .fontColor(this.canvasInputMode === 'touch' ? '#FFFFFF' : '#475569')
+    .borderRadius(10)
+    .border({
+      width: 1,
+      color: this.canvasInputMode === 'touch' ? '#0F172A' : '#CBD5E1'
+    })
+    .enabled(!this.isCanvasLoading)
+    .onClick(() => {
+      this.toggleCanvasInputMode();
     })
   }
 
@@ -1678,6 +1733,42 @@ struct EditorPage {
       this.ensureThumbnailStore().retainPages(this.notebookPageList.map((page: NotebookPage): string => page.id));
     } catch (_error) {
     }
+    this.prunePageCachesForCurrentPageList();
+  }
+
+  private prunePageCachesForCurrentPageList(): void {
+    const pageIdSet: Set<string> = new Set<string>(this.notebookPageList.map((page: NotebookPage): string => page.id));
+    for (const pageId of Array.from(this.pageCanvasByPageId.keys())) {
+      if (!pageIdSet.has(pageId)) {
+        this.pageCanvasByPageId.delete(pageId);
+      }
+    }
+    for (const pageId of Array.from(this.pageCanvasRenderSizeMap.keys())) {
+      if (!pageIdSet.has(pageId)) {
+        this.pageCanvasRenderSizeMap.delete(pageId);
+      }
+    }
+    for (const pageId of Array.from(this.canvasVersionByPageId.keys())) {
+      if (!pageIdSet.has(pageId)) {
+        this.canvasVersionByPageId.delete(pageId);
+      }
+    }
+    for (const pageId of Array.from(this.knownPageCanvasMetadataPageIds.keys())) {
+      if (!pageIdSet.has(pageId)) {
+        this.knownPageCanvasMetadataPageIds.delete(pageId);
+      }
+    }
+
+    let hasPrunedRetainedPage = false;
+    for (const pageId of Array.from(this.retainedEditablePageIds.keys())) {
+      if (!pageIdSet.has(pageId)) {
+        this.retainedEditablePageIds.delete(pageId);
+        hasPrunedRetainedPage = true;
+      }
+    }
+    if (hasPrunedRetainedPage) {
+      this.retainedEditablePageVersion += 1;
+    }
   }
 
   private async loadEditorState(): Promise<void> {
@@ -1723,11 +1814,19 @@ struct EditorPage {
     this.notebookTitle = '';
     this.notebookPageList = [];
     this.activePageId = '';
+    this.focusedPageId = '';
+    this.pageCanvasByPageId.clear();
+    this.knownPageCanvasMetadataPageIds.clear();
+    this.retainedEditablePageIds.clear();
+    this.canvasVersionByPageId.clear();
+    this.canvasVersion += 1;
+    this.retainedEditablePageVersion += 1;
     this.activePageCanvas = null;
     this.isCanvasLoading = false;
     this.isUpdatingPageTemplate = false;
     this.pageActionMenuPageId = '';
     this.isPageTemplateDropdownVisible = false;
+    this.canvasInputMode = 'stylus';
     this.isDocumentTouchNavigationActive = false;
     this.resetPendingDocumentSingleFingerPan();
     this.documentZoomScale = 1;
@@ -1737,6 +1836,7 @@ struct EditorPage {
     this.documentGesturePreviewOffsetX = 0;
     this.documentGesturePreviewOffsetY = 0;
     this.isDocumentViewportGestureActive = false;
+    this.hasWorkspaceViewport = false;
     this.documentViewportGestureStartDistance = 1;
     this.documentViewportGestureStartWorkspaceX = 0;
     this.documentViewportGestureStartWorkspaceY = 0;
@@ -1749,6 +1849,7 @@ struct EditorPage {
   private syncActivePageId(preferredPageId: string = ''): void {
     if (this.notebookPageList.length === 0) {
       this.activePageId = '';
+      this.focusedPageId = '';
       return;
     }
 
@@ -1756,6 +1857,8 @@ struct EditorPage {
       for (const page of this.notebookPageList) {
         if (page.id === preferredPageId) {
           this.activePageId = preferredPageId;
+          this.focusedPageId = preferredPageId;
+          this.retainEditableDocumentPage(preferredPageId);
           return;
         }
       }
@@ -1763,11 +1866,17 @@ struct EditorPage {
 
     for (const page of this.notebookPageList) {
       if (page.id === this.activePageId) {
+        if (!this.isKnownNotebookPage(this.focusedPageId)) {
+          this.focusedPageId = this.activePageId;
+        }
+        this.retainEditableDocumentPage(this.activePageId);
         return;
       }
     }
 
     this.activePageId = this.notebookPageList[0].id;
+    this.focusedPageId = this.activePageId;
+    this.retainEditableDocumentPage(this.activePageId);
   }
 
   private async createNotebookPage(): Promise<void> {
@@ -1794,6 +1903,8 @@ struct EditorPage {
 
       if (notebookPage !== null) {
         this.activePageId = notebookPage.id;
+        this.focusedPageId = notebookPage.id;
+        this.retainEditableDocumentPage(notebookPage.id);
       }
 
       await this.loadActivePageCanvas();
@@ -1815,6 +1926,8 @@ struct EditorPage {
     }
 
     this.activePageId = page.id;
+    this.focusedPageId = page.id;
+    this.retainEditableDocumentPage(page.id);
     this.pendingDocumentViewportPageId = '';
     this.scrollDocumentToPage(page.id);
     this.closePageActionMenu();
@@ -1833,11 +1946,14 @@ struct EditorPage {
     }
 
     if (this.activePageId !== pageId) {
-      void this.flushActiveDrawingSession();
+      this.requestActiveDrawingSessionSave();
       this.activePageId = pageId;
+      this.focusedPageId = pageId;
+      this.retainEditableDocumentPage(pageId);
+      this.activePageCanvas = null;
       this.pendingDocumentViewportPageId = '';
       this.closePageActionMenu();
-      void this.loadActivePageCanvas();
+      this.scheduleActivePageCanvasLoad(pageId);
     }
 
     const viewModel = EditorSessionRegistry.getOrCreate(pageId, hostContext);
@@ -1845,7 +1961,6 @@ struct EditorPage {
     this.drawingViewModel = viewModel;
     this.applySharedToolSettingToViewModel(viewModel);
     this.syncDrawingSnapshot(false, viewModel, pageId, false);
-    void this.ensureDrawingSessionLoaded(pageId, viewModel);
   }
 
   private openDeletePageDialog(page: NotebookPage): void {
@@ -1920,6 +2035,7 @@ struct EditorPage {
   private focusPageAfterDeletion(deletedPageOrder: number): void {
     if (this.notebookPageList.length === 0) {
       this.activePageId = '';
+      this.focusedPageId = '';
       return;
     }
 
@@ -1932,9 +2048,12 @@ struct EditorPage {
     }
 
     this.activePageId = this.notebookPageList[targetPageIndex].id;
+    this.focusedPageId = this.activePageId;
+    this.retainEditableDocumentPage(this.activePageId);
   }
 
   private async loadActivePageCanvas(): Promise<void> {
+    this.clearScheduledActivePageCanvasLoad();
     if (this.notebookId.length === 0 || this.activePageId.length === 0) {
       this.activePageCanvas = null;
       this.isCanvasLoading = false;
@@ -1943,18 +2062,34 @@ struct EditorPage {
     }
 
     const targetPageId: string = this.activePageId;
-    this.activePageCanvas = null;
+    const cachedSession = EditorSessionRegistry.get(targetPageId);
+    if (this.hasKnownPageCanvasMetadata(targetPageId) && cachedSession !== null &&
+      cachedSession.isLoadedForPage(targetPageId)) {
+      if (this.currentDrawingPageId.length > 0 && this.currentDrawingPageId !== targetPageId) {
+        this.requestActiveDrawingSessionSave();
+      }
+      if (this.activePageId !== targetPageId) {
+        return;
+      }
+      this.activePageCanvas = this.getCachedPageCanvas(targetPageId);
+      this.attachLoadedDrawingSession(targetPageId, cachedSession, false);
+      this.isCanvasLoading = false;
+      this.restorePendingDocumentViewportIfReady();
+      return;
+    }
+
+    this.activePageCanvas = this.hasKnownPageCanvasMetadata(targetPageId) ? this.getCachedPageCanvas(targetPageId) : null;
     this.isCanvasLoading = true;
     try {
-      const notebookPageCanvas: NotebookPageCanvas | null = await this.ensureViewModel().loadNotebookPageCanvas(
-        this.notebookId,
-        targetPageId
-      );
+      const notebookPageCanvas: NotebookPageCanvas | null = this.hasKnownPageCanvasMetadata(targetPageId)
+        ? this.getCachedPageCanvas(targetPageId)
+        : await this.ensureViewModel().loadNotebookPageCanvas(this.notebookId, targetPageId);
 
       if (this.activePageId !== targetPageId) {
         return;
       }
 
+      this.cachePageCanvas(targetPageId, notebookPageCanvas);
       this.activePageCanvas = notebookPageCanvas;
       if (notebookPageCanvas !== null) {
         this.updatePageCanvasRenderSize(targetPageId, notebookPageCanvas.width, notebookPageCanvas.height);
@@ -1983,13 +2118,57 @@ struct EditorPage {
       this.notebookId,
       pageIds
     );
+    for (const pageId of pageIds) {
+      this.knownPageCanvasMetadataPageIds.add(pageId);
+    }
     for (const notebookPageCanvas of notebookPageCanvasList) {
+      this.pageCanvasByPageId.set(notebookPageCanvas.pageId, this.cloneNotebookPageCanvasValue(notebookPageCanvas));
       this.updatePageCanvasRenderSize(
         notebookPageCanvas.pageId,
         notebookPageCanvas.width,
         notebookPageCanvas.height
       );
     }
+  }
+
+  private hasKnownPageCanvasMetadata(pageId: string): boolean {
+    return this.knownPageCanvasMetadataPageIds.has(pageId);
+  }
+
+  private getCachedPageCanvas(pageId: string): NotebookPageCanvas | null {
+    const cachedCanvas = this.pageCanvasByPageId.get(pageId);
+    return cachedCanvas === undefined ? null : this.cloneNotebookPageCanvasValue(cachedCanvas);
+  }
+
+  private cachePageCanvas(pageId: string, pageCanvas: NotebookPageCanvas | null): void {
+    if (pageId.length === 0) {
+      return;
+    }
+
+    this.knownPageCanvasMetadataPageIds.add(pageId);
+    if (pageCanvas === null) {
+      this.pageCanvasByPageId.delete(pageId);
+      return;
+    }
+
+    this.pageCanvasByPageId.set(pageId, this.cloneNotebookPageCanvasValue(pageCanvas));
+  }
+
+  private getCanvasVersionForPage(pageId: string): number {
+    const renderTick = this.canvasVersion;
+    const pageVersion = this.canvasVersionByPageId.get(pageId);
+    return renderTick >= 0 && pageVersion !== undefined ? pageVersion : 0;
+  }
+
+  private bumpCanvasVersionForPage(pageId: string): void {
+    if (pageId.length === 0) {
+      this.canvasVersion += 1;
+      return;
+    }
+
+    const currentVersion = this.canvasVersionByPageId.get(pageId);
+    this.canvasVersionByPageId.set(pageId, currentVersion === undefined ? 1 : currentVersion + 1);
+    this.canvasVersion += 1;
   }
 
   private async loadDrawingSession(pageId: string): Promise<void> {
@@ -2000,14 +2179,14 @@ struct EditorPage {
     }
 
     if (this.currentDrawingPageId.length > 0 && this.currentDrawingPageId !== pageId) {
-      await this.flushActiveDrawingSession();
+      this.requestActiveDrawingSessionSave();
     }
 
     this.currentDrawingPageId = pageId;
     this.drawingViewModel = EditorSessionRegistry.getOrCreate(pageId, hostContext);
     this.applySharedToolSettingToViewModel(this.drawingViewModel);
     this.editorSnapshot = this.buildEmptySnapshot(pageId);
-    this.canvasVersion += 1;
+    this.bumpCanvasVersionForPage(pageId);
 
     const targetPageId: string = pageId;
     const viewModel: DrawingEditorViewModel = this.drawingViewModel;
@@ -2023,34 +2202,15 @@ struct EditorPage {
     }
   }
 
-  private async ensureDrawingSessionLoaded(
+  private attachLoadedDrawingSession(
     pageId: string,
-    existingViewModel?: DrawingEditorViewModel | null
-  ): Promise<void> {
-    const hostContext: common.Context | undefined = this.getUIContext().getHostContext() as common.Context | undefined;
-    if (hostContext === undefined || pageId.length === 0) {
-      return;
-    }
-
-    const wasLoaded = existingViewModel !== undefined && existingViewModel !== null &&
-      existingViewModel.isLoadedForPage(pageId);
-    const viewModel = await EditorSessionRegistry.ensureLoaded(
-      pageId,
-      hostContext,
-      this.cloneToolSetting(this.toolSetting)
-    );
-    const targetViewModel = existingViewModel ?? viewModel;
-    if (targetViewModel !== viewModel) {
-      return;
-    }
-
-    this.captureThumbnailSession(pageId, viewModel);
-    if (this.currentDrawingPageId === pageId) {
-      this.drawingViewModel = viewModel;
-      this.syncDrawingSnapshot(!wasLoaded, viewModel, pageId, false);
-    } else {
-      this.requestThumbnailRender(false);
-    }
+    viewModel: DrawingEditorViewModel,
+    refreshThumbnailImmediately: boolean
+  ): void {
+    this.currentDrawingPageId = pageId;
+    this.drawingViewModel = viewModel;
+    this.applySharedToolSettingToViewModel(viewModel);
+    this.syncDrawingSnapshot(false, viewModel, pageId, refreshThumbnailImmediately);
   }
 
   private resetDrawingState(pageId: string): void {
@@ -2061,7 +2221,7 @@ struct EditorPage {
     this.drawingViewModel = null;
     this.currentDrawingPageId = pageId;
     this.editorSnapshot = this.buildEmptySnapshot(pageId);
-    this.canvasVersion += 1;
+    this.bumpCanvasVersionForPage(pageId);
   }
 
   private syncDrawingSnapshot(
@@ -2076,7 +2236,7 @@ struct EditorPage {
     if (targetViewModel === null || targetPageId.length === 0) {
       this.editorSnapshot = this.buildEmptySnapshot(targetPageId);
       if (redrawCanvas) {
-        this.canvasVersion += 1;
+        this.bumpCanvasVersionForPage(targetPageId);
         this.refreshElementLayer();
         this.requestThumbnailRender(true);
       }
@@ -2091,7 +2251,7 @@ struct EditorPage {
     this.editorSnapshot = this.buildSnapshotWithSharedToolSetting(targetViewModel);
     if (redrawCanvas) {
       this.captureThumbnailSession(targetPageId, targetViewModel);
-      this.canvasVersion += 1;
+      this.bumpCanvasVersionForPage(targetPageId);
       this.refreshElementLayer();
       this.requestThumbnailRender(refreshThumbnailImmediately);
     }
@@ -2168,6 +2328,36 @@ struct EditorPage {
     this.thumbnailRenderTimerId = -1;
   }
 
+  private scheduleActivePageCanvasLoad(pageId: string): void {
+    this.clearScheduledActivePageCanvasLoad();
+    if (pageId.length === 0) {
+      return;
+    }
+
+    this.activePageCanvasLoadTimerId = setTimeout(() => {
+      this.activePageCanvasLoadTimerId = -1;
+      if (pageId !== this.activePageId) {
+        return;
+      }
+
+      if (this.isDocumentPanGestureActive || this.isDocumentViewportGestureActive || this.isDocumentTouchNavigationActive) {
+        this.scheduleActivePageCanvasLoad(pageId);
+        return;
+      }
+
+      void this.loadActivePageCanvas();
+    }, ACTIVE_PAGE_CANVAS_LOAD_DELAY_MS);
+  }
+
+  private clearScheduledActivePageCanvasLoad(): void {
+    if (this.activePageCanvasLoadTimerId < 0) {
+      return;
+    }
+
+    clearTimeout(this.activePageCanvasLoadTimerId);
+    this.activePageCanvasLoadTimerId = -1;
+  }
+
   private updatePageCanvasRenderSize(pageId: string, width: number, height: number): void {
     if (pageId.length === 0 || width <= 0 || height <= 0) {
       return;
@@ -2190,6 +2380,15 @@ struct EditorPage {
 
     this.captureActiveSessionForThumbnail();
     await this.drawingViewModel.flushPendingSave();
+  }
+
+  private requestActiveDrawingSessionSave(): void {
+    if (this.drawingViewModel === null) {
+      return;
+    }
+
+    this.captureActiveSessionForThumbnail();
+    this.drawingViewModel.requestDeferredSave('pageSwitch');
   }
 
   private getPageThumbnailHeight(_pageId: string): number {
@@ -2224,7 +2423,9 @@ struct EditorPage {
     this.workspaceViewportWindowY = this.resolveAreaPosition(area.globalPosition.y);
     const hasWidthChanged = nextWidth > 0 && nextWidth !== this.workspaceViewportWidth;
     const hasHeightChanged = nextHeight > 0 && nextHeight !== this.workspaceViewportHeight;
-    if (!hasWidthChanged && !hasHeightChanged) {
+    const canUseViewport = nextWidth > 0 && nextHeight > 0;
+    const shouldMarkViewportReady = canUseViewport && !this.hasWorkspaceViewport;
+    if (!hasWidthChanged && !hasHeightChanged && !shouldMarkViewportReady) {
       return;
     }
 
@@ -2234,9 +2435,16 @@ struct EditorPage {
     if (hasHeightChanged) {
       this.workspaceViewportHeight = nextHeight;
     }
+    if (canUseViewport) {
+      this.hasWorkspaceViewport = true;
+    }
     this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset);
     this.applyDocumentScrollOffset(this.documentScrollOffsetY);
     this.restorePendingDocumentViewportIfReady();
+  }
+
+  private isWorkspaceViewportReady(): boolean {
+    return this.hasWorkspaceViewport && this.workspaceViewportWidth > 0 && this.workspaceViewportHeight > 0;
   }
 
   private resolveAreaWidth(area: Area): number {
@@ -2267,15 +2475,18 @@ struct EditorPage {
   }
 
   private getDocumentPageSurfaceWidth(): number {
-    return this.getDocumentPageSurfaceWidthForScale(this.documentZoomScale);
+    return this.getDocumentPageSurfaceBaseWidth();
   }
 
   private getDocumentPageSurfaceWidthForScale(scale: number): number {
+    return Math.round(this.getDocumentPageSurfaceBaseWidth() * scale);
+  }
+
+  private getDocumentPageSurfaceBaseWidth(): number {
     const availableWidth = this.workspaceViewportWidth > 0
       ? this.workspaceViewportWidth - DOCUMENT_PAGE_HORIZONTAL_PADDING * 2
       : DOCUMENT_PAGE_SURFACE_MAX_WIDTH;
-    const scaledWidth = Math.round(availableWidth * scale);
-    return Math.max(DOCUMENT_PAGE_SURFACE_MIN_WIDTH, scaledWidth);
+    return Math.max(DOCUMENT_PAGE_SURFACE_MIN_WIDTH, Math.round(availableWidth));
   }
 
   private getDocumentPageSurfaceHeight(_pageId: string, targetWidth: number): number {
@@ -2290,47 +2501,39 @@ struct EditorPage {
   }
 
   private getDocumentPageSurfaceHeightForScale(pageId: string, scale: number): number {
-    return this.getDocumentPageSurfaceHeight(pageId, this.getDocumentPageSurfaceWidthForScale(scale));
+    return Math.round(this.getDocumentPageSurfaceHeightForPage(pageId) * scale);
   }
 
   private getDocumentPageBlockTopForScale(pageId: string, scale: number): number {
-    let offset = DOCUMENT_PAGE_HORIZONTAL_PADDING;
-    for (const page of this.notebookPageList) {
-      if (page.id === pageId) {
-        return offset;
-      }
+    return Math.round(this.getDocumentPageBlockTop(pageId) * scale);
+  }
 
-      offset += DOCUMENT_PAGE_HEADER_HEIGHT;
-      offset += 10;
-      offset += this.getDocumentPageSurfaceHeightForScale(page.id, scale);
-      offset += DOCUMENT_PAGE_GAP;
-    }
-
-    return offset;
+  private getDocumentPageBlockHeightForScale(pageId: string, scale: number): number {
+    return Math.round(this.getDocumentPageBlockHeight(pageId) * scale);
   }
 
   private getDocumentPageAnchorContentXForScale(pageUnitX: number, scale: number): number {
-    const pageSurfaceWidth = this.getDocumentPageSurfaceWidthForScale(scale);
-    return DOCUMENT_PAGE_HORIZONTAL_PADDING + this.clampUnit(pageUnitX) * pageSurfaceWidth;
+    return Math.round((DOCUMENT_PAGE_HORIZONTAL_PADDING + this.clampUnit(pageUnitX) *
+      this.getDocumentPageSurfaceWidth()) * scale);
   }
 
   private getDocumentPageAnchorContentYForScale(pageId: string, pageUnitY: number, scale: number): number {
-    const pageContentTop = this.getDocumentPageBlockTopForScale(pageId, scale) + DOCUMENT_PAGE_HEADER_HEIGHT + 10;
-    const pageSurfaceHeight = this.getDocumentPageSurfaceHeightForScale(pageId, scale);
-    return pageContentTop + this.clampUnit(pageUnitY) * pageSurfaceHeight;
+    const pageContentTop = this.getDocumentPageBlockTop(pageId) + DOCUMENT_PAGE_HEADER_HEIGHT + 10;
+    const pageSurfaceHeight = this.getDocumentPageSurfaceHeightForPage(pageId);
+    return Math.round((pageContentTop + this.clampUnit(pageUnitY) * pageSurfaceHeight) * scale);
   }
 
   private getDocumentContentHeightForScale(scale: number): number {
     if (this.notebookPageList.length === 0) {
       return Math.max(1, this.workspaceViewportHeight);
     }
+    return Math.round(this.getDocumentContentHeightForScaleOne() * scale);
+  }
 
+  private getDocumentContentHeightForScaleOne(): number {
     let height = DOCUMENT_PAGE_HORIZONTAL_PADDING * 2;
     for (let index = 0; index < this.notebookPageList.length; index += 1) {
-      const page = this.notebookPageList[index];
-      height += DOCUMENT_PAGE_HEADER_HEIGHT;
-      height += 10;
-      height += this.getDocumentPageSurfaceHeightForScale(page.id, scale);
+      height += this.getDocumentPageBlockHeight(this.notebookPageList[index].id);
       if (index < this.notebookPageList.length - 1) {
         height += DOCUMENT_PAGE_GAP;
       }
@@ -2358,6 +2561,90 @@ struct EditorPage {
     return pageId === this.activePageId;
   }
 
+  private isKnownNotebookPage(pageId: string): boolean {
+    if (pageId.length === 0) {
+      return false;
+    }
+
+    for (const page of this.notebookPageList) {
+      if (page.id === pageId) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private getVisualPageId(): string {
+    if (this.focusedPageId.length > 0) {
+      return this.focusedPageId;
+    }
+
+    if (this.activePageId.length > 0) {
+      return this.activePageId;
+    }
+
+    return this.notebookPageList.length === 0 ? '' : this.notebookPageList[0].id;
+  }
+
+  private isPageVisuallySelected(pageId: string): boolean {
+    return pageId.length > 0 && pageId === this.getVisualPageId();
+  }
+
+  private focusNotebookPageForNavigation(pageId: string): void {
+    if (pageId.length === 0 || pageId === this.focusedPageId || !this.isKnownNotebookPage(pageId)) {
+      return;
+    }
+
+    this.focusedPageId = pageId;
+    if ((this.isDocumentViewportGestureActive || this.isDocumentTouchNavigationActive) &&
+      this.activePageCanvasLoadTimerId >= 0 && this.activePageId !== pageId) {
+      this.clearScheduledActivePageCanvasLoad();
+    }
+  }
+
+  private retainEditableDocumentPage(pageId: string): void {
+    if (pageId.length === 0 || this.retainedEditablePageIds.has(pageId)) {
+      return;
+    }
+
+    this.retainedEditablePageIds.add(pageId);
+    this.retainedEditablePageVersion += 1;
+  }
+
+  private isDocumentPageRetainedEditable(pageId: string): boolean {
+    const retainedVersion = this.retainedEditablePageVersion;
+    return retainedVersion >= 0 && this.retainedEditablePageIds.has(pageId);
+  }
+
+  private promoteNavigationPageToActive(pageId: string): void {
+    if (pageId.length === 0 || !this.isKnownNotebookPage(pageId) || this.isLoading || this.isCreatingPage ||
+      this.isDeletingPage || this.isReorderingPages || this.isUpdatingPageTemplate) {
+      return;
+    }
+
+    this.focusedPageId = pageId;
+    this.retainEditableDocumentPage(pageId);
+    if (this.activePageId === pageId) {
+      return;
+    }
+
+    this.requestActiveDrawingSessionSave();
+    this.activePageId = pageId;
+    this.activePageCanvas = this.hasKnownPageCanvasMetadata(pageId) ? this.getCachedPageCanvas(pageId) : null;
+    this.pendingDocumentViewportPageId = '';
+    this.closePageActionMenu();
+
+    const existingSession = EditorSessionRegistry.get(pageId);
+    if (existingSession !== null && existingSession.isLoadedForPage(pageId)) {
+      this.attachLoadedDrawingSession(pageId, existingSession, false);
+    }
+
+    if (!this.hasKnownPageCanvasMetadata(pageId) || existingSession === null || !existingSession.isLoadedForPage(pageId)) {
+      this.scheduleActivePageCanvasLoad(pageId);
+    }
+  }
+
   private isContinuousDocumentViewEnabled(): boolean {
     return true;
   }
@@ -2367,7 +2654,19 @@ struct EditorPage {
   }
 
   private shouldRenderEditableDocumentPage(pageId: string): boolean {
-    return this.isDocumentPageWithinRenderWindow(pageId);
+    return this.isDocumentPageActive(pageId) || this.isDocumentPageRetainedEditable(pageId) ||
+      this.isDocumentPageWithinEditableWindow(pageId);
+  }
+
+  private shouldAutoLoadDocumentPageSession(pageId: string): boolean {
+    const existingSession = EditorSessionRegistry.get(pageId);
+    return this.isDocumentPageActive(pageId) ||
+      this.isDocumentPageRetainedEditable(pageId) ||
+      (existingSession !== null && existingSession.isLoadedForPage(pageId));
+  }
+
+  private shouldRenderDocumentPagePreviewBacking(pageId: string): boolean {
+    return this.shouldRenderEditableDocumentPage(pageId) && !this.shouldAutoLoadDocumentPageSession(pageId);
   }
 
   private shouldRenderDocumentPagePreview(pageId: string): boolean {
@@ -2375,21 +2674,25 @@ struct EditorPage {
   }
 
   private isDocumentPageWithinRenderWindow(pageId: string): boolean {
+    return this.isDocumentPageWithinViewportWindow(pageId, DOCUMENT_PAGE_RENDER_WINDOW_PADDING_FACTOR);
+  }
+
+  private isDocumentPageWithinEditableWindow(pageId: string): boolean {
+    return this.isDocumentPageWithinViewportWindow(pageId, DOCUMENT_PAGE_EDITABLE_WINDOW_PADDING_FACTOR);
+  }
+
+  private isDocumentPageWithinViewportWindow(pageId: string, paddingFactor: number): boolean {
     const viewportHeight = Math.max(1, this.workspaceViewportHeight);
-    const padding = viewportHeight * DOCUMENT_PAGE_RENDER_WINDOW_PADDING_FACTOR;
+    const padding = viewportHeight * Math.max(0, paddingFactor);
     const scrollOffsetY = this.getDocumentRenderWindowScrollOffsetY();
     const renderWindowTop = Math.max(0, scrollOffsetY - padding);
     const renderWindowBottom = scrollOffsetY + viewportHeight + padding;
-    const pageTop = this.getDocumentPageBlockTop(pageId);
-    const pageBottom = pageTop + this.getDocumentPageBlockHeight(pageId);
+    const pageTop = this.getDocumentPageBlockTopForScale(pageId, this.documentZoomScale);
+    const pageBottom = pageTop + this.getDocumentPageBlockHeightForScale(pageId, this.documentZoomScale);
     return pageBottom >= renderWindowTop && pageTop <= renderWindowBottom;
   }
 
   private getDocumentRenderWindowScrollOffsetY(): number {
-    if (this.isDocumentPanGestureActive || this.isDocumentViewportGestureActive) {
-      return this.documentGestureTargetScrollOffsetY;
-    }
-
     return this.documentScrollOffsetY;
   }
 
@@ -2397,6 +2700,10 @@ struct EditorPage {
     this.documentZoomScale = this.clampDocumentZoomScale(1);
     this.documentHorizontalOffset = 0;
     this.applyDocumentScrollOffset(this.documentScrollOffsetY);
+  }
+
+  private getDocumentVisualScale(): number {
+    return this.documentZoomScale * this.documentGesturePreviewScale;
   }
 
   private clampDocumentZoomScale(scale: number): number {
@@ -2415,6 +2722,7 @@ struct EditorPage {
     }
 
     this.isDocumentViewportGestureActive = true;
+    this.clearScheduledActivePageCanvasLoad();
     this.endDocumentPanGesture(false);
     this.documentViewportGestureStartWorkspaceX = windowCenterX - this.workspaceViewportWindowX;
     this.documentViewportGestureStartWorkspaceY = windowCenterY - this.workspaceViewportWindowY;
@@ -2428,8 +2736,10 @@ struct EditorPage {
     this.documentGesturePreviewOffsetX = 0;
     this.documentGesturePreviewOffsetY = 0;
     this.lastDocumentGesturePreviewTime = 0;
+    this.lastNavigationFocusUpdateTime = 0;
 
     const anchorPageId = pageId.length > 0 ? pageId : this.activePageId;
+    this.focusNotebookPageForNavigation(anchorPageId);
     const surfaceWidth = this.getDocumentPageSurfaceWidthForScale(this.documentGestureStartZoomScale);
     const surfaceHeight = this.getDocumentPageSurfaceHeight(anchorPageId, surfaceWidth);
     this.documentGestureAnchorPageId = anchorPageId;
@@ -2487,6 +2797,7 @@ struct EditorPage {
     const nextPreviewOffsetX = centerDeltaX + startAnchorContentX - startAnchorContentX * previewScale;
     const nextPreviewOffsetY = centerDeltaY + startAnchorContentY - startAnchorContentY * previewScale;
     this.applyDocumentGesturePreview(previewScale, nextPreviewOffsetX, nextPreviewOffsetY);
+    this.updateNavigationFocusedPageFromViewport(false);
   }
 
   private endDocumentViewportGesture(): void {
@@ -2498,7 +2809,10 @@ struct EditorPage {
     this.documentViewportGestureStartDistance = 1;
     this.documentViewportGestureStartWorkspaceX = 0;
     this.documentViewportGestureStartWorkspaceY = 0;
-    const nextZoomScale = this.documentGestureTargetZoomScale;
+    const hasCommittedZoomChange = this.shouldCommitDocumentZoomChange(this.documentGestureTargetZoomScale);
+    const nextZoomScale = hasCommittedZoomChange
+      ? this.documentGestureTargetZoomScale
+      : this.documentGestureStartZoomScale;
     this.documentGesturePreviewScale = 1;
     this.documentGesturePreviewOffsetX = 0;
     this.documentGesturePreviewOffsetY = 0;
@@ -2506,16 +2820,19 @@ struct EditorPage {
     this.documentHorizontalOffset = this.clampDocumentHorizontalOffsetForScale(
       this.documentGestureTargetHorizontalOffset,
       this.documentZoomScale,
-      this.shouldCenterContentForViewportGesture(nextZoomScale)
+      hasCommittedZoomChange && this.shouldCenterContentForViewportGesture(nextZoomScale)
     );
     const nextScrollOffset = this.clampDocumentScrollOffsetForScale(
       this.documentGestureTargetScrollOffsetY,
       this.documentZoomScale
     );
     this.applyDocumentScrollOffset(nextScrollOffset);
-    this.documentViewportRefreshVersion += 1;
+    this.updateNavigationFocusedPageFromViewport(true);
     this.isDocumentTouchNavigationActive = false;
-    void this.commitViewportCenteredPage();
+  }
+
+  private shouldCommitDocumentZoomChange(nextZoomScale: number): boolean {
+    return Math.abs(nextZoomScale - this.documentGestureStartZoomScale) >= DOCUMENT_ZOOM_COMMIT_EPSILON;
   }
 
   private applyDocumentGesturePreview(
@@ -2540,7 +2857,7 @@ struct EditorPage {
   }
 
   private getDocumentContentHeight(): number {
-    return this.getDocumentContentHeightForScale(this.documentZoomScale);
+    return this.getDocumentContentHeightForScale(1);
   }
 
   private getDocumentVisualOffsetX(): number {
@@ -2583,7 +2900,7 @@ struct EditorPage {
   }
 
   private getDocumentContentWidthForScale(scale: number): number {
-    return this.getDocumentPageSurfaceWidthForScale(scale) + DOCUMENT_PAGE_HORIZONTAL_PADDING * 2;
+    return Math.round(this.getDocumentContentWidth() * scale);
   }
 
   private getDocumentContentBaseOffsetXForScale(scale: number): number {
@@ -2593,20 +2910,7 @@ struct EditorPage {
   }
 
   private getDocumentScrollOffsetForPage(pageId: string): number {
-    let offset = DOCUMENT_PAGE_HORIZONTAL_PADDING;
-    for (let index = 0; index < this.notebookPageList.length; index += 1) {
-      const page = this.notebookPageList[index];
-      if (page.id === pageId) {
-        return Math.max(0, offset);
-      }
-
-      offset += DOCUMENT_PAGE_HEADER_HEIGHT;
-      offset += 10;
-      offset += this.getDocumentPageSurfaceHeightForPage(page.id);
-      offset += DOCUMENT_PAGE_GAP;
-    }
-
-    return Math.max(0, offset);
+    return Math.max(0, this.getDocumentPageBlockTopForScale(pageId, this.documentZoomScale));
   }
 
   private getDocumentPageBlockTop(pageId: string): number {
@@ -2632,6 +2936,7 @@ struct EditorPage {
       return;
     }
 
+    this.focusNotebookPageForNavigation(pageId);
     const targetOffset = this.getDocumentScrollOffsetForPage(pageId);
     this.applyDocumentScrollOffset(targetOffset);
   }
@@ -2647,7 +2952,7 @@ struct EditorPage {
       return;
     }
 
-    if (this.workspaceViewportWidth <= 0 || this.workspaceViewportHeight <= 0 || this.isCanvasLoading) {
+    if (!this.isWorkspaceViewportReady() || this.isCanvasLoading) {
       return;
     }
 
@@ -2665,7 +2970,8 @@ struct EditorPage {
   }
 
   private handleDocumentSurfaceTouch(event: TouchEvent): void {
-    if (!this.isContinuousDocumentViewEnabled() || this.isStylusTouchEvent(event)) {
+    if (!this.isContinuousDocumentViewEnabled() || this.isStylusTouchEvent(event) ||
+      !this.shouldHandleDocumentTouchForInputMode(event)) {
       return;
     }
 
@@ -2725,12 +3031,14 @@ struct EditorPage {
     }
 
     if (activeTouches.length === 1) {
-      this.handleDocumentSingleFingerPanTouch(event, activeTouches[0]);
+      this.resetPendingDocumentSingleFingerPan();
+      this.endDocumentPanGesture(false);
       return;
     }
 
     if (event.type === TouchType.Up) {
-      this.finishDocumentSingleFingerPan();
+      this.resetPendingDocumentSingleFingerPan();
+      this.endDocumentPanGesture(false);
     }
   }
 
@@ -2822,6 +3130,15 @@ struct EditorPage {
     return event.sourceTool === SourceTool.Pen;
   }
 
+  private shouldHandleDocumentTouchForInputMode(event: TouchEvent): boolean {
+    if (this.canvasInputMode === 'stylus') {
+      return true;
+    }
+
+    const activeTouches: TouchObject[] = this.getDocumentActiveTouches(event);
+    return activeTouches.length >= 2 || this.isDocumentViewportGestureActive || event.type === TouchType.Cancel;
+  }
+
   private buildDocumentTouchSignature(event: TouchEvent): string {
     const touches = this.getDocumentActiveTouches(event);
     const touchSignature = touches
@@ -2860,7 +3177,8 @@ struct EditorPage {
     let fallbackDistance = Number.MAX_VALUE;
 
     for (const page of this.notebookPageList) {
-      const pageTop = this.getDocumentPageBlockTopForScale(page.id, scale) + DOCUMENT_PAGE_HEADER_HEIGHT + 10;
+      const pageTop = this.getDocumentPageBlockTopForScale(page.id, scale) +
+        Math.round((DOCUMENT_PAGE_HEADER_HEIGHT + 10) * scale);
       const pageHeight = this.getDocumentPageSurfaceHeightForScale(page.id, scale);
       const distance = this.getDistanceToRange(contentY, pageTop, pageTop + pageHeight);
       if (distance < fallbackDistance) {
@@ -2871,18 +3189,21 @@ struct EditorPage {
       if (contentY >= pageTop && contentY <= pageTop + pageHeight) {
         return {
           pageId: page.id,
-          pageX: this.clampDocumentAnchorCoordinate(contentX - DOCUMENT_PAGE_HORIZONTAL_PADDING, pageSurfaceWidth),
+          pageX: this.clampDocumentAnchorCoordinate(contentX - DOCUMENT_PAGE_HORIZONTAL_PADDING * scale,
+            pageSurfaceWidth),
           pageY: this.clampDocumentAnchorCoordinate(contentY - pageTop, pageHeight)
         };
       }
     }
 
     const fallbackTop =
-      this.getDocumentPageBlockTopForScale(fallbackPage.id, scale) + DOCUMENT_PAGE_HEADER_HEIGHT + 10;
+      this.getDocumentPageBlockTopForScale(fallbackPage.id, scale) +
+        Math.round((DOCUMENT_PAGE_HEADER_HEIGHT + 10) * scale);
     const fallbackHeight = this.getDocumentPageSurfaceHeightForScale(fallbackPage.id, scale);
     return {
       pageId: fallbackPage.id,
-      pageX: this.clampDocumentAnchorCoordinate(contentX - DOCUMENT_PAGE_HORIZONTAL_PADDING, pageSurfaceWidth),
+      pageX: this.clampDocumentAnchorCoordinate(contentX - DOCUMENT_PAGE_HORIZONTAL_PADDING * scale,
+        pageSurfaceWidth),
       pageY: this.clampDocumentAnchorCoordinate(contentY - fallbackTop, fallbackHeight)
     };
   }
@@ -2942,6 +3263,7 @@ struct EditorPage {
       this.documentGestureTargetHorizontalOffset - this.documentGestureStartHorizontalOffset,
       this.documentGestureStartScrollOffsetY - this.documentGestureTargetScrollOffsetY
     );
+    this.updateNavigationFocusedPageFromViewport(false);
   }
 
   private endDocumentPanGesture(commitCenteredPage: boolean): void {
@@ -2960,37 +3282,69 @@ struct EditorPage {
       this.documentZoomScale
     );
     this.applyDocumentScrollOffset(this.documentGestureTargetScrollOffsetY);
-    this.documentViewportRefreshVersion += 1;
+    this.updateNavigationFocusedPageFromViewport(true);
     if (commitCenteredPage) {
       void this.commitViewportCenteredPage();
     }
   }
 
   private getViewportCenteredPageId(): string {
+    return this.getViewportCenteredPageIdForViewport(this.documentScrollOffsetY, this.documentZoomScale);
+  }
+
+  private getViewportCenteredPageIdForViewport(scrollOffsetY: number, zoomScale: number): string {
     if (this.notebookPageList.length === 0) {
       return '';
     }
 
     const viewportHeight = this.workspaceViewportHeight > 0 ? this.workspaceViewportHeight : 1;
-    const viewportCenterY = this.documentScrollOffsetY + viewportHeight / 2;
-    let pageTopOffset = DOCUMENT_PAGE_HORIZONTAL_PADDING;
+    const clampedScrollOffsetY = this.clampDocumentScrollOffsetForScale(scrollOffsetY, zoomScale);
+    const viewportTop = clampedScrollOffsetY;
+    const viewportBottom = clampedScrollOffsetY + viewportHeight;
     let bestPageId = this.notebookPageList[0].id;
-    let bestDistance = Number.MAX_VALUE;
+    let bestVisibleHeight = -1;
+    let bestDistanceToTop = Number.MAX_VALUE;
 
     for (const page of this.notebookPageList) {
-      const pageSurfaceHeight = this.getDocumentPageSurfaceHeightForPage(page.id);
-      const pageContentTop = pageTopOffset + DOCUMENT_PAGE_HEADER_HEIGHT + 10;
-      const pageCenterY = pageContentTop + pageSurfaceHeight / 2;
-      const distance = Math.abs(viewportCenterY - pageCenterY);
-      if (distance < bestDistance) {
-        bestDistance = distance;
+      const pageTop = this.getDocumentPageBlockTopForScale(page.id, zoomScale);
+      const pageBottom = pageTop + this.getDocumentPageBlockHeightForScale(page.id, zoomScale);
+      const visibleHeight = Math.max(0, Math.min(viewportBottom, pageBottom) - Math.max(viewportTop, pageTop));
+      const distanceToTop = this.getDistanceToRange(viewportTop, pageTop, pageBottom);
+      if (visibleHeight > bestVisibleHeight ||
+        (visibleHeight === bestVisibleHeight && distanceToTop < bestDistanceToTop)) {
+        bestVisibleHeight = visibleHeight;
+        bestDistanceToTop = distanceToTop;
         bestPageId = page.id;
       }
 
-      pageTopOffset = pageContentTop + pageSurfaceHeight + DOCUMENT_PAGE_GAP;
     }
 
     return bestPageId;
+  }
+
+  private updateNavigationFocusedPageFromViewport(force: boolean = false): void {
+    if (!this.isContinuousDocumentViewEnabled() || this.notebookPageList.length === 0) {
+      return;
+    }
+
+    const nowTime = Date.now();
+    if (!force && this.lastNavigationFocusUpdateTime > 0 &&
+      nowTime - this.lastNavigationFocusUpdateTime < DOCUMENT_NAVIGATION_FOCUS_INTERVAL_MS) {
+      return;
+    }
+
+    const targetZoomScale = this.isDocumentViewportGestureActive
+      ? this.documentGestureTargetZoomScale
+      : this.documentZoomScale;
+    const targetScrollOffsetY = this.isDocumentViewportGestureActive || this.isDocumentPanGestureActive
+      ? this.documentGestureTargetScrollOffsetY
+      : this.documentScrollOffsetY;
+    const targetPageId = this.getViewportCenteredPageIdForViewport(targetScrollOffsetY, targetZoomScale);
+    this.lastNavigationFocusUpdateTime = nowTime;
+    this.focusNotebookPageForNavigation(targetPageId);
+    if (force) {
+      this.promoteNavigationPageToActive(targetPageId);
+    }
   }
 
   private async commitViewportCenteredPage(): Promise<void> {
@@ -3004,9 +3358,7 @@ struct EditorPage {
       return;
     }
 
-    this.activePageId = targetPageId;
-    this.closePageActionMenu();
-    await this.loadActivePageCanvas();
+    this.promoteNavigationPageToActive(targetPageId);
   }
 
   private getDocumentZoomText(): string {
@@ -3169,6 +3521,19 @@ struct EditorPage {
 
   private isWorkspaceToolActive(tool: ToolType): boolean {
     return this.toolSetting.tool === tool;
+  }
+
+  private toggleCanvasInputMode(): void {
+    this.canvasInputMode = this.canvasInputMode === 'stylus' ? 'touch' : 'stylus';
+    this.closeTransientDropdowns();
+    this.endDocumentPanGesture(false);
+    this.endDocumentViewportGesture();
+    this.resetPendingDocumentSingleFingerPan();
+    this.isDocumentTouchNavigationActive = false;
+  }
+
+  private getInputModeButtonLabel(): string {
+    return this.canvasInputMode === 'stylus' ? 'Input: Pen' : 'Input: Finger';
   }
 
   private handleWorkspaceToolChange(tool: ToolType): void {
@@ -3486,6 +3851,16 @@ struct EditorPage {
     return null;
   }
 
+  private getVisualPage(): NotebookPage | null {
+    const visualPageId = this.getVisualPageId();
+    for (const notebookPage of this.notebookPageList) {
+      if (notebookPage.id === visualPageId) {
+        return notebookPage;
+      }
+    }
+    return null;
+  }
+
   private getActivePageTemplateType(): NotebookPageTemplateType {
     const activePage: NotebookPage | null = this.getActivePage();
     return activePage === null ? NotebookPageTemplateType.BLANK : this.resolvePageTemplateType(activePage.templateType);
@@ -3559,7 +3934,7 @@ struct EditorPage {
     this.closeToolDropdown();
     this.closePageActionMenu();
     this.applyActivePageCanvasSizeLocally(activePage, targetSize.width, targetSize.height);
-    this.canvasVersion += 1;
+    this.bumpCanvasVersionForPage(pageId);
     this.documentViewportRefreshVersion += 1;
     this.requestThumbnailRender(true);
     this.closePageTemplateDropdown();
@@ -3586,10 +3961,11 @@ struct EditorPage {
       this.retainThumbnailPages();
       this.syncActivePageId(pageId);
       this.activePageCanvas = updatedNotebookPageCanvas;
+      this.cachePageCanvas(pageId, updatedNotebookPageCanvas);
       this.updatePageCanvasRenderSize(pageId, updatedNotebookPageCanvas.width, updatedNotebookPageCanvas.height);
       this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset);
       this.applyDocumentScrollOffset(this.documentScrollOffsetY);
-      this.canvasVersion += 1;
+      this.bumpCanvasVersionForPage(pageId);
       this.documentViewportRefreshVersion += 1;
       this.requestThumbnailRender(true);
     } catch (_error) {
@@ -3628,7 +4004,7 @@ struct EditorPage {
       return;
     }
 
-    this.canvasVersion += 1;
+    this.bumpCanvasVersionForPage(pageId);
     this.requestThumbnailRender(true);
     this.closePageTemplateDropdown();
 
@@ -3652,7 +4028,7 @@ struct EditorPage {
       this.notebookPageList = this.ensureViewModel().getCachedNotebookPages();
       this.retainThumbnailPages();
       this.syncActivePageId(pageId);
-      this.canvasVersion += 1;
+      this.bumpCanvasVersionForPage(pageId);
       this.requestThumbnailRender(true);
     } catch (_error) {
       this.restoreNotebookPageListAfterFailedTemplateUpdate(rollbackPageList, rollbackActivePageId);
@@ -3708,7 +4084,7 @@ struct EditorPage {
     this.retainThumbnailPages();
     this.activePageId = rollbackActivePageId;
     this.syncActivePageId(rollbackActivePageId);
-    this.canvasVersion += 1;
+    this.bumpCanvasVersionForPage(rollbackActivePageId);
     this.requestThumbnailRender(true);
   }
 
@@ -3726,6 +4102,7 @@ struct EditorPage {
       createdAt: currentCanvas === null ? activePage.createdAt : currentCanvas.createdAt,
       updatedAt: currentTime
     };
+    this.cachePageCanvas(activePage.id, this.activePageCanvas);
     this.updatePageCanvasRenderSize(activePage.id, width, height);
     this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset);
     this.applyDocumentScrollOffset(this.documentScrollOffsetY);
@@ -3737,6 +4114,7 @@ struct EditorPage {
     rollbackSize: PageCanvasRenderSize | null
   ): void {
     this.activePageCanvas = this.cloneNotebookPageCanvas(rollbackCanvas);
+    this.cachePageCanvas(pageId, this.activePageCanvas);
     if (rollbackSize === null) {
       this.pageCanvasRenderSizeMap.delete(pageId);
     } else {
@@ -3747,7 +4125,7 @@ struct EditorPage {
     }
     this.documentHorizontalOffset = this.clampDocumentHorizontalOffset(this.documentHorizontalOffset);
     this.applyDocumentScrollOffset(this.documentScrollOffsetY);
-    this.canvasVersion += 1;
+    this.bumpCanvasVersionForPage(pageId);
     this.documentViewportRefreshVersion += 1;
     this.requestThumbnailRender(true);
   }
@@ -3797,6 +4175,10 @@ struct EditorPage {
       return null;
     }
 
+    return this.cloneNotebookPageCanvasValue(notebookPageCanvas);
+  }
+
+  private cloneNotebookPageCanvasValue(notebookPageCanvas: NotebookPageCanvas): NotebookPageCanvas {
     return {
       pageId: notebookPageCanvas.pageId,
       notebookId: notebookPageCanvas.notebookId,
@@ -3823,7 +4205,7 @@ struct EditorPage {
   }
 
   private getPageThumbnailBackgroundColor(page: NotebookPage): ResourceColor {
-    if (page.id === this.activePageId) {
+    if (this.isPageVisuallySelected(page.id)) {
       return $r('app.color.editor_thumbnail_active');
     }
 
@@ -3831,7 +4213,7 @@ struct EditorPage {
   }
 
   private getPageThumbnailBorderColor(page: NotebookPage): ResourceColor {
-    if (page.id === this.activePageId) {
+    if (this.isPageVisuallySelected(page.id)) {
       return $r('app.color.editor_accent');
     }
 
@@ -3847,29 +4229,29 @@ struct EditorPage {
   }
 
   private getNotebookSummaryText(): string {
-    const activePage: NotebookPage | null = this.getActivePage();
-    if (activePage === null) {
+    const visualPage: NotebookPage | null = this.getVisualPage();
+    if (visualPage === null) {
       return this.getPageCountText();
     }
 
-    return `${this.getPageCountText()} | Current ${this.getPageLabel(activePage.order)}`;
+    return `${this.getPageCountText()} | Current ${this.getPageLabel(visualPage.order)}`;
   }
 
   private getActivePageLabel(): string {
-    const activePage: NotebookPage | null = this.getActivePage();
-    if (activePage === null) {
+    const visualPage: NotebookPage | null = this.getVisualPage();
+    if (visualPage === null) {
       return 'Page';
     }
-    return this.getPageLabel(activePage.order);
+    return this.getPageLabel(visualPage.order);
   }
 
   private getActivePageIndexText(): string {
-    const activePage: NotebookPage | null = this.getActivePage();
-    if (activePage === null) {
+    const visualPage: NotebookPage | null = this.getVisualPage();
+    if (visualPage === null) {
       return this.getPageCountText();
     }
 
-    return `${activePage.order + 1}/${this.notebookPageList.length}`;
+    return `${visualPage.order + 1}/${this.notebookPageList.length}`;
   }
 
   private getActiveCanvasBackgroundColor(): string {
