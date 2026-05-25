@@ -4,6 +4,7 @@ import { CanvasElement, TextCanvasElement } from '../../../domain/entities/Canva
 import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
 import { ElementSelectionOverlay } from './ElementSelectionOverlay';
+import { FormulaElementView } from './FormulaElementView';
 import { ImageElementView } from './ImageElementView';
 import { ShapeElementView } from './ShapeElementView';
 
@@ -49,12 +50,21 @@ export struct ElementLayer {
   @Builder
   private buildElement(element: CanvasElement): void {
     if (element.type === 'text') {
-      this.buildTextElement(element);
+      if (this.shouldRenderFormula(element)) {
+        this.buildFormulaElement(element);
+      } else {
+        this.buildTextElement(element);
+      }
     } else if (element.type === 'shape') {
       ShapeElementView({ element: element })
     } else if (element.type === 'image') {
       ImageElementView({ element: element })
     }
+  }
+
+  @Builder
+  private buildFormulaElement(element: TextCanvasElement): void {
+    FormulaElementView({ element })
   }
 
   @Builder
@@ -88,6 +98,12 @@ export struct ElementLayer {
 
   private getDisplayText(element: TextCanvasElement): string {
     return element.content.length === 0 ? 'Text' : element.content;
+  }
+
+  private shouldRenderFormula(element: TextCanvasElement): boolean {
+    return element.recognition?.source === 'formula' &&
+      typeof element.recognition.latex === 'string' &&
+      element.recognition.latex.trim().length > 0;
   }
 
   private getTextLineHeight(element: TextCanvasElement): number {

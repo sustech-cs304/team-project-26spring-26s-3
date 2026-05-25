@@ -13,6 +13,10 @@
       "value": "Hosn"
     },
     {
+      "name": "reason_access_internet",
+      "value": "用于连接远程公式识别服务"
+    },
+    {
       "name": "app_name",
       "value": "Hosn"
     },

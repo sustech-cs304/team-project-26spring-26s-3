@@ -480,7 +480,14 @@ export class UndoRedoController {
       content: element.content,
       color: element.color,
       fontSize: element.fontSize,
-      backgroundColor: element.backgroundColor
+      backgroundColor: element.backgroundColor,
+      recognition: element.recognition ? {
+        source: element.recognition.source,
+        sid: element.recognition.sid,
+        recognizedAt: element.recognition.recognizedAt,
+        rawText: element.recognition.rawText,
+        latex: element.recognition.latex
+      } : undefined
     };
   }
 
