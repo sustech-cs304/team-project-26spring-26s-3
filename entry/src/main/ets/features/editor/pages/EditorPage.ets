@@ -1133,7 +1133,7 @@ struct EditorPage {
       Column({ space: DOCUMENT_PAGE_GAP }) {
         ForEach(this.notebookPageList, (page: NotebookPage, index: number) => {
           this.buildDocumentPageSurface(page, index);
-        }, (page: NotebookPage): string => this.getPageRenderKey(page))
+        }, (page: NotebookPage): string => this.getDocumentPageRenderKey(page))
       }
       .width(this.getDocumentContentWidth())
       .height(this.getDocumentContentHeight())
@@ -2004,8 +2004,7 @@ struct EditorPage {
     this.activePageId = page.id;
     this.focusedPageId = page.id;
     this.retainEditableDocumentPage(page.id);
-    this.pendingDocumentViewportPageId = '';
-    this.scrollDocumentToPage(page.id);
+    this.requestDocumentViewportForPage(page.id);
     this.closePageActionMenu();
     await this.loadActivePageCanvas();
   }
@@ -2138,8 +2137,9 @@ struct EditorPage {
     }
 
     const targetPageId: string = this.activePageId;
+    const cachedPageCanvas: NotebookPageCanvas | null = this.getCachedPageCanvas(targetPageId);
     const cachedSession = EditorSessionRegistry.get(targetPageId);
-    if (this.hasKnownPageCanvasMetadata(targetPageId) && cachedSession !== null &&
+    if (cachedPageCanvas !== null && cachedSession !== null &&
       cachedSession.isLoadedForPage(targetPageId)) {
       if (this.currentDrawingPageId.length > 0 && this.currentDrawingPageId !== targetPageId) {
         this.requestActiveDrawingSessionSave();
@@ -2147,18 +2147,18 @@ struct EditorPage {
       if (this.activePageId !== targetPageId) {
         return;
       }
-      this.activePageCanvas = this.getCachedPageCanvas(targetPageId);
+      this.activePageCanvas = cachedPageCanvas;
       this.attachLoadedDrawingSession(targetPageId, cachedSession, false);
       this.isCanvasLoading = false;
       this.restorePendingDocumentViewportIfReady();
       return;
     }
 
-    this.activePageCanvas = this.hasKnownPageCanvasMetadata(targetPageId) ? this.getCachedPageCanvas(targetPageId) : null;
+    this.activePageCanvas = cachedPageCanvas;
     this.isCanvasLoading = true;
     try {
-      const notebookPageCanvas: NotebookPageCanvas | null = this.hasKnownPageCanvasMetadata(targetPageId)
-        ? this.getCachedPageCanvas(targetPageId)
+      const notebookPageCanvas: NotebookPageCanvas | null = cachedPageCanvas !== null
+        ? cachedPageCanvas
         : await this.ensureViewModel().loadNotebookPageCanvas(this.notebookId, targetPageId);
 
       if (this.activePageId !== targetPageId) {
@@ -2195,10 +2195,8 @@ struct EditorPage {
       this.notebookId,
       pageIds
     );
-    for (const pageId of pageIds) {
-      this.knownPageCanvasMetadataPageIds.add(pageId);
-    }
     for (const notebookPageCanvas of notebookPageCanvasList) {
+      this.knownPageCanvasMetadataPageIds.add(notebookPageCanvas.pageId);
       this.pageCanvasMetadataMap.set(notebookPageCanvas.pageId, notebookPageCanvas);
       this.pageCanvasByPageId.set(notebookPageCanvas.pageId, this.cloneNotebookPageCanvasValue(notebookPageCanvas));
       this.updatePageCanvasRenderSize(
@@ -2209,8 +2207,8 @@ struct EditorPage {
     }
   }
 
-  private hasKnownPageCanvasMetadata(pageId: string): boolean {
-    return this.knownPageCanvasMetadataPageIds.has(pageId);
+  private hasCachedPageCanvas(pageId: string): boolean {
+    return this.pageCanvasByPageId.has(pageId);
   }
 
   private getCachedPageCanvas(pageId: string): NotebookPageCanvas | null {
@@ -2711,7 +2709,7 @@ struct EditorPage {
 
     this.requestActiveDrawingSessionSave();
     this.activePageId = pageId;
-    this.activePageCanvas = this.hasKnownPageCanvasMetadata(pageId) ? this.getCachedPageCanvas(pageId) : null;
+    this.activePageCanvas = this.getCachedPageCanvas(pageId);
     this.pendingDocumentViewportPageId = '';
     this.closePageActionMenu();
 
@@ -2720,7 +2718,7 @@ struct EditorPage {
       this.attachLoadedDrawingSession(pageId, existingSession, false);
     }
 
-    if (!this.hasKnownPageCanvasMetadata(pageId) || existingSession === null || !existingSession.isLoadedForPage(pageId)) {
+    if (!this.hasCachedPageCanvas(pageId) || existingSession === null || !existingSession.isLoadedForPage(pageId)) {
       this.scheduleActivePageCanvasLoad(pageId);
     }
   }
@@ -2745,8 +2743,22 @@ struct EditorPage {
       (existingSession !== null && existingSession.isLoadedForPage(pageId));
   }
 
+  private isDocumentPageSessionLoaded(pageId: string): boolean {
+    const existingSession = EditorSessionRegistry.get(pageId);
+    return existingSession !== null && existingSession.isLoadedForPage(pageId);
+  }
+
   private shouldRenderDocumentPagePreviewBacking(pageId: string): boolean {
-    return this.shouldRenderEditableDocumentPage(pageId) && !this.shouldAutoLoadDocumentPageSession(pageId);
+    if (!this.shouldRenderEditableDocumentPage(pageId)) {
+      return false;
+    }
+
+    if (!this.shouldAutoLoadDocumentPageSession(pageId)) {
+      return true;
+    }
+
+    return !this.isDocumentPageSessionLoaded(pageId) ||
+      (this.isDocumentPageActive(pageId) && this.isCanvasLoading);
   }
 
   private shouldRenderDocumentPagePreview(pageId: string): boolean {
@@ -3019,6 +3031,15 @@ struct EditorPage {
     this.focusNotebookPageForNavigation(pageId);
     const targetOffset = this.getDocumentScrollOffsetForPage(pageId);
     this.applyDocumentScrollOffset(targetOffset);
+  }
+
+  private requestDocumentViewportForPage(pageId: string): void {
+    if (!this.isContinuousDocumentViewEnabled() || pageId.length === 0) {
+      return;
+    }
+
+    this.pendingDocumentViewportPageId = pageId;
+    this.restorePendingDocumentViewportIfReady();
   }
 
   private queueDocumentViewportRestore(pageId: string): void {
@@ -4302,6 +4323,13 @@ struct EditorPage {
 
   private getPageRenderKey(page: NotebookPage): string {
     return `${page.id}_${this.resolvePageTemplateType(page.templateType)}`;
+  }
+
+  private getDocumentPageRenderKey(page: NotebookPage): string {
+    const cachedSize = this.pageCanvasRenderSizeMap.get(page.id);
+    const widthKey = cachedSize === undefined ? NotebookPageCanvasEntity.DEFAULT_WIDTH : cachedSize.width;
+    const heightKey = cachedSize === undefined ? NotebookPageCanvasEntity.DEFAULT_HEIGHT : cachedSize.height;
+    return `${this.getPageRenderKey(page)}_${widthKey}x${heightKey}`;
   }
 
   private getPageOrderText(pageId: string, fallbackIndex: number): string {
