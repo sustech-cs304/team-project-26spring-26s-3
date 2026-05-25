@@ -15,6 +15,8 @@ export struct ElementLayer {
   @Prop pageId: string = '';
   @Watch('onRefreshVersionChanged')
   @Prop refreshVersion: number = 0;
+  @Watch('onAutoCreateSessionChanged')
+  @Prop autoCreateSession: boolean = true;
   @Prop editingElementId: string = '';
   @State private elements: CanvasElement[] = [];
   @State private selectedElementIds: string[] = [];
@@ -105,6 +107,11 @@ export struct ElementLayer {
     this.reloadElements();
   }
 
+  private onAutoCreateSessionChanged(): void {
+    this.resolveViewModel();
+    this.reloadElements();
+  }
+
   private reloadElements(): void {
     const viewModel = this.getViewModel();
     this.elements = viewModel === null ? [] : viewModel.getElements();
@@ -124,6 +131,17 @@ export struct ElementLayer {
       this.viewModel = null;
       this.elements = [];
       this.selectedElementIds = [];
+      return;
+    }
+
+    const existingSession = EditorSessionRegistry.get(this.pageId);
+    if (existingSession !== null) {
+      this.viewModel = existingSession;
+      return;
+    }
+
+    if (!this.autoCreateSession) {
+      this.viewModel = null;
       return;
     }
 
