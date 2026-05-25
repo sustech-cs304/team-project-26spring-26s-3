@@ -120,6 +120,11 @@ interface ElementEditGesture {
   originalElement: CanvasElement;
 }
 
+interface ElementOutlineEditGesture {
+  elementId: string;
+  originalElement: CanvasElement;
+}
+
 interface SelectionMoveGesture {
   startPoint: StrokePoint;
   currentOffsetX: number;
@@ -232,6 +237,7 @@ export class DrawingEditorViewModel {
   private selectedStrokeTargets: SelectionTarget[] = [];
   private lassoDraftPath: StrokePoint[] = [];
   private elementEditGesture: ElementEditGesture | null = null;
+  private elementOutlineEditGesture: ElementOutlineEditGesture | null = null;
   private selectionMoveGesture: SelectionMoveGesture | null = null;
   private strokeResizeGesture: StrokeResizeGesture | null = null;
   private readonly instanceId: number = nextEditorViewModelInstanceId++;
@@ -667,6 +673,7 @@ export class DrawingEditorViewModel {
       this.appendDebugEvent('clearElementSelection', `element=${this.selectedElementId}`);
     }
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
     this.selectionMoveGesture = null;
     this.strokeResizeGesture = null;
     this.selectedElementId = '';
@@ -692,6 +699,7 @@ export class DrawingEditorViewModel {
     this.selectedElementIds = this.selectedElementIds.filter((elementId: string): boolean => elementId !== selectedElement.id);
     this.selectedElementId = this.selectedElementIds.length > 0 ? this.selectedElementIds[0] : '';
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
     this.selectionVersion += 1;
     this.recordElementDelta('elementDelete', [{
       index: selectedElementIndex,
@@ -724,10 +732,48 @@ export class DrawingEditorViewModel {
     return this.replaceElementWithDelta('elementStyle', element, nextElement, 'elementStyle');
   }
 
-  updateElementOutlineById(elementId: string, patch: Partial<ElementOutlineStyle>): SelectionActionResult {
+  beginElementOutlineEdit(elementId: string): boolean {
+    const element = this.getElementById(elementId);
+    if (element === null || element.type === 'text') {
+      this.elementOutlineEditGesture = null;
+      return false;
+    }
+
+    this.elementOutlineEditGesture = {
+      elementId,
+      originalElement: this.cloneElement(element)
+    };
+    return true;
+  }
+
+  finishElementOutlineEdit(elementId: string): SelectionActionResult {
+    const gesture = this.elementOutlineEditGesture;
+    this.elementOutlineEditGesture = null;
+    if (gesture === null || gesture.elementId !== elementId) {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    const currentElement = this.getElementById(elementId);
+    if (currentElement === null || currentElement.type === 'text' ||
+      this.areElementsEquivalent(gesture.originalElement, currentElement)) {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    const finalElement = this.cloneElementWithUpdatedAt(currentElement);
+    return this.replaceElementWithDelta('elementStyle', gesture.originalElement, finalElement, 'elementStyle');
+  }
+
+  updateElementOutlineById(
+    elementId: string,
+    patch: Partial<ElementOutlineStyle>,
+    recordHistory: boolean = true
+  ): SelectionActionResult {
     const element = this.getElementById(elementId);
     if (element === null || element.type === 'text') {
       return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+    if (recordHistory) {
+      this.elementOutlineEditGesture = null;
     }
 
     const nextOutline: ElementOutlineStyle = {
@@ -739,15 +785,17 @@ export class DrawingEditorViewModel {
       return { ...EMPTY_SELECTION_ACTION_RESULT };
     }
 
-    const nextElement: CanvasElement = element.type === 'shape' ? {
-      ...this.cloneShapeElement(element),
-      outline: nextOutline,
-      updatedAt: now()
-    } : {
-      ...this.cloneImageElement(element),
-      outline: nextOutline,
-      updatedAt: now()
-    };
+    const nextElement = this.cloneElementWithOutline(element, nextOutline, recordHistory ? now() : element.updatedAt);
+    if (!recordHistory) {
+      this.replaceElementInMemory(nextElement);
+      return {
+        changed: true,
+        changedStrokes: false,
+        changedElements: true,
+        elementSelectionChanged: false
+      };
+    }
+
     return this.replaceElementWithDelta('elementStyle', element, nextElement, 'elementStyle');
   }
 
@@ -760,6 +808,7 @@ export class DrawingEditorViewModel {
     this.cancelShapeDraft();
     this.clearEraseState();
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
     this.selectionMoveGesture = null;
     this.strokeResizeGesture = null;
     this.lassoDraftPath = [this.clonePoint(point)];
@@ -792,6 +841,7 @@ export class DrawingEditorViewModel {
     this.selectedElementIds = this.getElementIdsInsideLasso(lassoPath);
     this.selectedElementId = this.selectedElementIds.length > 0 ? this.selectedElementIds[0] : '';
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
     this.selectionVersion += 1;
     this.appendDebugEvent(
       'lasso',
@@ -824,6 +874,7 @@ export class DrawingEditorViewModel {
     this.clearEraseState();
     this.lassoDraftPath = [];
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
     this.selectionMoveGesture = {
       startPoint: this.clonePoint(point),
       currentOffsetX: 0,
@@ -956,6 +1007,7 @@ export class DrawingEditorViewModel {
     this.selectedElementIds = [];
     this.lassoDraftPath = [];
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
     if (hadElementSelection) {
       this.selectionVersion += 1;
     }
@@ -981,6 +1033,7 @@ export class DrawingEditorViewModel {
     this.clearEraseState();
     this.lassoDraftPath = [];
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
     this.selectionMoveGesture = null;
     this.strokeResizeGesture = {
       handle,
@@ -1166,6 +1219,7 @@ export class DrawingEditorViewModel {
     this.selectedElementId = originalElement.id;
     this.appendDebugEvent('cancelElementEdit', `element=${originalElement.id}`);
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
   }
 
   insertTextElement(point: StrokePoint, bounds: ElementBounds): TextCanvasElement | null {
@@ -1727,6 +1781,7 @@ export class DrawingEditorViewModel {
 
   private clearSelectionState(): void {
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
     this.selectionMoveGesture = null;
     this.selectedElementId = '';
     this.selectedElementIds = [];
@@ -2562,6 +2617,47 @@ export class DrawingEditorViewModel {
     return nextElement;
   }
 
+  private cloneElementWithOutline(
+    element: ShapeCanvasElement | ImageCanvasElement,
+    outline: ElementOutlineStyle,
+    updatedAt: number
+  ): CanvasElement {
+    if (element.type === 'shape') {
+      return {
+        ...this.cloneShapeElement(element),
+        outline: this.cloneElementOutline(outline),
+        updatedAt
+      };
+    }
+
+    return {
+      ...this.cloneImageElement(element),
+      outline: this.cloneElementOutline(outline),
+      updatedAt
+    };
+  }
+
+  private cloneElementWithUpdatedAt(element: CanvasElement): CanvasElement {
+    if (element.type === 'text') {
+      return {
+        ...this.cloneTextElement(element),
+        updatedAt: now()
+      };
+    }
+
+    if (element.type === 'shape') {
+      return {
+        ...this.cloneShapeElement(element),
+        updatedAt: now()
+      };
+    }
+
+    return {
+      ...this.cloneImageElement(element),
+      updatedAt: now()
+    };
+  }
+
   private replaceElementInMemory(nextElement: CanvasElement): void {
     this.elements = this.elements.map((element: CanvasElement): CanvasElement => {
       return element.id === nextElement.id ? this.cloneElement(nextElement) : element;
@@ -2677,6 +2773,7 @@ export class DrawingEditorViewModel {
 
   private restoreSelectionSnapshot(snapshot: EditorSelectionSnapshot | null): void {
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
     this.selectionMoveGesture = null;
     if (snapshot === null) {
       this.selectedElementId = '';
@@ -2789,6 +2886,7 @@ export class DrawingEditorViewModel {
     this.selectedElementId = '';
     this.selectedElementIds = [];
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
     this.selectionMoveGesture = null;
     this.lassoDraftPath = [];
     this.selectionVersion += 1;

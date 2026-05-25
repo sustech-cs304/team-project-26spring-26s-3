@@ -37,6 +37,8 @@ const DEFAULT_SHAPE_ELEMENT: ShapeCanvasElement = {
 export struct ShapeElementView {
   @Watch('onElementChanged')
   @Prop element: ShapeCanvasElement = DEFAULT_SHAPE_ELEMENT;
+  @Watch('onRenderVersionChanged')
+  @Prop renderVersion: number = 0;
 
   @State private isCanvasReady: boolean = false;
   private readonly renderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
@@ -60,6 +62,10 @@ export struct ShapeElementView {
   }
 
   private onElementChanged(): void {
+    this.redrawShape();
+  }
+
+  private onRenderVersionChanged(): void {
     this.redrawShape();
   }
 

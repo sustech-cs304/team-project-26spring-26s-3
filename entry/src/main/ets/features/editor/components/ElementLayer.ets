@@ -34,7 +34,7 @@ export struct ElementLayer {
         if (element.id !== this.editingElementId) {
           this.buildElement(element);
         }
-      }, (element: CanvasElement): string => `${element.id}_${element.updatedAt}`)
+      }, (element: CanvasElement): string => this.getElementRenderKey(element))
 
       ForEach(this.elements, (element: CanvasElement) => {
         if (this.selectedElementIds.includes(element.id) && element.id !== this.editingElementId) {
@@ -56,9 +56,9 @@ export struct ElementLayer {
         this.buildTextElement(element);
       }
     } else if (element.type === 'shape') {
-      ShapeElementView({ element: element })
+      ShapeElementView({ element: element, renderVersion: this.refreshVersion })
     } else if (element.type === 'image') {
-      ImageElementView({ element: element })
+      ImageElementView({ element: element, renderVersion: this.refreshVersion })
     }
   }
 
@@ -112,6 +112,18 @@ export struct ElementLayer {
 
   private getSelectionRenderKey(element: CanvasElement): string {
     return `selection_${element.id}_${this.selectedElementIds.join('_')}_${element.updatedAt}_${element.x}_${element.y}_${element.width}_${element.height}`;
+  }
+
+  private getElementRenderKey(element: CanvasElement): string {
+    if (element.type === 'shape') {
+      return `${element.id}_${element.updatedAt}_${element.outline.lineStyle}_${element.outline.color}_${element.outline.width}_${element.fillColor}`;
+    }
+
+    if (element.type === 'image') {
+      return `${element.id}_${element.updatedAt}_${element.outline.lineStyle}_${element.outline.color}_${element.outline.width}`;
+    }
+
+    return `${element.id}_${element.updatedAt}`;
   }
 
   private onPageIdChanged(): void {

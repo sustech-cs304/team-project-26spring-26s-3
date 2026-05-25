@@ -259,6 +259,7 @@ export struct CanvasBoard {
   @State private elementLayerScale: number = 1;
   @State private elementLayerOffsetX: number = 0;
   @State private elementLayerOffsetY: number = 0;
+  @State private elementLayerLocalRefreshVersion: number = 0;
   @State private inlineTextEditElement: TextCanvasElement | null = null;
   @State private inlineTextEditContent: string = '';
   @State private inlineTextEditX: number = 0;
@@ -282,6 +283,7 @@ export struct CanvasBoard {
   @State private selectionContextMenuY: number = 0;
   @State private isOcrRecognizing: boolean = false;
   @State private isFormulaRecognizing: boolean = false;
+  private isSelectionContextOutlineWidthDragging: boolean = false;
 
   aboutToAppear(): void {
     this.attachExistingViewModelIfAvailable();
@@ -353,7 +355,7 @@ export struct CanvasBoard {
       Stack() {
         ElementLayer({
           pageId: this.pageId,
-          refreshVersion: this.elementVersion,
+          refreshVersion: this.getElementLayerRefreshVersion(),
           autoCreateSession: this.shouldAutoLoadCurrentSession(),
           editingElementId: this.getInlineTextEditElementId()
         })
@@ -779,8 +781,8 @@ export struct CanvasBoard {
           style: SliderStyle.OutSet
         })
           .showTips(false)
-          .onChange((value: number) => {
-            this.updateSelectionContextElementOutline(null, null, Math.round(value));
+          .onChange((value: number, mode: SliderChangeMode) => {
+            this.updateSelectionContextOutlineWidthFromSlider(Math.round(value), mode);
           })
       }
         .width('100%')
@@ -2156,6 +2158,7 @@ export struct CanvasBoard {
   }
 
   private showElementContextMenu(element: CanvasElement): void {
+    this.finishSelectionContextOutlineWidthDrag();
     const size = this.getCanvasSize(this.overlayContext2D);
     const transform = this.getPageViewportTransform(size);
     this.selectionContextMenuTarget = 'element';
@@ -2184,6 +2187,7 @@ export struct CanvasBoard {
       return;
     }
 
+    this.finishSelectionContextOutlineWidthDrag();
     this.isSelectionContextMenuVisible = false;
     this.elementStylePanelMode = 'none';
     this.selectionContextMenuElementId = '';
@@ -2313,10 +2317,70 @@ export struct CanvasBoard {
     }
   }
 
+  private updateSelectionContextOutlineWidthFromSlider(width: number, mode: SliderChangeMode): void {
+    if (mode === SliderChangeMode.Begin) {
+      this.beginSelectionContextOutlineWidthDrag();
+      this.updateSelectionContextElementOutline(null, null, width, false);
+      return;
+    }
+
+    if (mode === SliderChangeMode.Moving) {
+      if (!this.isSelectionContextOutlineWidthDragging) {
+        this.beginSelectionContextOutlineWidthDrag();
+      }
+      this.updateSelectionContextElementOutline(null, null, width, false);
+      return;
+    }
+
+    if (mode === SliderChangeMode.End) {
+      if (!this.isSelectionContextOutlineWidthDragging) {
+        this.updateSelectionContextElementOutline(null, null, width);
+        return;
+      }
+      this.updateSelectionContextElementOutline(null, null, width, false);
+      this.finishSelectionContextOutlineWidthDrag();
+      return;
+    }
+
+    this.finishSelectionContextOutlineWidthDrag();
+    this.updateSelectionContextElementOutline(null, null, width);
+  }
+
+  private beginSelectionContextOutlineWidthDrag(): void {
+    const viewModel = this.getViewModel();
+    if (viewModel === null || this.selectionContextMenuElementId.length === 0) {
+      this.isSelectionContextOutlineWidthDragging = false;
+      return;
+    }
+
+    this.isSelectionContextOutlineWidthDragging =
+      viewModel.beginElementOutlineEdit(this.selectionContextMenuElementId);
+  }
+
+  private finishSelectionContextOutlineWidthDrag(): void {
+    if (!this.isSelectionContextOutlineWidthDragging) {
+      return;
+    }
+
+    this.isSelectionContextOutlineWidthDragging = false;
+    const viewModel = this.getViewModel();
+    if (viewModel === null || this.selectionContextMenuElementId.length === 0) {
+      return;
+    }
+
+    const result = viewModel.finishElementOutlineEdit(this.selectionContextMenuElementId);
+    this.syncEditorSnapshot();
+    this.redrawOverlayLayer();
+    if (result.changed) {
+      this.onContentChanged(true, 'element');
+    }
+  }
+
   private updateSelectionContextElementOutline(
     lineStyle: ElementOutlineLineStyle | null,
     color: string | null,
-    width: number | null
+    width: number | null,
+    recordHistory: boolean = true
   ): void {
     const viewModel = this.getViewModel();
     if (viewModel === null || this.selectionContextMenuElementId.length === 0) {
@@ -2335,12 +2399,21 @@ export struct CanvasBoard {
       lineStyle: nextLineStyle ?? undefined,
       color: color ?? undefined,
       width: width ?? undefined
-    });
+    }, recordHistory);
     this.syncEditorSnapshot();
     this.redrawOverlayLayer();
     if (result.changed) {
-      this.onContentChanged(true, 'element');
+      if (recordHistory) {
+        this.onContentChanged(true, 'element');
+      } else {
+        this.elementLayerLocalRefreshVersion += 1;
+        this.onContentChanged(false, 'element');
+      }
     }
+  }
+
+  private getElementLayerRefreshVersion(): number {
+    return this.elementVersion + this.elementLayerLocalRefreshVersion;
   }
 
   private getSelectionContextElement(): CanvasElement | null {

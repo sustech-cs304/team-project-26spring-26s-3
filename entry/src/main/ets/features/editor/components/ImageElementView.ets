@@ -29,6 +29,8 @@ const DEFAULT_IMAGE_ELEMENT: ImageCanvasElement = {
 export struct ImageElementView {
   @Watch('onElementChanged')
   @Prop element: ImageCanvasElement = DEFAULT_IMAGE_ELEMENT;
+  @Watch('onRenderVersionChanged')
+  @Prop renderVersion: number = 0;
 
   @State private isOutlineCanvasReady: boolean = false;
   private readonly outlineRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
@@ -64,6 +66,10 @@ export struct ImageElementView {
   }
 
   private onElementChanged(): void {
+    this.redrawOutline();
+  }
+
+  private onRenderVersionChanged(): void {
     this.redrawOutline();
   }
 
