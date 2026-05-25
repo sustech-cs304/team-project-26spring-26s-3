@@ -55,8 +55,12 @@ const tests = [
       assert.equal(packageJson.scripts['test:smoke'], 'node tests/ci-smoke.test.mjs');
       assert.equal(packageJson.scripts['test:quality'], 'node tests/ci-quality-gate.mjs');
       assert.equal(packageJson.scripts['test:ohos'], 'node tests/ci-ohos-test-check.mjs');
+      assert.equal(packageJson.scripts.metrics, 'node tests/ci-metrics.mjs');
+      assert.equal(packageJson.scripts['metrics:scc'], 'node tests/ci-scc-report.mjs');
+      assert.equal(packageJson.scripts['quality:cpd'], 'node tests/ci-pmd-cpd.mjs');
       assert.equal(packageJson.scripts['test:coverage'], 'vitest run --coverage');
       assert.match(packageJson.scripts['test:ci'], /test:ohos/);
+      assert.match(packageJson.scripts['test:ci'], /metrics/);
     }
   },
   {
@@ -90,9 +94,19 @@ const tests = [
       assert.match(jenkinsfile, /COLLECT_HARMONYOS_COVERAGE/);
       assert.match(jenkinsfile, /onDeviceTest/);
       assert.match(jenkinsfile, /collectCoverage/);
+      assert.match(jenkinsfile, /Project Metrics/);
+      assert.match(jenkinsfile, /SCC Metrics/);
+      assert.match(jenkinsfile, /PMD CPD/);
+      assert.match(jenkinsfile, /RUN_SCC_METRICS/);
+      assert.match(jenkinsfile, /RUN_PMD_CPD/);
+      assert.match(jenkinsfile, /reports\/metrics\/\*\*/);
+      assert.match(jenkinsfile, /reports\/pmd\/\*\*/);
       assert.match(jenkinsfile, /WORKSPACE/);
       assert.ok(existsSync(path.join(rootDir, 'entry/src/ohosTest/module.json5')), 'ohosTest module should exist');
       assert.ok(existsSync(path.join(rootDir, 'tests/ci-ohpm-deps.mjs')), 'OHPM dependency detector should exist');
+      assert.ok(existsSync(path.join(rootDir, 'tests/ci-metrics.mjs')), 'project metrics script should exist');
+      assert.ok(existsSync(path.join(rootDir, 'tests/ci-scc-report.mjs')), 'scc report script should exist');
+      assert.ok(existsSync(path.join(rootDir, 'tests/ci-pmd-cpd.mjs')), 'PMD CPD report script should exist');
     }
   }
 ];

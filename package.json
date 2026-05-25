@@ -8,9 +8,12 @@
     "test:smoke": "node tests/ci-smoke.test.mjs",
     "test:quality": "node tests/ci-quality-gate.mjs",
     "test:ohos": "node tests/ci-ohos-test-check.mjs",
+    "metrics": "node tests/ci-metrics.mjs",
+    "metrics:scc": "node tests/ci-scc-report.mjs",
+    "quality:cpd": "node tests/ci-pmd-cpd.mjs",
     "test:coverage": "vitest run --coverage",
     "test:package": "node tests/ci-package-check.mjs",
-    "test:ci": "npm run test:typecheck && npm run test:quality && npm run test:smoke && npm run test:ohos && npm run test:coverage"
+    "test:ci": "npm run test:typecheck && npm run test:quality && npm run metrics && npm run test:smoke && npm run test:ohos && npm run test:coverage"
   },
   "devDependencies": {
     "@types/node": "^18.19.130",

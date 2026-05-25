@@ -121,7 +121,15 @@ const SELECTION_CONTEXT_MENU_ITEM_HEIGHT = 38;
 const SELECTION_CONTEXT_MENU_OFFSET = 8;
 const FORMULA_EXPORT_PADDING = 16;
 const FORMULA_EXPORT_MIN_EDGE = 48;
+const VIEWPORT_INACTIVE_FAST_REDRAW_BASE_DELAY_MS = 32;
+const VIEWPORT_INACTIVE_FAST_REDRAW_STAGGER_MS = 96;
+const VIEWPORT_ACTIVE_QUALITY_REDRAW_DELAY_MS = 360;
+const VIEWPORT_INACTIVE_QUALITY_REDRAW_BASE_DELAY_MS = 720;
+const VIEWPORT_INACTIVE_QUALITY_REDRAW_STAGGER_MS = 260;
+const VIEWPORT_QUALITY_REDRAW_RETRY_DELAY_MS = 240;
+const VIEWPORT_QUALITY_REDRAW_STROKE_LIMIT = 180;
 export type CanvasBoardContentChangeKind = 'stroke' | 'element';
+export type CanvasInputMode = 'stylus' | 'touch';
 
 const DEFAULT_CANVAS_TOOL_SETTING: ToolSetting = {
   tool: 'pen',
@@ -148,10 +156,14 @@ export struct CanvasBoard {
   @Prop pageHeight: number = NotebookPageCanvasEntity.DEFAULT_HEIGHT;
   @Watch('onToolSettingChanged')
   @Prop toolSetting: ToolSetting = DEFAULT_CANVAS_TOOL_SETTING;
+  @Watch('onInputModeChanged')
+  @Prop inputMode: CanvasInputMode = 'stylus';
   @Watch('onActivePageChanged')
   @Prop isActivePage: boolean = false;
   @Watch('onCanvasStyleChanged')
   @Prop backgroundImageUri: string = '';
+  @Watch('onAutoLoadSessionChanged')
+  @Prop autoLoadSession: boolean = true;
   @Prop elementVersion: number = 0;
   @Prop selectedShapeType: ShapeType = 'rectangle';
   @Link editorSnapshot: EditorDebugSnapshot;
@@ -184,6 +196,7 @@ export struct CanvasBoard {
   private flattenedCommittedStrokeCount: number = 0;
   private activePreviewSession: InProgressStrokeRenderSession | null = null;
   private isDrawingGestureActive: boolean = false;
+  private isForwardingDocumentTouchGesture: boolean = false;
   private isLassoGestureActive: boolean = false;
   private isSelectionMovePending: boolean = false;
   private isSelectionMoveGestureActive: boolean = false;
@@ -207,6 +220,9 @@ export struct CanvasBoard {
   private backgroundPixelMapUri: string = '';
   private backgroundPixelMapLoadingUri: string = '';
   private backgroundPixelMapFailedUri: string = '';
+  private viewportFastRedrawTimerId: number = -1;
+  private viewportQualityRedrawTimerId: number = -1;
+  private lastHighQualityViewportRenderKey: string = '';
 
   @State private isCommittedLayerReady: boolean = false;
   @State private isRecentCommittedLayerReady: boolean = false;
@@ -236,12 +252,17 @@ export struct CanvasBoard {
   @State private isFormulaRecognizing: boolean = false;
 
   aboutToAppear(): void {
-    this.resolveViewModel();
-    void this.ensurePageSessionLoaded();
+    this.attachExistingViewModelIfAvailable();
+    if (this.shouldAutoLoadCurrentSession()) {
+      this.resolveViewModel();
+      void this.ensurePageSessionLoaded();
+    } else {
+      this.requestViewportRedraw();
+    }
   }
 
   aboutToDisappear(): void {
-    this.flattenRecentCommittedLayer();
+    this.clearViewportRedrawTimers();
     this.clearSelectionOverlayResumeTimer();
     this.commitInlineTextEdit(true);
     this.releaseBackgroundPixelMap();
@@ -274,7 +295,7 @@ export struct CanvasBoard {
         .onReady(() => {
           this.isCommittedLayerReady = true;
           this.notifyCanvasMetricsChanged();
-          this.redrawCommittedLayer();
+          this.redrawCommittedLayerAfterReadiness();
         })
 
       Canvas(this.recentCommittedContext2D)
@@ -284,7 +305,7 @@ export struct CanvasBoard {
         .onReady(() => {
           this.isRecentCommittedLayerReady = true;
           this.notifyCanvasMetricsChanged();
-          this.redrawCommittedLayer();
+          this.redrawCommittedLayerAfterReadiness();
         })
 
       Canvas(this.stablePreviewContext2D)
@@ -300,6 +321,7 @@ export struct CanvasBoard {
         ElementLayer({
           pageId: this.pageId,
           refreshVersion: this.elementVersion,
+          autoCreateSession: this.shouldAutoLoadCurrentSession(),
           editingElementId: this.getInlineTextEditElementId()
         })
           .width('100%')
@@ -363,7 +385,7 @@ export struct CanvasBoard {
     .clip(true)
     .onAreaChange((_oldValue: Area, _newValue: Area) => {
       this.notifyCanvasMetricsChanged();
-      this.redrawViewportLayers();
+      this.requestViewportRedraw();
     })
   }
 
@@ -718,7 +740,8 @@ export struct CanvasBoard {
   }
 
   private onCanvasVersionChanged(): void {
-    const viewModel = this.getViewModel();
+    this.clearViewportRedrawTimers();
+    const viewModel = this.getRenderingViewModel();
     if (viewModel) {
       viewModel.appendDebugEvent('CanvasBoard', `canvasRefresh version=${this.canvasVersion}`);
     }
@@ -733,27 +756,48 @@ export struct CanvasBoard {
     this.redrawOverlayLayer();
   }
 
+  private redrawCommittedLayerAfterReadiness(): void {
+    if (!this.areCommittedLayersReady()) {
+      return;
+    }
+
+    this.requestViewportRedraw();
+  }
+
   private onViewportRefreshVersionChanged(): void {
-    this.redrawViewportLayers();
+    this.requestViewportRedraw();
   }
 
   private handleTouch(event: TouchEvent): void {
-    const viewModel = this.getViewModel();
+    if (this.shouldRouteTouchToDocument(event)) {
+      this.isForwardingDocumentTouchGesture = true;
+      this.onDocumentTouch(event);
+      this.cancelActiveCanvasGestures(this.peekViewModel());
+      this.updateDocumentTouchForwardingState(event);
+      return;
+    }
+
+    if (this.isForwardingDocumentTouchGesture) {
+      this.onDocumentTouch(event);
+      this.cancelActiveCanvasGestures(this.peekViewModel());
+      this.updateDocumentTouchForwardingState(event);
+      return;
+    }
+
+    if (!this.shouldHandleCanvasTouch(event)) {
+      this.cancelActiveCanvasGestures(this.peekViewModel());
+      return;
+    }
+
+    const viewModel = this.getRenderingViewModel();
     if (!viewModel) {
       return;
     }
 
-    if (!this.isStylusEvent(event)) {
-      this.onDocumentTouch(event);
-      this.cancelDrawingGesture(viewModel);
-      this.cancelLassoGesture(viewModel);
-      this.cancelSelectionMoveGesture(viewModel);
-      this.cancelActiveStrokeResizeGesture(viewModel);
-      return;
-    }
-
     this.syncViewModelToolSetting(viewModel);
-    if (event.type === TouchType.Down) {
+    const toolSetting = this.getEffectiveToolSetting();
+    const activeTool = toolSetting.tool;
+    if (this.shouldNotifyPageInteractionStart(event, activeTool)) {
       this.onPageInteractionStart(this.pageId);
     }
 
@@ -762,8 +806,6 @@ export struct CanvasBoard {
       return;
     }
 
-    const toolSetting = this.getEffectiveToolSetting();
-    const activeTool = toolSetting.tool;
     const touch = event.changedTouches.length > 0 ? event.changedTouches[0] : event.touches[0];
     if (!touch) {
       if (activeTool === 'lasso') {
@@ -1126,11 +1168,84 @@ export struct CanvasBoard {
   }
 
   private shouldAcceptStrokeInput(event: TouchEvent): boolean {
-    return event.sourceTool === SourceTool.Pen;
+    return this.shouldHandleCanvasTouch(event);
+  }
+
+  private shouldNotifyPageInteractionStart(event: TouchEvent, activeTool: string): boolean {
+    if (event.type === TouchType.Down) {
+      return !this.shouldDeferTouchStrokeActivation(event, activeTool);
+    }
+
+    if (event.type === TouchType.Move || event.type === TouchType.Up) {
+      return this.shouldDeferTouchStrokeActivation(event, activeTool);
+    }
+
+    return false;
+  }
+
+  private shouldDeferTouchStrokeActivation(event: TouchEvent, activeTool: string): boolean {
+    return this.inputMode === 'touch' &&
+      !this.isActivePage &&
+      !this.isStylusEvent(event) &&
+      this.isStrokeInputTool(activeTool);
   }
 
   private isStylusEvent(event: TouchEvent): boolean {
     return event.sourceTool === SourceTool.Pen;
+  }
+
+  private shouldRouteTouchToDocument(event: TouchEvent): boolean {
+    if (this.inputMode === 'stylus') {
+      return !this.isStylusEvent(event);
+    }
+
+    return !this.isStylusEvent(event) && this.hasMultipleActiveTouches(event);
+  }
+
+  private shouldHandleCanvasTouch(event: TouchEvent): boolean {
+    if (this.inputMode === 'touch') {
+      return !this.isStylusEvent(event) && !this.hasMultipleActiveTouches(event);
+    }
+
+    return this.isStylusEvent(event);
+  }
+
+  private hasMultipleActiveTouches(event: TouchEvent): boolean {
+    return this.getActiveTouches(event).length >= 2;
+  }
+
+  private updateDocumentTouchForwardingState(event: TouchEvent): void {
+    if (event.type === TouchType.Cancel) {
+      this.isForwardingDocumentTouchGesture = false;
+      return;
+    }
+
+    if (event.type === TouchType.Up && this.getActiveTouches(event).length < 2) {
+      this.isForwardingDocumentTouchGesture = false;
+    }
+  }
+
+  private getActiveTouches(event: TouchEvent): TouchObject[] {
+    if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+      return event.touches;
+    }
+
+    if (event.touches.length > 0) {
+      return event.touches;
+    }
+
+    return event.changedTouches;
+  }
+
+  private cancelActiveCanvasGestures(viewModel: DrawingEditorViewModel | null): void {
+    if (viewModel === null) {
+      return;
+    }
+
+    this.cancelDrawingGesture(viewModel);
+    this.cancelLassoGesture(viewModel);
+    this.cancelSelectionMoveGesture(viewModel);
+    this.cancelActiveStrokeResizeGesture(viewModel);
   }
 
   private handleStrokeResizeTouch(event: TouchEvent, touch: TouchObject, viewModel: DrawingEditorViewModel): boolean {
@@ -1441,7 +1556,7 @@ export struct CanvasBoard {
   }
 
   private async finishStrokeAndRedraw(activeTool: string): Promise<void> {
-    const viewModel = this.getViewModel();
+    const viewModel = this.getRenderingViewModel();
     if (!viewModel) {
       return;
     }
@@ -1485,13 +1600,30 @@ export struct CanvasBoard {
     };
   }
 
-  private redrawCommittedLayer(useFastRendering: boolean = false, preserveRecentSplit: boolean = false): void {
+  private redrawCommittedLayer(
+    useFastRendering: boolean = false,
+    preserveRecentSplit: boolean = false,
+    useBufferedRendering: boolean = true,
+    shouldRebuildRenderCache: boolean = true
+  ): void {
     if (!this.areCommittedLayersReady()) {
       return;
     }
+    if (!useFastRendering) {
+      this.clearViewportRedrawTimers();
+    }
 
     const redrawStartedAt = Date.now();
-    const viewModel = this.getViewModel();
+    const viewModel = this.getRenderingViewModel();
+    if (viewModel === null && !this.shouldAutoLoadCurrentSession()) {
+      EditorPerformanceTrace.record(
+        'committed.fullRedraw',
+        Date.now() - redrawStartedAt,
+        'deferredSession=true preserveLayer=true',
+        4
+      );
+      return;
+    }
     const strokes = viewModel ? viewModel.getStrokesForRendering() : [];
     let flattenedStrokeCount = preserveRecentSplit
       ? Math.max(0, Math.min(this.flattenedCommittedStrokeCount, strokes.length))
@@ -1500,24 +1632,28 @@ export struct CanvasBoard {
       flattenedStrokeCount = strokes.length;
     }
     this.flattenedCommittedStrokeCount = flattenedStrokeCount;
-    this.rebuildRenderedStrokeCache(strokes);
+    if (shouldRebuildRenderCache || !this.isRenderedStrokeCacheReusable(strokes)) {
+      this.rebuildRenderedStrokeCache(strokes);
+    }
 
     const size = this.getCanvasSize(this.committedContext2D);
     const transform = this.getPageViewportTransform(size);
     this.syncElementLayerTransform(transform);
     const visibleRegion = this.getVisiblePageRegion(transform);
 
-    if (this.redrawCommittedBaseLayerWithBuffer(size, transform, visibleRegion, strokes, flattenedStrokeCount,
+    if (useBufferedRendering &&
+      this.redrawCommittedBaseLayerWithBuffer(size, transform, visibleRegion, strokes, flattenedStrokeCount,
       useFastRendering)) {
       this.redrawRecentCommittedStrokes(strokes, flattenedStrokeCount, visibleRegion, transform, useFastRendering);
     } else {
       this.redrawCommittedLayerDirect(size, transform, visibleRegion, strokes, flattenedStrokeCount, useFastRendering);
     }
+    this.markCommittedViewportRendered(!useFastRendering);
 
     EditorPerformanceTrace.record(
       'committed.fullRedraw',
       Date.now() - redrawStartedAt,
-      `fast=${useFastRendering} visible=${visibleRegion === null ? 'false' : 'true'} flattened=${flattenedStrokeCount} recent=${Math.max(0, strokes.length - flattenedStrokeCount)} strokes=${strokes.length}`,
+      `fast=${useFastRendering} buffered=${useBufferedRendering} rebuildCache=${shouldRebuildRenderCache} visible=${visibleRegion === null ? 'false' : 'true'} flattened=${flattenedStrokeCount} recent=${Math.max(0, strokes.length - flattenedStrokeCount)} strokes=${strokes.length}`,
       useFastRendering ? 10 : 14
     );
   }
@@ -1530,7 +1666,7 @@ export struct CanvasBoard {
     this.clearPreviewLayers();
     this.resetActivePreviewSession();
 
-    const viewModel = this.getViewModel();
+    const viewModel = this.getRenderingViewModel();
     if (!viewModel) {
       return;
     }
@@ -1626,6 +1762,7 @@ export struct CanvasBoard {
     this.committedContext2D.clearRect(0, 0, size.width, size.height);
     this.clearRecentCommittedLayer();
     this.flattenedCommittedStrokeCount = 0;
+    this.lastHighQualityViewportRenderKey = '';
   }
 
   private clearStablePreviewRegion(region: BoundingBox): void {
@@ -1637,7 +1774,7 @@ export struct CanvasBoard {
   }
 
   private syncEditorSnapshot(): void {
-    const viewModel = this.getViewModel();
+    const viewModel = this.getRenderingViewModel();
     if (!viewModel) {
       return;
     }
@@ -2014,7 +2151,7 @@ export struct CanvasBoard {
     this.resetInlineTextEditFrame();
     this.clearLastEditTap();
 
-    const viewModel = this.getViewModel();
+    const viewModel = this.getRenderingViewModel();
     if (viewModel === null) {
       return;
     }
@@ -2320,14 +2457,6 @@ export struct CanvasBoard {
     }
   }
 
-  private flattenRecentCommittedLayer(): void {
-    if (!this.hasActiveRecentCommittedLayer()) {
-      return;
-    }
-
-    this.redrawCommittedLayer(false, false);
-  }
-
   private getSelectedStrokeTargetDirtyBounds(): BoundingBox | null {
     const dirtyBounds: BoundingBox[] = [];
     for (const strokeId of this.hiddenStrokeIdsDuringSelectionMove) {
@@ -2509,6 +2638,7 @@ export struct CanvasBoard {
   private resetViewportTransform(): void {
     this.hiddenStrokeIdsDuringSelectionMove.clear();
     this.isDrawingGestureActive = false;
+    this.isForwardingDocumentTouchGesture = false;
     this.isLassoGestureActive = false;
     this.shouldClearSelectionOnLassoTap = false;
     this.isSelectionMovePending = false;
@@ -2576,9 +2706,150 @@ export struct CanvasBoard {
     return pageX >= 0 && pageX <= transform.pageWidth && pageY >= 0 && pageY <= transform.pageHeight;
   }
 
-  private redrawViewportLayers(): void {
-    this.redrawCommittedLayer(false, false);
+  private redrawViewportLayers(useFastRendering: boolean = false, useBufferedRendering: boolean = true): void {
+    this.redrawCommittedLayer(useFastRendering, false, useBufferedRendering, false);
     this.redrawOverlayLayer();
+  }
+
+  private requestViewportRedraw(): void {
+    this.clearViewportRedrawTimers();
+    const fastDelay = this.getViewportFastRedrawDelay();
+    this.viewportFastRedrawTimerId = setTimeout(() => {
+      this.viewportFastRedrawTimerId = -1;
+      if (this.buildViewportRenderKey() === this.lastHighQualityViewportRenderKey) {
+        return;
+      }
+      this.redrawViewportLayers(true, false);
+    }, fastDelay);
+    if (!this.shouldScheduleViewportQualityRedraw()) {
+      return;
+    }
+    this.scheduleViewportQualityRedraw(Math.max(fastDelay + 1, this.getViewportQualityRedrawDelay()));
+  }
+
+  private shouldScheduleViewportQualityRedraw(): boolean {
+    const viewModel = this.getRenderingViewModel();
+    if (viewModel === null) {
+      return false;
+    }
+
+    return viewModel.getStrokesForRendering().length <= VIEWPORT_QUALITY_REDRAW_STROKE_LIMIT;
+  }
+
+  private scheduleViewportQualityRedraw(delayMs: number): void {
+    this.clearViewportQualityRedrawTimer();
+    this.viewportQualityRedrawTimerId = setTimeout(() => {
+      this.viewportQualityRedrawTimerId = -1;
+      this.redrawViewportLayersWhenIdle();
+    }, delayMs);
+  }
+
+  private redrawViewportLayersWhenIdle(): void {
+    if (this.shouldDeferViewportQualityRedraw()) {
+      this.scheduleViewportQualityRedraw(VIEWPORT_QUALITY_REDRAW_RETRY_DELAY_MS);
+      return;
+    }
+
+    if (this.buildViewportRenderKey() === this.lastHighQualityViewportRenderKey) {
+      return;
+    }
+
+    this.redrawViewportLayers(false, false);
+  }
+
+  private shouldDeferViewportQualityRedraw(): boolean {
+    return this.hasActiveCanvasGesture();
+  }
+
+  private hasActiveCanvasGesture(): boolean {
+    return this.isDrawingGestureActive ||
+      this.isForwardingDocumentTouchGesture ||
+      this.isLassoGestureActive ||
+      this.isSelectionMovePending ||
+      this.isSelectionMoveGestureActive ||
+      this.isStrokeResizeDragging();
+  }
+
+  private clearViewportRedrawTimers(): void {
+    this.clearViewportFastRedrawTimer();
+    this.clearViewportQualityRedrawTimer();
+  }
+
+  private clearViewportFastRedrawTimer(): void {
+    if (this.viewportFastRedrawTimerId < 0) {
+      return;
+    }
+
+    clearTimeout(this.viewportFastRedrawTimerId);
+    this.viewportFastRedrawTimerId = -1;
+  }
+
+  private clearViewportQualityRedrawTimer(): void {
+    if (this.viewportQualityRedrawTimerId < 0) {
+      return;
+    }
+
+    clearTimeout(this.viewportQualityRedrawTimerId);
+    this.viewportQualityRedrawTimerId = -1;
+  }
+
+  private getViewportFastRedrawDelay(): number {
+    if (this.isActivePage) {
+      return 0;
+    }
+
+    return VIEWPORT_INACTIVE_FAST_REDRAW_BASE_DELAY_MS +
+      this.getPageScopedDelay(VIEWPORT_INACTIVE_FAST_REDRAW_STAGGER_MS);
+  }
+
+  private getViewportQualityRedrawDelay(): number {
+    if (this.isActivePage) {
+      return VIEWPORT_ACTIVE_QUALITY_REDRAW_DELAY_MS;
+    }
+
+    return VIEWPORT_INACTIVE_QUALITY_REDRAW_BASE_DELAY_MS +
+      this.getPageScopedDelay(VIEWPORT_INACTIVE_QUALITY_REDRAW_STAGGER_MS);
+  }
+
+  private getPageScopedDelay(maxDelayMs: number): number {
+    const normalizedMaxDelay = Math.max(1, Math.round(maxDelayMs));
+    let hash = 0;
+    for (let index = 0; index < this.pageId.length; index += 1) {
+      hash = (hash * 31 + this.pageId.charCodeAt(index)) % normalizedMaxDelay;
+    }
+
+    return hash;
+  }
+
+  private markCommittedViewportRendered(isHighQuality: boolean): void {
+    if (isHighQuality) {
+      this.lastHighQualityViewportRenderKey = this.buildViewportRenderKey();
+    }
+  }
+
+  private buildViewportRenderKey(): string {
+    const size = this.getCanvasSize(this.committedContext2D);
+    const transform = this.getPageViewportTransform(size);
+    const lastStrokeId = this.renderedStrokeOrder.length === 0
+      ? ''
+      : this.renderedStrokeOrder[this.renderedStrokeOrder.length - 1];
+    return [
+      this.pageId,
+      `${this.canvasVersion}`,
+      `${this.lastAppliedRenderInvalidationSequence}`,
+      `${this.renderedStrokeOrder.length}`,
+      lastStrokeId,
+      `${this.flattenedCommittedStrokeCount}`,
+      `${this.templateType}`,
+      this.paperBackgroundColor,
+      `${Math.round(transform.pageWidth * 100)}`,
+      `${Math.round(transform.pageHeight * 100)}`,
+      `${Math.round(transform.viewportWidth)}`,
+      `${Math.round(transform.viewportHeight)}`,
+      `${Math.round(transform.scale * 10000)}`,
+      `${Math.round(transform.offsetX * 100)}`,
+      `${Math.round(transform.offsetY * 100)}`
+    ].join('|');
   }
 
   private clamp(value: number, minValue: number, maxValue: number): number {
@@ -2694,7 +2965,7 @@ export struct CanvasBoard {
   }
 
   private consumeLatestRenderInvalidationSequence(): void {
-    const viewModel = this.getViewModel();
+    const viewModel = this.getRenderingViewModel();
     if (viewModel === null) {
       return;
     }
@@ -2719,14 +2990,14 @@ export struct CanvasBoard {
       return false;
     }
 
-    const viewModel = this.getViewModel();
+    const viewModel = this.getRenderingViewModel();
     if (!viewModel) {
       return false;
     }
 
     const invalidation = viewModel.getRenderInvalidation();
     if (invalidation === null) {
-      return false;
+      return this.isRenderedStrokeCacheReusable(viewModel.getStrokesForRendering());
     }
 
     if (invalidation.sequence <= this.lastAppliedRenderInvalidationSequence) {
@@ -2872,6 +3143,20 @@ export struct CanvasBoard {
     }
   }
 
+  private isRenderedStrokeCacheReusable(strokes: Stroke[]): boolean {
+    if (this.renderedStrokeOrder.length !== strokes.length) {
+      return false;
+    }
+
+    for (let index = 0; index < strokes.length; index += 1) {
+      if (this.renderedStrokeOrder[index] !== strokes[index].id) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   private cacheRenderedStrokeState(stroke: Stroke): void {
     this.renderedStrokesById.set(stroke.id, stroke);
     this.strokeSpatialIndex.upsertStroke(stroke);
@@ -2975,7 +3260,7 @@ export struct CanvasBoard {
     }
 
     const redrawStartedAt = Date.now();
-    const viewModel = this.getViewModel();
+    const viewModel = this.getRenderingViewModel();
     const strokes = viewModel ? viewModel.getStrokesForRendering() : [];
     this.clearRecentCommittedLayer();
     if (this.flattenedCommittedStrokeCount >= strokes.length) {
@@ -3253,7 +3538,30 @@ export struct CanvasBoard {
     visibleBounds: BoundingBox,
     useFastRendering: boolean
   ): void {
-    for (let index = startIndex; index < endIndex; index += 1) {
+    const normalizedStartIndex = Math.max(0, startIndex);
+    const normalizedEndIndex = Math.min(strokes.length, endIndex);
+    if (normalizedStartIndex >= normalizedEndIndex) {
+      return;
+    }
+
+    if (normalizedStartIndex === 0 &&
+      normalizedEndIndex === strokes.length &&
+      this.renderedStrokeOrder.length === strokes.length) {
+      const visibleStrokeIds = this.getCachedVisibleStrokeIds(visibleBounds);
+      for (const strokeId of visibleStrokeIds) {
+        if (this.hiddenStrokeIdsDuringSelectionMove.has(strokeId)) {
+          continue;
+        }
+
+        const stroke = this.renderedStrokesById.get(strokeId);
+        if (stroke !== undefined) {
+          this.drawStroke(context, stroke, useFastRendering);
+        }
+      }
+      return;
+    }
+
+    for (let index = normalizedStartIndex; index < normalizedEndIndex; index += 1) {
       const stroke = strokes[index];
       if (this.hiddenStrokeIdsDuringSelectionMove.has(stroke.id)) {
         continue;
@@ -3611,7 +3919,7 @@ export struct CanvasBoard {
       return false;
     }
 
-    const viewModel = this.getViewModel();
+    const viewModel = this.getRenderingViewModel();
     if (viewModel === null) {
       return false;
     }
@@ -3672,7 +3980,7 @@ export struct CanvasBoard {
   }
 
   private canAppendToRecentCommittedLayer(): boolean {
-    const viewModel = this.getViewModel();
+    const viewModel = this.getRenderingViewModel();
     if (viewModel === null) {
       return false;
     }
@@ -3787,6 +4095,8 @@ export struct CanvasBoard {
   }
 
   private onPageIdChanged(): void {
+    this.clearViewportRedrawTimers();
+    this.lastHighQualityViewportRenderKey = '';
     this.inlineTextEditElement = null;
     this.inlineTextEditContent = '';
     this.resetInlineTextEditFrame();
@@ -3795,6 +4105,7 @@ export struct CanvasBoard {
     this.selectedStrokeTargets = [];
     this.strokeResizeBounds = null;
     this.strokeResizeUiMode = 'none';
+    this.isForwardingDocumentTouchGesture = false;
     this.lastSelectionVersion = -1;
     this.selectionOverlayRefreshVersion += 1;
     this.resumeSelectionOverlayImmediately();
@@ -3805,8 +4116,13 @@ export struct CanvasBoard {
     this.forceFullCommittedRedrawOnNextCanvasRefresh = true;
     this.clearPreviewLayers();
     this.resetActivePreviewSession();
-    this.resolveViewModel();
-    void this.ensurePageSessionLoaded();
+    this.attachExistingViewModelIfAvailable();
+    if (this.shouldAutoLoadCurrentSession()) {
+      this.resolveViewModel();
+      void this.ensurePageSessionLoaded();
+    } else {
+      this.requestViewportRedraw();
+    }
   }
 
   private onToolSettingChanged(): void {
@@ -3814,7 +4130,7 @@ export struct CanvasBoard {
     if (activeTool !== 'edit') {
       this.commitInlineTextEdit(true);
     }
-    const viewModel = this.getViewModel();
+    const viewModel = this.peekViewModel();
     if (viewModel !== null) {
       this.syncViewModelToolSetting(viewModel);
     }
@@ -3826,9 +4142,54 @@ export struct CanvasBoard {
     }
   }
 
+  private onInputModeChanged(): void {
+    const hadCanvasGesture = this.hasActiveCanvasGesture();
+    this.isForwardingDocumentTouchGesture = false;
+    if (!this.isActivePage && !hadCanvasGesture) {
+      return;
+    }
+
+    const viewModel = this.peekViewModel();
+    if (viewModel !== null && hadCanvasGesture) {
+      this.cancelDrawingGesture(viewModel);
+      this.cancelLassoGesture(viewModel);
+      this.cancelSelectionMoveGesture(viewModel);
+      this.cancelActiveStrokeResizeGesture(viewModel);
+    }
+
+    if (this.isActivePage) {
+      this.hideSelectionContextMenu();
+    }
+  }
+
+  private onAutoLoadSessionChanged(): void {
+    if (!this.shouldAutoLoadCurrentSession()) {
+      return;
+    }
+
+    this.resolveViewModel();
+    const viewModel = this.getViewModel();
+    if (viewModel === null || !viewModel.isLoadedForPage(this.pageId)) {
+      void this.ensurePageSessionLoaded();
+      return;
+    }
+
+    this.requestViewportRedraw();
+  }
+
   private onActivePageChanged(): void {
     if (!this.isActivePage) {
       this.hideSelectionContextMenu();
+      return;
+    }
+
+    if (!this.shouldAutoLoadCurrentSession()) {
+      this.attachExistingViewModelIfAvailable();
+      const existingViewModel = this.peekViewModel();
+      if (existingViewModel !== null && existingViewModel.isLoadedForPage(this.pageId)) {
+        this.syncViewModelToolSetting(existingViewModel);
+        this.syncEditorSnapshot();
+      }
       return;
     }
 
@@ -3836,15 +4197,20 @@ export struct CanvasBoard {
     if (viewModel !== null) {
       this.syncViewModelToolSetting(viewModel);
       this.syncEditorSnapshot();
+      if (!viewModel.isLoadedForPage(this.pageId)) {
+        void this.ensurePageSessionLoaded();
+      }
     }
   }
 
   private onCanvasStyleChanged(): void {
+    this.clearViewportRedrawTimers();
     this.redrawCommittedLayer();
     this.redrawOverlayLayer();
   }
 
   private onPageGeometryChanged(): void {
+    this.clearViewportRedrawTimers();
     this.resetViewportTransform();
     this.notifyCanvasMetricsChanged();
     this.redrawCommittedLayer();
@@ -3869,7 +4235,7 @@ export struct CanvasBoard {
     this.viewModel = viewModel;
     this.forceFullCommittedRedrawOnNextCanvasRefresh = false;
     this.consumeLatestRenderInvalidationSequence();
-    this.redrawCommittedLayer();
+    this.requestViewportRedraw();
     this.redrawOverlayLayer();
     if (this.isActivePage) {
       this.syncEditorSnapshot();
@@ -3904,6 +4270,54 @@ export struct CanvasBoard {
     }
 
     return this.viewModel;
+  }
+
+  private getRenderingViewModel(): DrawingEditorViewModel | null {
+    if (this.viewModel !== null) {
+      return this.shouldUseViewModelForRendering(this.viewModel) ? this.viewModel : null;
+    }
+
+    this.attachExistingViewModelIfAvailable();
+    if (this.viewModel !== null) {
+      return this.shouldUseViewModelForRendering(this.viewModel) ? this.viewModel : null;
+    }
+
+    if (!this.shouldAutoLoadCurrentSession()) {
+      return null;
+    }
+
+    this.resolveViewModel();
+    return this.viewModel;
+  }
+
+  private shouldUseViewModelForRendering(viewModel: DrawingEditorViewModel): boolean {
+    return this.shouldAutoLoadCurrentSession() || viewModel.isLoadedForPage(this.pageId);
+  }
+
+  private peekViewModel(): DrawingEditorViewModel | null {
+    if (this.viewModel !== null) {
+      return this.viewModel;
+    }
+
+    return EditorSessionRegistry.get(this.pageId);
+  }
+
+  private attachExistingViewModelIfAvailable(): void {
+    if (this.pageId.length === 0 || this.viewModel !== null) {
+      return;
+    }
+
+    const existingSession = EditorSessionRegistry.get(this.pageId);
+    if (existingSession === null) {
+      return;
+    }
+
+    this.viewModel = existingSession;
+    this.syncViewModelToolSetting(existingSession);
+  }
+
+  private shouldAutoLoadCurrentSession(): boolean {
+    return this.autoLoadSession;
   }
 
   private resolveViewModel(): void {

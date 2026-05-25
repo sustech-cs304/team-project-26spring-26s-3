@@ -110,9 +110,18 @@ def runCi(String windowsBody, String unixBody) {
 export DEVECO_HOME_OVERRIDE='${params.DEVECO_HOME_OVERRIDE ?: ''}'
 export DEVECO_SDK_HOME_OVERRIDE='${params.DEVECO_SDK_HOME_OVERRIDE ?: ''}'
 export JAVA_HOME_OVERRIDE='${params.JAVA_HOME_OVERRIDE ?: ''}'
+export SCC_BIN_OVERRIDE='${params.SCC_BIN_OVERRIDE ?: ''}'
+export PMD_BIN_OVERRIDE='${params.PMD_BIN_OVERRIDE ?: ''}'
+export PMD_CPD_MINIMUM_TOKENS='${params.PMD_CPD_MINIMUM_TOKENS ?: ''}'
 export REPO_DIR_OVERRIDE='${params.REPO_DIR ?: ''}'
 if [ -n "\$REPO_DIR_OVERRIDE" ]; then
   export REPO_DIR="\$REPO_DIR_OVERRIDE"
+fi
+if [ -n "\$SCC_BIN_OVERRIDE" ]; then
+  export SCC_BIN="\$SCC_BIN_OVERRIDE"
+fi
+if [ -n "\$PMD_BIN_OVERRIDE" ]; then
+  export PMD_BIN="\$PMD_BIN_OVERRIDE"
 fi
 ${unixToolSetup()}
 ${repoUnixPrefix()}
@@ -123,8 +132,13 @@ ${unixBody}
 set "DEVECO_HOME_OVERRIDE=${params.DEVECO_HOME_OVERRIDE ?: ''}"
 set "DEVECO_SDK_HOME_OVERRIDE=${params.DEVECO_SDK_HOME_OVERRIDE ?: ''}"
 set "JAVA_HOME_OVERRIDE=${params.JAVA_HOME_OVERRIDE ?: ''}"
+set "SCC_BIN_OVERRIDE=${params.SCC_BIN_OVERRIDE ?: ''}"
+set "PMD_BIN_OVERRIDE=${params.PMD_BIN_OVERRIDE ?: ''}"
+set "PMD_CPD_MINIMUM_TOKENS=${params.PMD_CPD_MINIMUM_TOKENS ?: ''}"
 set "REPO_DIR_OVERRIDE=${params.REPO_DIR ?: ''}"
 if not "%REPO_DIR_OVERRIDE%"=="" set "REPO_DIR=%REPO_DIR_OVERRIDE%"
+if not "%SCC_BIN_OVERRIDE%"=="" set "SCC_BIN=%SCC_BIN_OVERRIDE%"
+if not "%PMD_BIN_OVERRIDE%"=="" set "PMD_BIN=%PMD_BIN_OVERRIDE%"
 ${windowsToolSetup()}
 ${repoWindowsPrefix()}
 ${windowsBody}""")
@@ -140,9 +154,18 @@ def runHvigorBuild() {
 export DEVECO_HOME_OVERRIDE='${params.DEVECO_HOME_OVERRIDE ?: ''}'
 export DEVECO_SDK_HOME_OVERRIDE='${params.DEVECO_SDK_HOME_OVERRIDE ?: ''}'
 export JAVA_HOME_OVERRIDE='${params.JAVA_HOME_OVERRIDE ?: ''}'
+export SCC_BIN_OVERRIDE='${params.SCC_BIN_OVERRIDE ?: ''}'
+export PMD_BIN_OVERRIDE='${params.PMD_BIN_OVERRIDE ?: ''}'
+export PMD_CPD_MINIMUM_TOKENS='${params.PMD_CPD_MINIMUM_TOKENS ?: ''}'
 export REPO_DIR_OVERRIDE='${params.REPO_DIR ?: ''}'
 if [ -n "\$REPO_DIR_OVERRIDE" ]; then
   export REPO_DIR="\$REPO_DIR_OVERRIDE"
+fi
+if [ -n "\$SCC_BIN_OVERRIDE" ]; then
+  export SCC_BIN="\$SCC_BIN_OVERRIDE"
+fi
+if [ -n "\$PMD_BIN_OVERRIDE" ]; then
+  export PMD_BIN="\$PMD_BIN_OVERRIDE"
 fi
 ${unixToolSetup()}
 ${repoUnixPrefix()}
@@ -158,8 +181,13 @@ ${repoUnixPrefix()}
 set "DEVECO_HOME_OVERRIDE=${params.DEVECO_HOME_OVERRIDE ?: ''}"
 set "DEVECO_SDK_HOME_OVERRIDE=${params.DEVECO_SDK_HOME_OVERRIDE ?: ''}"
 set "JAVA_HOME_OVERRIDE=${params.JAVA_HOME_OVERRIDE ?: ''}"
+set "SCC_BIN_OVERRIDE=${params.SCC_BIN_OVERRIDE ?: ''}"
+set "PMD_BIN_OVERRIDE=${params.PMD_BIN_OVERRIDE ?: ''}"
+set "PMD_CPD_MINIMUM_TOKENS=${params.PMD_CPD_MINIMUM_TOKENS ?: ''}"
 set "REPO_DIR_OVERRIDE=${params.REPO_DIR ?: ''}"
 if not "%REPO_DIR_OVERRIDE%"=="" set "REPO_DIR=%REPO_DIR_OVERRIDE%"
+if not "%SCC_BIN_OVERRIDE%"=="" set "SCC_BIN=%SCC_BIN_OVERRIDE%"
+if not "%PMD_BIN_OVERRIDE%"=="" set "PMD_BIN=%PMD_BIN_OVERRIDE%"
 ${windowsToolSetup()}
 ${repoWindowsPrefix()}
 call "%HVIGOR_BIN%" clean assembleApp --no-daemon --no-incremental --no-type-check"""
@@ -180,7 +208,12 @@ pipeline {
     string(name: 'DEVECO_HOME_OVERRIDE', defaultValue: '', description: 'Optional DevEco Studio home for this Jenkins node. Prefer a Jenkins global env var named DEVECO_HOME.')
     string(name: 'DEVECO_SDK_HOME_OVERRIDE', defaultValue: '', description: 'Optional HarmonyOS SDK home. Defaults to DEVECO_HOME/sdk.')
     string(name: 'JAVA_HOME_OVERRIDE', defaultValue: '', description: 'Optional JDK home for this Jenkins node. Prefer a Jenkins global env var named JAVA_HOME.')
+    string(name: 'SCC_BIN_OVERRIDE', defaultValue: '', description: 'Optional scc executable path. Leave empty when scc is on PATH.')
+    string(name: 'PMD_BIN_OVERRIDE', defaultValue: '', description: 'Optional PMD executable path, e.g. pmd-bin-x.y.z/bin/pmd.bat. Leave empty when pmd is on PATH.')
+    string(name: 'PMD_CPD_MINIMUM_TOKENS', defaultValue: '80', description: 'Minimum token threshold for PMD CPD duplicate-code detection.')
     booleanParam(name: 'ALLOW_UNSIGNED_HAP', defaultValue: true, description: 'Allow signing failure when an unsigned HAP is still produced. Keep true until Jenkins signing credentials are configured.')
+    booleanParam(name: 'RUN_SCC_METRICS', defaultValue: false, description: 'Run third-party scc LOC/complexity metrics. Requires scc on PATH or SCC_BIN configured on the Jenkins node.')
+    booleanParam(name: 'RUN_PMD_CPD', defaultValue: false, description: 'Run PMD CPD duplicate-code detection. Requires pmd on PATH or PMD_BIN configured on the Jenkins node.')
     booleanParam(name: 'RUN_DEVICE_SMOKE', defaultValue: false, description: 'Run a connected-device hdc smoke check. Enable only on nodes with a device or emulator attached.')
     booleanParam(name: 'RUN_HARMONYOS_DEVICE_TESTS', defaultValue: false, description: 'Run official HarmonyOS ohosTest/Hypium tests on a connected device or emulator.')
     booleanParam(name: 'COLLECT_HARMONYOS_COVERAGE', defaultValue: true, description: 'Run hvigor collectCoverage after HarmonyOS device tests.')
@@ -301,6 +334,45 @@ test -f oh-package-lock.json5
           runCi(
             'call "%NPM_BIN%" run test:quality',
             '"$NPM_BIN" run test:quality'
+          )
+        }
+      }
+    }
+
+    stage('Project Metrics') {
+      steps {
+        script {
+          runCi(
+            'call "%NPM_BIN%" run metrics',
+            '"$NPM_BIN" run metrics'
+          )
+        }
+      }
+    }
+
+    stage('SCC Metrics') {
+      when {
+        expression { return params.RUN_SCC_METRICS }
+      }
+      steps {
+        script {
+          runCi(
+            'call "%NPM_BIN%" run metrics:scc',
+            '"$NPM_BIN" run metrics:scc'
+          )
+        }
+      }
+    }
+
+    stage('PMD CPD') {
+      when {
+        expression { return params.RUN_PMD_CPD }
+      }
+      steps {
+        script {
+          runCi(
+            'call "%NPM_BIN%" run quality:cpd',
+            '"$NPM_BIN" run quality:cpd'
           )
         }
       }
@@ -447,7 +519,7 @@ echo "Connected hdc target: $target"
   post {
     always {
       junit allowEmptyResults: true, testResults: 'reports/tests/*.xml'
-      archiveArtifacts artifacts: 'reports/tests/*.xml,reports/coverage/**/*,build/outputs/**/*.app,build/outputs/**/*.zip,entry/build/**/outputs/**/*.hap,entry/build/**/*coverage*/**,.hvigor/outputs/build-logs/*.log', fingerprint: true, allowEmptyArchive: true
+      archiveArtifacts artifacts: 'reports/tests/*.xml,reports/metrics/**/*,reports/pmd/**/*,reports/coverage/**/*,build/outputs/**/*.app,build/outputs/**/*.zip,entry/build/**/outputs/**/*.hap,entry/build/**/*coverage*/**,.hvigor/outputs/build-logs/*.log', fingerprint: true, allowEmptyArchive: true
     }
   }
 }

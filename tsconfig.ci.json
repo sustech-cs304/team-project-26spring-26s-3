@@ -7,7 +7,10 @@
     "entry/src/main/ets/common/**/*.ts",
     "entry/src/main/ets/domain/**/*.ts",
     "entry/src/main/ets/features/editor/controllers/CanvasDrawContext.ts",
+    "entry/src/main/ets/features/editor/controllers/StrokeController.ts",
     "entry/src/main/ets/features/editor/controllers/StrokeSpatialHashIndex.ts",
+    "entry/src/main/ets/features/editor/controllers/UndoRedoController.ts",
+    "entry/src/main/ets/features/editor/selection/**/*.ts",
     "tests/**/*.test.ts",
     "vitest.config.ts"
   ],

@@ -19,7 +19,9 @@ export default defineConfig({
         'entry/src/main/ets/common/utils/TimeUtil.ts',
         'entry/src/main/ets/domain/entities/Stroke.ts',
         'entry/src/main/ets/domain/entities/ToolSetting.ts',
-        'entry/src/main/ets/features/editor/controllers/StrokeSpatialHashIndex.ts'
+        'entry/src/main/ets/features/editor/controllers/StrokeController.ts',
+        'entry/src/main/ets/features/editor/controllers/StrokeSpatialHashIndex.ts',
+        'entry/src/main/ets/features/editor/controllers/UndoRedoController.ts'
       ],
       exclude: [
         '**/*.ets',

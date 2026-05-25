@@ -12,6 +12,9 @@ This project uses Jenkins Pipeline to build, test, package, and archive a Harmon
 | `Install Node Test Dependencies` | Runs `npm ci` from the committed `package-lock.json`. |
 | `TypeScript Typecheck` | Runs `tsc -p tsconfig.ci.json` for pure TypeScript logic. |
 | `Quality Gate` | Verifies CI files, ignore rules, coverage thresholds, and official HarmonyOS test hooks. |
+| `Project Metrics` | Computes LOC, source file count, function-level cyclomatic complexity, and dependency count. |
+| `SCC Metrics` | Optional third-party `scc` LOC and file-level complexity report. |
+| `PMD CPD` | Optional third-party PMD CPD duplicate-code report. |
 | `Smoke Tests` | Runs repository structure and app metadata smoke tests. |
 | `HarmonyOS Test Config Check` | Verifies `entry/src/ohosTest`, Hypium, and Jenkins official device-test switches are wired. |
 | `Vitest Coverage` | Runs Vitest with V8 coverage for pure TypeScript domain/controller utilities. |
@@ -34,6 +37,9 @@ Prefer setting these values as Jenkins global environment variables or build par
 | `DEVECO_SDK_HOME` or `DEVECO_SDK_HOME_OVERRIDE` | HarmonyOS SDK directory. Defaults to `DEVECO_HOME/sdk`. |
 | `JAVA_HOME` or `JAVA_HOME_OVERRIDE` | JDK used by Hvigor and Jenkins. |
 | `REPO_DIR` | Optional. Leave empty when Jenkins checks out this repository into `WORKSPACE`. Set it only for a local Jenkins job that runs against an existing working copy. |
+| `SCC_BIN` or `SCC_BIN_OVERRIDE` | Optional `scc` executable path for third-party metrics. |
+| `PMD_BIN` or `PMD_BIN_OVERRIDE` | Optional PMD executable path for CPD duplicate-code reports. |
+| `PMD_CPD_MINIMUM_TOKENS` | Optional PMD CPD threshold. Defaults to `80`. |
 
 The committed `Jenkinsfile` does not contain local Windows paths such as `F:\...` or `C:\Users\...`.
 
@@ -43,10 +49,46 @@ Host-side checks run without a device or emulator:
 
 - `npm run test:typecheck` checks pure TypeScript files that can be compiled outside DevEco.
 - `npm run test:quality` protects CI structure, ignore rules, coverage thresholds, and official HarmonyOS test hooks.
+- `npm run metrics` generates project complexity metrics under `reports/metrics`.
+- `npm run metrics:scc` optionally generates third-party `scc` reports when `scc` is installed.
+- `npm run quality:cpd` optionally generates PMD CPD duplicate-code reports when PMD is installed.
 - `npm run test:smoke` checks HarmonyOS metadata, routes, pages, and important source-tree layout.
 - `npm run test:ohos` checks the official `ohosTest` structure, Hypium dependency, and Jenkins device-test stages.
 - `npm run test:coverage` generates V8 coverage for pure TypeScript logic under `reports/coverage`.
 - Hvigor compiles ArkTS/ETS and packages the application into an unsigned HAP.
+
+## Project Complexity Metrics
+
+`npm run metrics` generates:
+
+- `reports/metrics/project-metrics.md`
+- `reports/metrics/project-metrics.json`
+- `reports/tests/metrics.xml`
+
+The metrics report uses this reproducible scope:
+
+- Lines of Code: non-empty, non-comment lines under `entry/src/main/ets`.
+- Number of source files: `.ets` and `.ts` files under `entry/src/main/ets`.
+- Cyclomatic complexity: `1 + decision points` per function or method, summed across the project. Decision points include `if`, `for`, `while`, `case`, `catch`, ternary `?`, `&&`, and `||` after comments and string literals are stripped. Inline callback logic is attributed to the containing method to remain compatible with ArkTS/ETS UI DSL syntax.
+- Number of dependencies: direct dependency references from `package.json`, root `oh-package.json5`, and `entry/oh-package.json5`, split into runtime and development dependencies.
+
+Jenkins archives `reports/metrics/**/*`, so the Markdown and JSON metrics reports can be downloaded from each successful build.
+
+## Third-Party Static Reports
+
+The pipeline can also run third-party tools when they are installed on the Jenkins node:
+
+- `scc` generates `reports/metrics/scc.json` and `reports/metrics/scc.html`.
+- PMD CPD generates `reports/pmd/cpd.xml` and `reports/pmd/cpd.txt`.
+
+Enable these Jenkins parameters only after installing the tools or configuring explicit binary paths on the node:
+
+- `RUN_SCC_METRICS=true`
+- `RUN_PMD_CPD=true`
+- `SCC_BIN_OVERRIDE=<path-to-scc.exe>` if `scc` is not on `PATH`
+- `PMD_BIN_OVERRIDE=<path-to-pmd.bat>` if `pmd` is not on `PATH`
+
+The project-level metrics script remains enabled by default because it works with ArkTS/ETS syntax without requiring a third-party parser.
 
 ## Official HarmonyOS Device Tests
 
