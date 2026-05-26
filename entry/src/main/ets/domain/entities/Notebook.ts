@@ -25,6 +25,7 @@ export interface NotebookSummary {
 export class NotebookEntity {
   static readonly DEFAULT_TITLE: string = 'Untitled Notebook';
   static readonly DEFAULT_COVER_COLOR: string = '#7C9BFF';
+  static readonly TITLE_COVER_IMAGE_URI: string = 'hosn://cover/title';
   static readonly COVER_COLOR_PALETTE: string[] = [
     '#7C9BFF',
     '#64C1FF',
@@ -101,6 +102,10 @@ export class NotebookEntity {
       return '';
     }
     return uri.trim();
+  }
+
+  static isTitleCoverImageUri(uri?: string): boolean {
+    return NotebookEntity.normalizeCoverImageUri(uri) === NotebookEntity.TITLE_COVER_IMAGE_URI;
   }
 
   static normalizeLastEditedPageId(pageId?: string): string {
