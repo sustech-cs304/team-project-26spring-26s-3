@@ -70,6 +70,10 @@ export class NotebookRepositoryImpl implements NotebookRepository {
   async createNotebook(request: CreateNotebookRequest): Promise<Notebook> {
     const notebookList: Notebook[] = await this.loadNotebookList();
     const currentTime: number = TimeUtil.now();
+    const notebookTitle: string = NotebookEntity.createUniqueTitle(
+      request.title,
+      this.collectNotebookTitleList(notebookList, '')
+    );
     const usedCoverColorList: string[] = [];
     for (const existingNotebook of notebookList) {
       const normalizedColor: string = NotebookEntity.normalizeCoverColor(existingNotebook.coverColor);
@@ -94,7 +98,7 @@ export class NotebookRepositoryImpl implements NotebookRepository {
 
     const notebook: Notebook = {
       id: IdUtil.createNotebookId(),
-      title: NotebookEntity.normalizeTitle(request.title),
+      title: notebookTitle,
       folderId: '',
       createdAt: currentTime,
       updatedAt: currentTime,
@@ -226,9 +230,13 @@ export class NotebookRepositoryImpl implements NotebookRepository {
     for (let index: number = 0; index < notebookList.length; index += 1) {
       const currentNotebook: Notebook = notebookList[index];
       if (currentNotebook.id === request.notebookId) {
+        const notebookTitle: string = NotebookEntity.createUniqueTitle(
+          request.title,
+          this.collectNotebookTitleList(notebookList, currentNotebook.id)
+        );
         const renamedNotebook: Notebook = {
           id: currentNotebook.id,
-          title: NotebookEntity.normalizeTitle(request.title),
+          title: notebookTitle,
           folderId: currentNotebook.folderId,
           createdAt: currentNotebook.createdAt,
           updatedAt: TimeUtil.now(),
@@ -1000,10 +1008,12 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       }
 
       const normalizedNotebookList: Notebook[] = [];
+      const usedTitleList: string[] = [];
       for (const item of parsedNotebookList) {
+        const uniqueTitle: string = NotebookEntity.createUniqueTitle(item.title, usedTitleList);
         const notebook: Notebook = {
           id: item.id,
-          title: NotebookEntity.normalizeTitle(item.title),
+          title: uniqueTitle,
           folderId: NotebookEntity.normalizeFolderId(item.folderId),
           createdAt: TimeUtil.isValidTimestamp(item.createdAt) ? item.createdAt : TimeUtil.now(),
           updatedAt: TimeUtil.isValidTimestamp(item.updatedAt) ? item.updatedAt : TimeUtil.now(),
@@ -1017,6 +1027,7 @@ export class NotebookRepositoryImpl implements NotebookRepository {
           lastOpenedAt: this.normalizeTimestamp(item.lastOpenedAt)
         };
         normalizedNotebookList.push(notebook);
+        usedTitleList.push(uniqueTitle);
       }
       return normalizedNotebookList;
     } catch (_error) {
@@ -1273,6 +1284,17 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       }
     }
     return tags;
+  }
+
+  private collectNotebookTitleList(notebookList: Notebook[], excludedNotebookId: string): string[] {
+    const titleList: string[] = [];
+    for (const notebook of notebookList) {
+      if (excludedNotebookId.length > 0 && notebook.id === excludedNotebookId) {
+        continue;
+      }
+      titleList.push(notebook.title);
+    }
+    return titleList;
   }
 
   private normalizeTimestamp(rawTimestamp?: number): number {

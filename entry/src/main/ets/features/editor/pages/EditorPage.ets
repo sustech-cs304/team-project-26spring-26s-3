@@ -555,7 +555,10 @@ struct EditorPage {
           .width('100%')
           .scrollBar(BarState.Off)
         }
+      }
 
+      if (!this.isPagePreviewCollapsed) {
+        this.buildEditorDebugPanel()
       }
     }
     .width(this.isPagePreviewCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH)
@@ -570,6 +573,41 @@ struct EditorPage {
     .onClick(() => {
       this.closeToolDropdown();
       this.closeShapeDropdown();
+    })
+  }
+
+  @Builder
+  private buildEditorDebugPanel(): void {
+    Column({ space: 6 }) {
+      Text('Debug Output')
+        .width('100%')
+        .fontSize(12)
+        .fontWeight(FontWeight.Medium)
+        .fontColor('#111827')
+
+      Scroll() {
+        Text(this.getEditorDebugSummary())
+          .width('100%')
+          .fontSize(9)
+          .lineHeight(13)
+          .fontColor('#334155')
+          .textAlign(TextAlign.Start)
+      }
+      .width('100%')
+      .height(96)
+    }
+    .width('100%')
+    .padding({
+      left: 10,
+      right: 10,
+      top: 9,
+      bottom: 9
+    })
+    .backgroundColor('#F8FAFC')
+    .borderRadius(16)
+    .border({
+      width: 1,
+      color: '#CBD5E1'
     })
   }
 
@@ -4530,6 +4568,18 @@ struct EditorPage {
       return 'Unavailable';
     }
     return `${activeCanvas.width} x ${activeCanvas.height}`;
+  }
+
+  private getEditorDebugSummary(): string {
+    const snapshot = this.editorSnapshot;
+    const latestEvent = snapshot.recentEvents.length > 0 ? snapshot.recentEvents[snapshot.recentEvents.length - 1] : 'none';
+    const events = snapshot.recentEvents.length > 0 ? snapshot.recentEvents.slice(-6).join('\n') : 'no events';
+    return [
+      `Last Event: ${latestEvent}`,
+      `Error: ${snapshot.errorMessage.length > 0 ? snapshot.errorMessage : 'none'}`,
+      'Events:',
+      events
+    ].join('\n');
   }
 
   private buildDefaultToolSetting(): ToolSetting {

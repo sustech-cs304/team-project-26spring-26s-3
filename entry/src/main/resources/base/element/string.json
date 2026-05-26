@@ -17,6 +17,10 @@
       "value": "用于连接远程公式识别服务"
     },
     {
+      "name": "reason_save_recognition_image",
+      "value": "用于保存识别调试图片到图库"
+    },
+    {
       "name": "app_name",
       "value": "Hosn"
     },
@@ -154,7 +158,7 @@
     },
     {
       "name": "notebook_create_tip",
-      "value": "创建完成后会立即出现在当前列表中。"
+      "value": "创建完成后会立即出现在当前列表中，同名会自动追加序号。"
     },
     {
       "name": "notebook_rename_dialog_title",
@@ -170,7 +174,7 @@
     },
     {
       "name": "notebook_rename_tip",
-      "value": "留空时会自动回退到默认标题。"
+      "value": "留空时会自动回退到默认标题，同名会自动追加序号。"
     },
     {
       "name": "notebook_create_confirm",

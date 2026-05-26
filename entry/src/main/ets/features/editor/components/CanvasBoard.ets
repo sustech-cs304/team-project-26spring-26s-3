@@ -1,4 +1,6 @@
 import common from '@ohos.app.ability.common';
+import abilityAccessCtrl, { Permissions } from '@ohos.abilityAccessCtrl';
+import photoAccessHelper from '@ohos.file.photoAccessHelper';
 import image from '@ohos.multimedia.image';
 
 import {
@@ -81,16 +83,25 @@ interface RecognitionInsertFrame {
 
 interface RecognitionSelectionImagePayload {
   base64Image: string;
+  pngBytes: Uint8Array;
   frame: RecognitionInsertFrame;
-}
-
-interface DataUrlExporter {
-  toDataURL(type?: string): string;
+  width: number;
+  height: number;
+  contentWidth: number;
+  contentHeight: number;
+  scale: number;
+  strokeCount: number;
+  elementCount: number;
 }
 
 interface SelectionBoundsFrame {
   width: number;
   height: number;
+}
+
+interface RecognitionEncodedPng {
+  base64Image: string;
+  bytes: Uint8Array;
 }
 
 interface ExtendedTouchObject extends TouchObject {
@@ -102,6 +113,7 @@ interface ExtendedTouchObject extends TouchObject {
 }
 
 type CanvasDrawContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+type RecognitionExportMode = 'ocr' | 'formula';
 
 const COMMITTED_TILE_SIZE = 256;
 const PARTIAL_REDRAW_OVERDRAW_VIEWPORT_PX = 2;
@@ -148,8 +160,16 @@ const ELEMENT_OUTLINE_WIDTH_MIN = 1;
 const ELEMENT_OUTLINE_WIDTH_MAX = 16;
 const ELEMENT_OUTLINE_WIDTH_STEP = 1;
 const ELEMENT_OUTLINE_LINE_STYLE_OPTIONS: ElementOutlineLineStyle[] = ['none', 'solid', 'dashed', 'dotted'];
-const FORMULA_EXPORT_PADDING = 16;
-const FORMULA_EXPORT_MIN_EDGE = 48;
+const FORMULA_EXPORT_PADDING = 36;
+const FORMULA_EXPORT_MIN_EDGE = 320;
+const FORMULA_EXPORT_SCALE = 3;
+const FORMULA_EXPORT_MIN_STROKE_WIDTH = 4;
+const FORMULA_EXPORT_STROKE_WIDTH_FACTOR = 1.25;
+const OCR_EXPORT_PADDING = 36;
+const OCR_EXPORT_SCALE = 3;
+const OCR_EXPORT_MIN_EDGE = 320;
+const OCR_EXPORT_MIN_STROKE_WIDTH = 10;
+const OCR_EXPORT_STROKE_WIDTH_FACTOR = 1.7;
 const VIEWPORT_INACTIVE_FAST_REDRAW_BASE_DELAY_MS = 32;
 const VIEWPORT_INACTIVE_FAST_REDRAW_STAGGER_MS = 96;
 const VIEWPORT_ACTIVE_QUALITY_REDRAW_DELAY_MS = 360;
@@ -227,6 +247,7 @@ export struct CanvasBoard {
   private forceFullCommittedRedrawOnNextCanvasRefresh: boolean = false;
   private flattenedCommittedStrokeCount: number = 0;
   private activePreviewSession: InProgressStrokeRenderSession | null = null;
+  private hasRecognitionGalleryWritePermission: boolean = false;
   private isDrawingGestureActive: boolean = false;
   private isForwardingDocumentTouchGesture: boolean = false;
   private isLassoGestureActive: boolean = false;
@@ -740,7 +761,7 @@ export struct CanvasBoard {
             this.handleSelectionContextMenuAction('resize');
           })
 
-        Button(this.isOcrRecognizing ? '识别中...' : 'OCR')
+        Button(this.isOcrRecognizing ? '转换中...' : '转换为文本')
           .width('100%')
           .height(SELECTION_CONTEXT_MENU_ITEM_HEIGHT)
           .fontSize(14)
@@ -2812,13 +2833,24 @@ export struct CanvasBoard {
     this.hideSelectionContextMenu();
     this.isOcrRecognizing = true;
     try {
-      const exportPayload = this.exportRecognitionSelectionImage(viewModel);
+      viewModel.appendDebugEvent('ocrRecognition', 'start');
+      this.editorSnapshot = viewModel.getDebugSnapshot();
+      const exportPayload = await this.exportRecognitionSelectionImage(viewModel, 'ocr');
       if (exportPayload === null) {
         throw new Error('No selectable lasso content was available for OCR recognition.');
       }
+      viewModel.appendDebugEvent('ocrRecognition', `exported base64Length=${exportPayload.base64Image.length}`);
+      viewModel.appendDebugEvent(
+        'ocrRecognition',
+        `exportMeta size=${exportPayload.width}x${exportPayload.height} content=${exportPayload.contentWidth}x${exportPayload.contentHeight} scale=${exportPayload.scale} strokes=${exportPayload.strokeCount} elements=${exportPayload.elementCount}`
+      );
+      this.editorSnapshot = viewModel.getDebugSnapshot();
+      await this.persistRecognitionUploadImageForDebug(viewModel, 'ocr', exportPayload);
 
       const ocrService = new XfyunOcrService(XFYUN_OCR_CONFIG);
       const ocrResult = await ocrService.recognize(exportPayload.base64Image);
+      viewModel.appendDebugEvent('ocrRecognition', `requestSuccess sid=${ocrResult.sid} textLength=${ocrResult.text.length}`);
+      this.editorSnapshot = viewModel.getDebugSnapshot();
       const insertedElement = viewModel.insertRecognizedTextElement(
         ocrResult.text,
         exportPayload.frame,
@@ -2847,6 +2879,7 @@ export struct CanvasBoard {
       this.onContentChanged(true, 'element');
     } catch (error) {
       viewModel.appendDebugEvent('ocrRecognition', `failed error=${this.stringifyError(error)}`);
+      this.editorSnapshot = viewModel.getDebugSnapshot();
       this.updateSnapshotErrorMessage(this.stringifyError(error));
       this.redrawOverlayLayer();
     } finally {
@@ -2868,13 +2901,27 @@ export struct CanvasBoard {
     this.hideSelectionContextMenu();
     this.isFormulaRecognizing = true;
     try {
-      const exportPayload = this.exportRecognitionSelectionImage(viewModel);
+      viewModel.appendDebugEvent('formulaRecognition', 'start');
+      this.editorSnapshot = viewModel.getDebugSnapshot();
+      const exportPayload = await this.exportRecognitionSelectionImage(viewModel, 'formula');
       if (exportPayload === null) {
         throw new Error('No selectable lasso content was available for formula recognition.');
       }
+      viewModel.appendDebugEvent('formulaRecognition', `exported base64Length=${exportPayload.base64Image.length}`);
+      viewModel.appendDebugEvent(
+        'formulaRecognition',
+        `exportMeta size=${exportPayload.width}x${exportPayload.height} content=${exportPayload.contentWidth}x${exportPayload.contentHeight} scale=${exportPayload.scale} strokes=${exportPayload.strokeCount} elements=${exportPayload.elementCount}`
+      );
+      this.editorSnapshot = viewModel.getDebugSnapshot();
+      await this.persistRecognitionUploadImageForDebug(viewModel, 'formula', exportPayload);
 
       const formulaService = new XfyunFormulaService(XFYUN_FORMULA_CONFIG);
       const formulaResult = await formulaService.recognize(exportPayload.base64Image);
+      viewModel.appendDebugEvent(
+        'formulaRecognition',
+        `requestSuccess sid=${formulaResult.sid} textLength=${formulaResult.text.length} latexLength=${formulaResult.latex.length}`
+      );
+      this.editorSnapshot = viewModel.getDebugSnapshot();
       const insertedElement = viewModel.insertRecognizedTextElement(
         formulaResult.latex.length > 0 ? formulaResult.latex : formulaResult.text,
         exportPayload.frame,
@@ -2905,6 +2952,7 @@ export struct CanvasBoard {
     } catch (error) {
       if (viewModel !== null) {
         viewModel.appendDebugEvent('formulaRecognition', `failed error=${this.stringifyError(error)}`);
+        this.editorSnapshot = viewModel.getDebugSnapshot();
       }
       this.updateSnapshotErrorMessage(this.stringifyError(error));
       this.redrawOverlayLayer();
@@ -4517,30 +4565,15 @@ export struct CanvasBoard {
     );
   }
 
-  private exportRecognitionSelectionImage(
-    viewModel: DrawingEditorViewModel
-  ): RecognitionSelectionImagePayload | null {
+  private async exportRecognitionSelectionImage(
+    viewModel: DrawingEditorViewModel,
+    mode: RecognitionExportMode
+  ): Promise<RecognitionSelectionImagePayload | null> {
     const selectionBounds = viewModel.getSelectionBoundingBox();
     if (selectionBounds === null) {
       return null;
     }
 
-    const paddedBounds = clampBoundingBox(
-      {
-        minX: selectionBounds.minX - FORMULA_EXPORT_PADDING,
-        minY: selectionBounds.minY - FORMULA_EXPORT_PADDING,
-        maxX: selectionBounds.maxX + FORMULA_EXPORT_PADDING,
-        maxY: selectionBounds.maxY + FORMULA_EXPORT_PADDING
-      },
-      this.pageWidth,
-      this.pageHeight
-    );
-    if (paddedBounds === null) {
-      return null;
-    }
-
-    const width = Math.max(FORMULA_EXPORT_MIN_EDGE, Math.ceil(paddedBounds.maxX - paddedBounds.minX));
-    const height = Math.max(FORMULA_EXPORT_MIN_EDGE, Math.ceil(paddedBounds.maxY - paddedBounds.minY));
     const selectedStrokeIds = new Set<string>();
     for (const target of viewModel.getSelectedStrokeTargets()) {
       for (const strokeId of target.strokeIds) {
@@ -4555,6 +4588,34 @@ export struct CanvasBoard {
       return null;
     }
 
+    const contentBounds = this.resolveRecognitionContentBounds(selectionBounds, strokes, elements);
+    const padding = mode === 'ocr' ? OCR_EXPORT_PADDING : FORMULA_EXPORT_PADDING;
+    const scale = mode === 'ocr' ? OCR_EXPORT_SCALE : FORMULA_EXPORT_SCALE;
+    const minOutputEdge = mode === 'ocr' ? OCR_EXPORT_MIN_EDGE : FORMULA_EXPORT_MIN_EDGE;
+    const minLogicalEdge = Math.max(1, Math.ceil(minOutputEdge / scale));
+    const paddedBounds = clampBoundingBox(
+      {
+        minX: contentBounds.minX - padding,
+        minY: contentBounds.minY - padding,
+        maxX: contentBounds.maxX + padding,
+        maxY: contentBounds.maxY + padding
+      },
+      this.pageWidth,
+      this.pageHeight
+    );
+    if (paddedBounds === null) {
+      return null;
+    }
+
+    const logicalContentWidth = Math.max(1, Math.ceil(contentBounds.maxX - contentBounds.minX));
+    const logicalContentHeight = Math.max(1, Math.ceil(contentBounds.maxY - contentBounds.minY));
+    const logicalWidth = Math.max(minLogicalEdge, Math.ceil(paddedBounds.maxX - paddedBounds.minX));
+    const logicalHeight = Math.max(minLogicalEdge, Math.ceil(paddedBounds.maxY - paddedBounds.minY));
+    const width = Math.max(1, Math.ceil(logicalWidth * scale));
+    const height = Math.max(1, Math.ceil(logicalHeight * scale));
+    const contentOffsetX = Math.max(0, (logicalWidth - (paddedBounds.maxX - paddedBounds.minX)) / 2);
+    const contentOffsetY = Math.max(0, (logicalHeight - (paddedBounds.maxY - paddedBounds.minY)) / 2);
+
     try {
       const offscreenCanvas = new OffscreenCanvas(width, height);
       const offscreenContext = offscreenCanvas.getContext('2d', this.committedRenderingSettings);
@@ -4563,14 +4624,17 @@ export struct CanvasBoard {
       offscreenContext.globalAlpha = 1;
       offscreenContext.fillRect(0, 0, width, height);
       offscreenContext.save();
-      offscreenContext.translate(-paddedBounds.minX, -paddedBounds.minY);
+      offscreenContext.scale(scale, scale);
+      offscreenContext.translate(contentOffsetX - paddedBounds.minX, contentOffsetY - paddedBounds.minY);
       const strokeLayerZIndex = viewModel.getStrokeLayerZIndex();
       CanvasElementRenderer.drawElements(
         offscreenContext,
         elements.filter((element: CanvasElement): boolean => element.zIndex < strokeLayerZIndex)
       );
-      for (const stroke of strokes) {
-        this.drawStroke(offscreenContext, stroke);
+      if (mode === 'ocr') {
+        this.drawOcrRecognitionStrokes(offscreenContext, strokes);
+      } else {
+        this.drawFormulaRecognitionStrokes(offscreenContext, strokes);
       }
       CanvasElementRenderer.drawElements(
         offscreenContext,
@@ -4578,16 +4642,7 @@ export struct CanvasBoard {
       );
       offscreenContext.restore();
 
-      const exporter = offscreenCanvas as Object as DataUrlExporter;
-      const dataUrl = exporter.toDataURL('image/png');
-      if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
-        throw new Error('OffscreenCanvas.toDataURL is unavailable in the current runtime.');
-      }
-
-      const separatorIndex = dataUrl.indexOf(',');
-      if (separatorIndex < 0) {
-        throw new Error('Failed to export selection image.');
-      }
+      const encodedPng = await this.encodeOffscreenCanvasAsPng(offscreenContext, width, height);
 
       const frameBounds: SelectionBoundsFrame = {
         width: this.pageWidth,
@@ -4606,13 +4661,250 @@ export struct CanvasBoard {
         height: clampedFrame.height
       };
       const payload: RecognitionSelectionImagePayload = {
-        base64Image: dataUrl.substring(separatorIndex + 1),
-        frame: recognitionFrame
+        base64Image: encodedPng.base64Image,
+        pngBytes: encodedPng.bytes,
+        frame: recognitionFrame,
+        width,
+        height,
+        contentWidth: logicalContentWidth,
+        contentHeight: logicalContentHeight,
+        scale,
+        strokeCount: strokes.length,
+        elementCount: elements.length
       };
       return payload;
     } catch (error) {
       throw new Error(`Selection image export failed: ${this.stringifyError(error)}`);
     }
+  }
+
+  private resolveRecognitionContentBounds(
+    selectionBounds: BoundingBox,
+    strokes: Stroke[],
+    elements: CanvasElement[]
+  ): BoundingBox {
+    const boundsList: BoundingBox[] = [];
+    for (const stroke of strokes) {
+      const strokeBounds = getStrokeRenderBoundingBox(stroke);
+      if (strokeBounds !== null) {
+        boundsList.push(strokeBounds);
+      }
+    }
+
+    for (const element of elements) {
+      boundsList.push({
+        minX: element.x,
+        minY: element.y,
+        maxX: element.x + element.width,
+        maxY: element.y + element.height
+      });
+    }
+
+    return this.mergeBoundingBoxes(boundsList) ?? selectionBounds;
+  }
+
+  private drawOcrRecognitionStrokes(context: CanvasDrawContext, strokes: Stroke[]): void {
+    for (const stroke of strokes) {
+      this.drawHighContrastRecognitionStroke(
+        context,
+        stroke,
+        OCR_EXPORT_MIN_STROKE_WIDTH,
+        OCR_EXPORT_STROKE_WIDTH_FACTOR
+      );
+    }
+  }
+
+  private drawFormulaRecognitionStrokes(context: CanvasDrawContext, strokes: Stroke[]): void {
+    for (const stroke of strokes) {
+      this.drawHighContrastRecognitionStroke(
+        context,
+        stroke,
+        FORMULA_EXPORT_MIN_STROKE_WIDTH,
+        FORMULA_EXPORT_STROKE_WIDTH_FACTOR
+      );
+    }
+  }
+
+  private drawHighContrastRecognitionStroke(
+    context: CanvasDrawContext,
+    stroke: Stroke,
+    minimumStrokeWidth: number,
+    strokeWidthFactor: number
+  ): void {
+    if (stroke.points.length === 0) {
+      return;
+    }
+
+    const points = stroke.points;
+    context.save();
+    try {
+      context.strokeStyle = '#000000';
+      context.fillStyle = '#000000';
+      context.globalAlpha = 1;
+      context.lineCap = 'round';
+      context.lineJoin = 'round';
+      context.lineWidth = Math.max(minimumStrokeWidth, stroke.style.width * strokeWidthFactor);
+
+      const firstPoint = points[0];
+      if (points.length === 1) {
+        context.beginPath();
+        context.arc(firstPoint.x, firstPoint.y, context.lineWidth / 2, 0, Math.PI * 2);
+        context.fill();
+        return;
+      }
+
+      context.beginPath();
+      context.moveTo(firstPoint.x, firstPoint.y);
+      if (points.length === 2) {
+        const lastPoint = points[1];
+        context.lineTo(lastPoint.x, lastPoint.y);
+      } else {
+        for (let index = 1; index < points.length - 1; index += 1) {
+          const currentPoint = points[index];
+          const nextPoint = points[index + 1];
+          const midpointX = (currentPoint.x + nextPoint.x) / 2;
+          const midpointY = (currentPoint.y + nextPoint.y) / 2;
+          context.quadraticCurveTo(currentPoint.x, currentPoint.y, midpointX, midpointY);
+        }
+
+        const tailPoint = points[points.length - 1];
+        context.lineTo(tailPoint.x, tailPoint.y);
+      }
+      context.stroke();
+    } finally {
+      context.restore();
+    }
+  }
+
+  private async persistRecognitionUploadImageForDebug(
+    viewModel: DrawingEditorViewModel,
+    mode: RecognitionExportMode,
+    payload: RecognitionSelectionImagePayload
+  ): Promise<void> {
+    const debugSource = mode === 'ocr' ? 'ocrRecognition' : 'formulaRecognition';
+    try {
+      const title = await this.saveRecognitionUploadImageToGallery(mode, payload);
+      viewModel.appendDebugEvent(debugSource, `savedUploadImage title=${title}.png`);
+    } catch (error) {
+      viewModel.appendDebugEvent(debugSource, `saveUploadImageFailed error=${this.stringifyError(error)}`);
+    }
+    this.editorSnapshot = viewModel.getDebugSnapshot();
+  }
+
+  private async saveRecognitionUploadImageToGallery(
+    mode: RecognitionExportMode,
+    payload: RecognitionSelectionImagePayload
+  ): Promise<string> {
+    const hostContext: common.Context | undefined = this.getUIContext().getHostContext() as common.Context | undefined;
+    if (hostContext === undefined) {
+      throw new Error('Host context is unavailable.');
+    }
+
+    await this.ensureRecognitionGalleryWritePermission(hostContext);
+    const title = this.buildRecognitionUploadImageTitle(mode, payload);
+    const photoHelper = photoAccessHelper.getPhotoAccessHelper(hostContext);
+    try {
+      const request = photoAccessHelper.MediaAssetChangeRequest.createAssetRequest(
+        hostContext,
+        photoAccessHelper.PhotoType.IMAGE,
+        'png',
+        { title }
+      );
+      request.addResource(photoAccessHelper.ResourceType.IMAGE_RESOURCE, this.copyBytesToArrayBuffer(payload.pngBytes));
+      await photoHelper.applyChanges(request);
+      return title;
+    } finally {
+      try {
+        await photoHelper.release();
+      } catch (_releaseError) {
+      }
+    }
+  }
+
+  private async ensureRecognitionGalleryWritePermission(hostContext: common.Context): Promise<void> {
+    if (this.hasRecognitionGalleryWritePermission) {
+      return;
+    }
+
+    const permissions: Array<Permissions> = ['ohos.permission.WRITE_IMAGEVIDEO'];
+    const atManager = abilityAccessCtrl.createAtManager();
+    const result = await atManager.requestPermissionsFromUser(hostContext, permissions);
+    for (const authResult of result.authResults) {
+      if (authResult !== 0) {
+        throw new Error(`Gallery write permission denied authResults=${result.authResults.join(',')}`);
+      }
+    }
+    this.hasRecognitionGalleryWritePermission = true;
+  }
+
+  private buildRecognitionUploadImageTitle(
+    mode: RecognitionExportMode,
+    payload: RecognitionSelectionImagePayload
+  ): string {
+    return `hosn_${mode}_upload_${Date.now()}_${payload.width}x${payload.height}`;
+  }
+
+  private copyBytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+    const buffer = new ArrayBuffer(bytes.length);
+    const target = new Uint8Array(buffer);
+    for (let index = 0; index < bytes.length; index += 1) {
+      target[index] = bytes[index];
+    }
+    return buffer;
+  }
+
+  private async encodeOffscreenCanvasAsPng(
+    context: OffscreenCanvasRenderingContext2D,
+    width: number,
+    height: number
+  ): Promise<RecognitionEncodedPng> {
+    let pixelMap: image.PixelMap | null = null;
+    const packer: image.ImagePacker = image.createImagePacker();
+    try {
+      pixelMap = context.getPixelMap(0, 0, width, height);
+      const packingOption: image.PackingOption = {
+        format: 'image/png',
+        quality: 100
+      };
+      const packedData = await packer.packing(pixelMap, packingOption);
+      const bytes = new Uint8Array(packedData);
+      return {
+        base64Image: this.encodeBase64Bytes(bytes),
+        bytes
+      };
+    } finally {
+      if (pixelMap !== null) {
+        try {
+          await pixelMap.release();
+        } catch (_releasePixelMapError) {
+        }
+      }
+
+      try {
+        await packer.release();
+      } catch (_releasePackerError) {
+      }
+    }
+  }
+
+  private encodeBase64Bytes(bytes: Uint8Array): string {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let output = '';
+    for (let index = 0; index < bytes.length; index += 3) {
+      const byte1 = bytes[index];
+      const byte2 = index + 1 < bytes.length ? bytes[index + 1] : 0;
+      const byte3 = index + 2 < bytes.length ? bytes[index + 2] : 0;
+      const triplet = (byte1 << 16) | (byte2 << 8) | byte3;
+      output += this.getBase64Char(alphabet, (triplet >>> 18) & 0x3f);
+      output += this.getBase64Char(alphabet, (triplet >>> 12) & 0x3f);
+      output += index + 1 < bytes.length ? this.getBase64Char(alphabet, (triplet >>> 6) & 0x3f) : '=';
+      output += index + 2 < bytes.length ? this.getBase64Char(alphabet, triplet & 0x3f) : '=';
+    }
+    return output;
+  }
+
+  private getBase64Char(alphabet: string, index: number): string {
+    return alphabet.substring(index, index + 1);
   }
 
   private stringifyError(error: Object): string {

@@ -1768,8 +1768,9 @@ export class DrawingEditorViewModel {
     this.persistenceStatus = 'pending recognition text save';
     this.schedulePersistCurrentStrokes('recognitionText', 0);
     this.errorMessage = '';
+    const recognitionEventSource = options.recognition?.source === 'ocr' ? 'ocrRecognition' : 'formulaRecognition';
     this.appendDebugEvent(
-      'formulaRecognition',
+      recognitionEventSource,
       `element=${nextElement.id} length=${normalizedContent.length} x=${Math.round(nextElement.x)} y=${Math.round(nextElement.y)}`
     );
     return this.cloneTextElement(nextElement);

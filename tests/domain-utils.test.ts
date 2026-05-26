@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { clampElementFrameToBounds } from '../entry/src/main/ets/common/utils/ElementBoundsUtil';
 import { createId, IdUtil } from '../entry/src/main/ets/common/utils/IdUtil';
 import { now, TimeUtil } from '../entry/src/main/ets/common/utils/TimeUtil';
+import { NotebookEntity } from '../entry/src/main/ets/domain/entities/Notebook';
 import { getStrokeRenderKey, type Stroke, type StrokePoint } from '../entry/src/main/ets/domain/entities/Stroke';
 import { isDrawableToolType, isToolType } from '../entry/src/main/ets/domain/entities/ToolSetting';
 import { StrokeSpatialHashIndex } from '../entry/src/main/ets/features/editor/controllers/StrokeSpatialHashIndex';
@@ -71,6 +72,16 @@ describe('TimeUtil', () => {
     expect(TimeUtil.isValidTimestamp(-1)).toBe(false);
 
     vi.restoreAllMocks();
+  });
+});
+
+describe('NotebookEntity', () => {
+  it('normalizes duplicate notebook titles with numeric suffixes', () => {
+    expect(NotebookEntity.createUniqueTitle('Math', [])).toBe('Math');
+    expect(NotebookEntity.createUniqueTitle('Math', ['Math'])).toBe('Math (2)');
+    expect(NotebookEntity.createUniqueTitle('Math', ['Math', 'Math (2)'])).toBe('Math (3)');
+    expect(NotebookEntity.createUniqueTitle(' math  ', ['Math'])).toBe('math (2)');
+    expect(NotebookEntity.createUniqueTitle('', ['Untitled Notebook'])).toBe('Untitled Notebook (2)');
   });
 });
 

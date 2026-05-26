@@ -44,3 +44,6 @@ local.properties
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# DeepSeek TUI local config
+.deepseek/
