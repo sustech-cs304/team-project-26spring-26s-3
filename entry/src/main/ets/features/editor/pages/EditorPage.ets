@@ -3921,20 +3921,23 @@ struct EditorPage {
       return;
     }
 
+    const viewportPageId: string = this.getDocumentViewportPageIdForPageReorder();
     const rollbackPageList: NotebookPage[] = this.cloneNotebookPageList(this.notebookPageList);
     const rollbackActivePageId: string = this.activePageId;
     if (!this.applyNotebookPageMoveLocally(fromIndex, toIndex)) {
       return;
     }
 
-    void this.persistNotebookPageMove(fromIndex, toIndex, rollbackPageList, rollbackActivePageId);
+    this.restoreDocumentViewportAfterPageReorder(viewportPageId);
+    void this.persistNotebookPageMove(fromIndex, toIndex, rollbackPageList, rollbackActivePageId, viewportPageId);
   }
 
   private async persistNotebookPageMove(
     fromIndex: number,
     toIndex: number,
     rollbackPageList: NotebookPage[],
-    rollbackActivePageId: string
+    rollbackActivePageId: string,
+    viewportPageId: string
   ): Promise<void> {
     if (fromIndex === toIndex || this.notebookId.length === 0) {
       return;
@@ -3944,7 +3947,7 @@ struct EditorPage {
     try {
       const hasReordered: boolean = await this.ensureViewModel().reorderNotebookPages(this.notebookId, fromIndex, toIndex);
       if (!hasReordered) {
-        this.restoreNotebookPageListAfterFailedMove(rollbackPageList, rollbackActivePageId);
+        this.restoreNotebookPageListAfterFailedMove(rollbackPageList, rollbackActivePageId, viewportPageId);
         return;
       }
 
@@ -3956,8 +3959,9 @@ struct EditorPage {
       this.notebookPageList = this.ensureViewModel().getCachedNotebookPages();
       this.retainThumbnailPages();
       this.syncActivePageId(this.activePageId);
+      this.restoreDocumentViewportAfterPageReorder(viewportPageId);
     } catch (_error) {
-      this.restoreNotebookPageListAfterFailedMove(rollbackPageList, rollbackActivePageId);
+      this.restoreNotebookPageListAfterFailedMove(rollbackPageList, rollbackActivePageId, viewportPageId);
     } finally {
       this.isReorderingPages = false;
     }
@@ -3981,6 +3985,29 @@ struct EditorPage {
     this.retainThumbnailPages();
     this.syncActivePageId(this.activePageId);
     return true;
+  }
+
+  private getDocumentViewportPageIdForPageReorder(): string {
+    const visualPageId: string = this.getVisualPageId();
+    if (this.isKnownNotebookPage(visualPageId)) {
+      return visualPageId;
+    }
+
+    return this.activePageId;
+  }
+
+  private restoreDocumentViewportAfterPageReorder(pageId: string): void {
+    if (!this.isContinuousDocumentViewEnabled()) {
+      return;
+    }
+
+    const targetPageId: string = this.isKnownNotebookPage(pageId) ? pageId : this.activePageId;
+    if (targetPageId.length === 0 || !this.isKnownNotebookPage(targetPageId)) {
+      return;
+    }
+
+    this.pendingDocumentViewportPageId = '';
+    this.scrollDocumentToPage(targetPageId);
   }
 
   private buildReorderedNotebookPageList(
@@ -4026,7 +4053,8 @@ struct EditorPage {
 
   private restoreNotebookPageListAfterFailedMove(
     rollbackPageList: NotebookPage[],
-    rollbackActivePageId: string
+    rollbackActivePageId: string,
+    viewportPageId: string
   ): void {
     if (rollbackPageList.length === 0) {
       return;
@@ -4036,6 +4064,7 @@ struct EditorPage {
     this.retainThumbnailPages();
     this.activePageId = rollbackActivePageId;
     this.syncActivePageId(rollbackActivePageId);
+    this.restoreDocumentViewportAfterPageReorder(viewportPageId);
   }
 
   private getActivePage(): NotebookPage | null {
