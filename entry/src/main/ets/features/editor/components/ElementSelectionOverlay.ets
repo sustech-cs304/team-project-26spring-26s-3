@@ -1,8 +1,8 @@
 import { CanvasElement, ShapeCanvasElement, ShapeGeometryPoint } from '../../../domain/entities/CanvasElement';
 
 const SELECTION_COLOR = '#2563EB';
-const HANDLE_SIZE = 8;
-const HANDLE_OFFSET = -4;
+const HANDLE_SIZE = 14;
+const HANDLE_OFFSET = -HANDLE_SIZE / 2;
 const LINE_SELECTION_PADDING = 10;
 
 @Component

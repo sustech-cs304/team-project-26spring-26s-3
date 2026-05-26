@@ -168,6 +168,14 @@ interface LayerReorderResult {
   elements: CanvasElement[];
 }
 
+export interface ElementLayerChangePreview {
+  changed: boolean;
+  beforeElement: CanvasElement | null;
+  afterElement: CanvasElement | null;
+  beforeStrokeLayerZIndex: number;
+  afterStrokeLayerZIndex: number;
+}
+
 interface ElementLayerOrderRecord {
   element: CanvasElement;
   orderIndex: number;
@@ -871,6 +879,29 @@ export class DrawingEditorViewModel {
       canMoveDown: itemIndex > 0,
       canMoveTop: itemIndex < stackLength - 1,
       canMoveBottom: itemIndex > 0
+    };
+  }
+
+  previewElementLayerChangeById(elementId: string, action: LayerOrderAction): ElementLayerChangePreview {
+    const beforeElement = this.getElementById(elementId);
+    if (beforeElement === null) {
+      return {
+        changed: false,
+        beforeElement: null,
+        afterElement: null,
+        beforeStrokeLayerZIndex: this.strokeLayerZIndex,
+        afterStrokeLayerZIndex: this.strokeLayerZIndex
+      };
+    }
+
+    const reorderResult = this.reorderLayerStack(`element:${elementId}`, action);
+    const afterElement = this.getElementByIdFromList(reorderResult.elements, elementId);
+    return {
+      changed: reorderResult.changed,
+      beforeElement: this.cloneElement(beforeElement),
+      afterElement: afterElement === null ? null : this.cloneElement(afterElement),
+      beforeStrokeLayerZIndex: this.strokeLayerZIndex,
+      afterStrokeLayerZIndex: reorderResult.strokeLayerZIndex
     };
   }
 

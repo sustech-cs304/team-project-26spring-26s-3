@@ -10,6 +10,7 @@ import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
 import { ElementSelectionOverlay } from './ElementSelectionOverlay';
 import { FormulaElementView } from './FormulaElementView';
 import { ShapeElementView } from './ShapeElementView';
+import { StableImageElementView } from './StableImageElementView';
 
 const TEXT_LINE_HEIGHT_FACTOR = 1.35;
 const ELEMENT_LAYER_Z_INDEX_MIN = -1000000000;
@@ -28,9 +29,15 @@ export struct ElementLayer {
   @Prop renderSelection: boolean = true;
   @Prop minZIndex: number = ELEMENT_LAYER_Z_INDEX_MIN;
   @Prop maxZIndex: number = ELEMENT_LAYER_Z_INDEX_MAX;
+  @Prop contentLayerRole: string = 'all';
+  @Prop imageContentReadyElementId: string = '';
+  @Prop imageContentReadyRole: string = '';
+  @Prop imageContentReadyToken: number = 0;
   @State private elements: CanvasElement[] = [];
   @State private selectedElementIds: string[] = [];
   @State private imageElementEditDraft: ImageElementEditDraft | null = null;
+  onImageContentReady: (elementId: string, token: number) => void =
+    (_elementId: string, _token: number): void => {};
   private viewModel: DrawingEditorViewModel | null = null;
 
   aboutToAppear(): void {
@@ -74,33 +81,14 @@ export struct ElementLayer {
 
   @Builder
   private buildImageElement(element: ImageCanvasElement): void {
-    Stack() {
-      ForEach(
-        this.buildImageSourceCandidates(this.getCurrentImageElementUri(element)),
-        (candidate: string) => {
-          Image(candidate)
-            .width('100%')
-            .height('100%')
-            .objectFit(ImageFit.Fill)
-            .opacity(this.getCurrentImageElementOpacity(element))
-            .hitTestBehavior(HitTestMode.None)
-        },
-        (candidate: string): string => candidate
-      )
-    }
-    .width(this.getImageElementDisplayFrame(element).width)
-    .height(this.getImageElementDisplayFrame(element).height)
-    .position({
-      x: this.getImageElementDisplayFrame(element).x,
-      y: this.getImageElementDisplayFrame(element).y
+    StableImageElementView({
+      element: this.getImageElementForDisplay(element),
+      contentReadyToken: this.imageContentReadyToken,
+      reportContentReady: this.shouldTrackImageContentReady(element),
+      onContentReady: (elementId: string, token: number): void => {
+        this.onImageContentReady(elementId, token);
+      }
     })
-    .border({
-      width: this.getImageOutlineWidth(element),
-      color: this.getCurrentImageElementOutlineColor(element),
-      style: this.getImageOutlineBorderStyle(element)
-    })
-    .zIndex(this.getCurrentImageElementZIndex(element))
-    .hitTestBehavior(HitTestMode.None)
   }
 
   @Builder
@@ -162,11 +150,15 @@ export struct ElementLayer {
     }
 
     if (element.type === 'image') {
-      const imageElement = element as ImageCanvasElement;
-      return `${imageElement.id}_${this.getCurrentImageElementUri(imageElement)}_${this.getCurrentImageLayerBucket(imageElement)}`;
+      return this.getImageElementRenderKey(element as ImageCanvasElement);
     }
 
     return `${element.id}_${element.updatedAt}_${geometryKey}`;
+  }
+
+  private getImageElementRenderKey(element: ImageCanvasElement): string {
+    const currentElement = this.getCurrentImageElement(element);
+    return `${currentElement.id}_${currentElement.uri}_${currentElement.sourceFileUri ?? ''}_${currentElement.sourceFileType ?? ''}`;
   }
 
   private onPageIdChanged(): void {
@@ -262,117 +254,42 @@ export struct ElementLayer {
     };
   }
 
-  private getImageOutlineWidth(element: ImageCanvasElement): number {
+  private getImageElementForDisplay(element: ImageCanvasElement): ImageCanvasElement {
     const currentElement = this.getCurrentImageElement(element);
-    return currentElement.outline.lineStyle === 'none' ? 0 : Math.max(0, currentElement.outline.width);
+    const displayFrame = this.getImageElementDisplayFrame(currentElement);
+    return {
+      id: currentElement.id,
+      pageId: currentElement.pageId,
+      type: currentElement.type,
+      x: displayFrame.x,
+      y: displayFrame.y,
+      width: displayFrame.width,
+      height: displayFrame.height,
+      rotation: currentElement.rotation,
+      zIndex: currentElement.zIndex,
+      createdAt: currentElement.createdAt,
+      updatedAt: currentElement.updatedAt,
+      uri: currentElement.uri,
+      originalWidth: currentElement.originalWidth,
+      originalHeight: currentElement.originalHeight,
+      opacity: currentElement.opacity,
+      outline: currentElement.outline,
+      sourceFileUri: currentElement.sourceFileUri,
+      sourceFileType: currentElement.sourceFileType
+    };
   }
 
-  private getImageOutlineBorderStyle(element: ImageCanvasElement): BorderStyle {
-    const currentElement = this.getCurrentImageElement(element);
-    if (currentElement.outline.lineStyle === 'dashed') {
-      return BorderStyle.Dashed;
-    }
-
-    if (currentElement.outline.lineStyle === 'dotted') {
-      return BorderStyle.Dotted;
-    }
-
-    return BorderStyle.Solid;
-  }
-
-  private getCurrentImageElementUri(element: ImageCanvasElement): string {
-    return this.getCurrentImageElement(element).uri;
-  }
-
-  private getCurrentImageElementOpacity(element: ImageCanvasElement): number {
-    return this.getCurrentImageElement(element).opacity;
-  }
-
-  private getCurrentImageElementOutlineColor(element: ImageCanvasElement): string {
-    return this.getCurrentImageElement(element).outline.color;
-  }
-
-  private getCurrentImageElementZIndex(element: ImageCanvasElement): number {
-    return this.getCurrentImageElement(element).zIndex;
-  }
-
-  private getCurrentImageLayerBucket(element: ImageCanvasElement): string {
-    const currentElement = this.getCurrentImageElement(element);
-    if (currentElement.zIndex < this.minZIndex) {
-      return 'below';
-    }
-
-    if (currentElement.zIndex >= this.maxZIndex) {
-      return 'above';
-    }
-
-    return 'inside';
+  private shouldTrackImageContentReady(element: ImageCanvasElement): boolean {
+    return this.contentLayerRole === this.imageContentReadyRole &&
+      this.imageContentReadyElementId.length > 0 &&
+      element.id === this.imageContentReadyElementId &&
+      this.imageContentReadyToken > 0;
   }
 
   private getCurrentImageElement(element: ImageCanvasElement): ImageCanvasElement {
     const currentElement = this.elements.find((candidate: CanvasElement): boolean =>
       candidate.type === 'image' && candidate.id === element.id) as ImageCanvasElement | undefined;
     return currentElement === undefined ? element : currentElement;
-  }
-
-  private buildImageSourceCandidates(path: string): string[] {
-    const candidates: string[] = [];
-    this.appendImageSourceCandidate(candidates, this.toImageSourceUri(path));
-    const decodedPath: string = this.decodeUriSegment(path);
-    if (decodedPath !== path) {
-      this.appendImageSourceCandidate(candidates, this.toImageSourceUri(decodedPath));
-    }
-
-    if (path.startsWith('file://')) {
-      const rawLocalPath: string = path.substring('file://'.length);
-      this.appendImageSourceCandidate(candidates, this.toImageSourceUri(rawLocalPath));
-      const decodedLocalPath: string = this.decodeUriSegment(rawLocalPath);
-      if (decodedLocalPath !== rawLocalPath) {
-        this.appendImageSourceCandidate(candidates, this.toImageSourceUri(decodedLocalPath));
-      }
-    }
-
-    if (decodedPath.startsWith('file://')) {
-      const decodedSchemePath: string = decodedPath.substring('file://'.length);
-      this.appendImageSourceCandidate(candidates, this.toImageSourceUri(decodedSchemePath));
-    }
-
-    return candidates;
-  }
-
-  private appendImageSourceCandidate(candidates: string[], candidate: string): void {
-    if (candidate.length === 0 || candidates.includes(candidate)) {
-      return;
-    }
-    candidates.push(candidate);
-  }
-
-  private toImageSourceUri(path: string): string {
-    const normalizedPath: string = path.trim();
-    if (normalizedPath.length === 0) {
-      return '';
-    }
-    if (normalizedPath.startsWith('file://')) {
-      if (normalizedPath.startsWith('file:///')) {
-        return normalizedPath;
-      }
-      const rawLocalPath: string = normalizedPath.substring('file://'.length);
-      return rawLocalPath.startsWith('/') ? `file://${rawLocalPath}` : `file:///${rawLocalPath}`;
-    }
-
-    if (normalizedPath.startsWith('http://') || normalizedPath.startsWith('https://')) {
-      return normalizedPath;
-    }
-
-    return normalizedPath.startsWith('/') ? `file://${normalizedPath}` : `file:///${normalizedPath}`;
-  }
-
-  private decodeUriSegment(text: string): string {
-    try {
-      return decodeURIComponent(text);
-    } catch (_error) {
-      return text;
-    }
   }
 
   private getViewModel(): DrawingEditorViewModel | null {
