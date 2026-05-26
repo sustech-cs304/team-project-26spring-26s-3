@@ -1,5 +1,6 @@
 import common from '@ohos.app.ability.common';
 
+import { ElementFrame } from '../../../common/utils/ElementBoundsUtil';
 import { CanvasElement, ImageCanvasElement, TextCanvasElement } from '../../../domain/entities/CanvasElement';
 import {
   DrawingEditorViewModel,
@@ -8,7 +9,6 @@ import {
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
 import { ElementSelectionOverlay } from './ElementSelectionOverlay';
 import { FormulaElementView } from './FormulaElementView';
-import { ImageElementView } from './ImageElementView';
 import { ShapeElementView } from './ShapeElementView';
 
 const TEXT_LINE_HEIGHT_FACTOR = 1.35;
@@ -68,15 +68,33 @@ export struct ElementLayer {
     } else if (element.type === 'shape') {
       ShapeElementView({ element: element, renderVersion: this.refreshVersion })
     } else if (element.type === 'image') {
-      ImageElementView({
-        element: element,
-        renderVersion: this.refreshVersion,
-        translateX: this.getImageElementDraftTranslateX(element),
-        translateY: this.getImageElementDraftTranslateY(element),
-        scaleX: this.getImageElementDraftScaleX(element),
-        scaleY: this.getImageElementDraftScaleY(element)
-      })
+      this.buildImageElement(element);
     }
+  }
+
+  @Builder
+  private buildImageElement(element: ImageCanvasElement): void {
+    Stack() {
+      Image(this.toImageSourceUri(this.getCurrentImageElementUri(element)))
+        .width('100%')
+        .height('100%')
+        .objectFit(ImageFit.Fill)
+        .opacity(this.getCurrentImageElementOpacity(element))
+        .hitTestBehavior(HitTestMode.None)
+    }
+    .width(this.getImageElementDisplayFrame(element).width)
+    .height(this.getImageElementDisplayFrame(element).height)
+    .position({
+      x: this.getImageElementDisplayFrame(element).x,
+      y: this.getImageElementDisplayFrame(element).y
+    })
+    .border({
+      width: this.getImageOutlineWidth(element),
+      color: this.getCurrentImageElementOutlineColor(element),
+      style: this.getImageOutlineBorderStyle(element)
+    })
+    .zIndex(this.getCurrentImageElementZIndex(element))
+    .hitTestBehavior(HitTestMode.None)
   }
 
   @Builder
@@ -138,7 +156,8 @@ export struct ElementLayer {
     }
 
     if (element.type === 'image') {
-      return `${element.id}_${element.updatedAt}_${geometryKey}_${element.outline.lineStyle}_${element.outline.color}_${element.outline.width}`;
+      const imageElement = element as ImageCanvasElement;
+      return `${imageElement.id}_${this.getCurrentImageElementUri(imageElement)}_${this.getCurrentImageLayerBucket(imageElement)}`;
     }
 
     return `${element.id}_${element.updatedAt}_${geometryKey}`;
@@ -166,6 +185,14 @@ export struct ElementLayer {
   }
 
   private shouldRenderElementContent(element: CanvasElement): boolean {
+    if (element.type === 'image') {
+      const currentElement = this.getCurrentImageElement(element as ImageCanvasElement);
+      return this.renderContent &&
+        currentElement.id !== this.editingElementId &&
+        currentElement.zIndex >= this.minZIndex &&
+        currentElement.zIndex < this.maxZIndex;
+    }
+
     return this.renderContent &&
       element.id !== this.editingElementId &&
       element.zIndex >= this.minZIndex &&
@@ -179,11 +206,15 @@ export struct ElementLayer {
   }
 
   private applyImageElementEditDraftFrame(element: CanvasElement): CanvasElement {
-    if (this.imageElementEditDraft === null || element.type !== 'image' || element.id !== this.imageElementEditDraft.elementId) {
+    if (element.type !== 'image') {
       return element;
     }
 
-    const imageElement = element as ImageCanvasElement;
+    const imageElement = this.getCurrentImageElement(element as ImageCanvasElement);
+    if (this.imageElementEditDraft === null || imageElement.id !== this.imageElementEditDraft.elementId) {
+      return imageElement;
+    }
+
     return {
       id: imageElement.id,
       pageId: imageElement.pageId,
@@ -206,36 +237,92 @@ export struct ElementLayer {
     };
   }
 
-  private getImageElementDraftTranslateX(element: CanvasElement): number {
-    if (this.imageElementEditDraft === null || element.type !== 'image' || element.id !== this.imageElementEditDraft.elementId) {
-      return 0;
+  private getImageElementDisplayFrame(element: ImageCanvasElement): ElementFrame {
+    const currentElement = this.getCurrentImageElement(element);
+    if (this.imageElementEditDraft !== null && currentElement.id === this.imageElementEditDraft.elementId) {
+      return {
+        x: this.imageElementEditDraft.currentFrame.x,
+        y: this.imageElementEditDraft.currentFrame.y,
+        width: this.imageElementEditDraft.currentFrame.width,
+        height: this.imageElementEditDraft.currentFrame.height
+      };
     }
 
-    return this.imageElementEditDraft.currentFrame.x - this.imageElementEditDraft.originalFrame.x;
+    return {
+      x: currentElement.x,
+      y: currentElement.y,
+      width: currentElement.width,
+      height: currentElement.height
+    };
   }
 
-  private getImageElementDraftTranslateY(element: CanvasElement): number {
-    if (this.imageElementEditDraft === null || element.type !== 'image' || element.id !== this.imageElementEditDraft.elementId) {
-      return 0;
-    }
-
-    return this.imageElementEditDraft.currentFrame.y - this.imageElementEditDraft.originalFrame.y;
+  private getImageOutlineWidth(element: ImageCanvasElement): number {
+    const currentElement = this.getCurrentImageElement(element);
+    return currentElement.outline.lineStyle === 'none' ? 0 : Math.max(0, currentElement.outline.width);
   }
 
-  private getImageElementDraftScaleX(element: CanvasElement): number {
-    if (this.imageElementEditDraft === null || element.type !== 'image' || element.id !== this.imageElementEditDraft.elementId) {
-      return 1;
+  private getImageOutlineBorderStyle(element: ImageCanvasElement): BorderStyle {
+    const currentElement = this.getCurrentImageElement(element);
+    if (currentElement.outline.lineStyle === 'dashed') {
+      return BorderStyle.Dashed;
     }
 
-    return this.imageElementEditDraft.currentFrame.width / Math.max(1, this.imageElementEditDraft.originalFrame.width);
+    if (currentElement.outline.lineStyle === 'dotted') {
+      return BorderStyle.Dotted;
+    }
+
+    return BorderStyle.Solid;
   }
 
-  private getImageElementDraftScaleY(element: CanvasElement): number {
-    if (this.imageElementEditDraft === null || element.type !== 'image' || element.id !== this.imageElementEditDraft.elementId) {
-      return 1;
+  private getCurrentImageElementUri(element: ImageCanvasElement): string {
+    return this.getCurrentImageElement(element).uri;
+  }
+
+  private getCurrentImageElementOpacity(element: ImageCanvasElement): number {
+    return this.getCurrentImageElement(element).opacity;
+  }
+
+  private getCurrentImageElementOutlineColor(element: ImageCanvasElement): string {
+    return this.getCurrentImageElement(element).outline.color;
+  }
+
+  private getCurrentImageElementZIndex(element: ImageCanvasElement): number {
+    return this.getCurrentImageElement(element).zIndex;
+  }
+
+  private getCurrentImageLayerBucket(element: ImageCanvasElement): string {
+    const currentElement = this.getCurrentImageElement(element);
+    if (currentElement.zIndex < this.minZIndex) {
+      return 'below';
     }
 
-    return this.imageElementEditDraft.currentFrame.height / Math.max(1, this.imageElementEditDraft.originalFrame.height);
+    if (currentElement.zIndex >= this.maxZIndex) {
+      return 'above';
+    }
+
+    return 'inside';
+  }
+
+  private getCurrentImageElement(element: ImageCanvasElement): ImageCanvasElement {
+    const currentElement = this.elements.find((candidate: CanvasElement): boolean =>
+      candidate.type === 'image' && candidate.id === element.id) as ImageCanvasElement | undefined;
+    return currentElement === undefined ? element : currentElement;
+  }
+
+  private toImageSourceUri(path: string): string {
+    if (path.startsWith('file://')) {
+      if (path.startsWith('file:///')) {
+        return path;
+      }
+      const rawLocalPath: string = path.substring('file://'.length);
+      return rawLocalPath.startsWith('/') ? `file://${rawLocalPath}` : `file:///${rawLocalPath}`;
+    }
+
+    if (path.startsWith('http://') || path.startsWith('https://')) {
+      return path;
+    }
+
+    return `file://${path}`;
   }
 
   private getViewModel(): DrawingEditorViewModel | null {
