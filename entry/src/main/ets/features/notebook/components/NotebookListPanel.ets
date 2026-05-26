@@ -334,6 +334,10 @@ export struct NotebookListPanel {
       if (importResult !== null) {
         const viewModel: NotebookListViewModel = this.ensureViewModel();
         this.currentSortType = await viewModel.loadSortType();
+        try {
+          await viewModel.touchNotebookLastOpened(importResult.notebookId);
+        } catch (_touchError) {
+        }
         await this.refreshNotebookCollection();
         AppRouter.openEditor({
           notebookId: importResult.notebookId,
@@ -1103,6 +1107,10 @@ export struct NotebookListPanel {
 
     const now: number = Date.now();
     const elapsed: number = Math.max(0, now - timestamp);
+    if (elapsed < this.oneMinuteMs) {
+      return `${Math.max(1, Math.floor(elapsed / 1000))}秒前`;
+    }
+
     if (elapsed <= this.oneDayMs) {
       const hours: number = Math.floor(elapsed / this.oneHourMs);
       const minutes: number = Math.max(1, Math.floor((elapsed % this.oneHourMs) / this.oneMinuteMs));
@@ -2075,9 +2083,9 @@ export struct NotebookListPanel {
 
   @Builder
   private buildFolderIcon(width: number = 34): void {
-    Image($r('app.media.folder_icon'))
+    Image($rawfile('icons/folder_icon.svg'))
       .width(width)
-      .aspectRatio(1)
+      .height(width)
       .objectFit(ImageFit.Contain)
   }
 
