@@ -1,6 +1,7 @@
 import { Stroke } from './Stroke';
 
-export const PAGE_CANVAS_CONTENT_VERSION = 2;
+export const PAGE_CANVAS_CONTENT_VERSION = 3;
+export const DEFAULT_STROKE_LAYER_Z_INDEX = 0;
 export const TRANSPARENT_ELEMENT_BACKGROUND_COLOR = '#00FFFFFF';
 export const CANVAS_ELEMENT_TYPES = ['text', 'shape', 'image'] as const;
 export const SHAPE_TYPES = ['rectangle', 'circle', 'line'] as const;
@@ -86,6 +87,7 @@ export interface PageCanvasContent {
   version: number;
   strokes: Stroke[];
   elements: CanvasElement[];
+  strokeLayerZIndex: number;
 }
 
 export function isCanvasElementType(value: string): value is CanvasElementType {

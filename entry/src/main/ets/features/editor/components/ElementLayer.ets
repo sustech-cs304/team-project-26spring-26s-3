@@ -22,6 +22,10 @@ export struct ElementLayer {
   @Watch('onAutoCreateSessionChanged')
   @Prop autoCreateSession: boolean = true;
   @Prop editingElementId: string = '';
+  @Prop renderContent: boolean = true;
+  @Prop renderSelection: boolean = true;
+  @Prop minZIndex: number = -1000000000;
+  @Prop maxZIndex: number = 1000000000;
   @State private elements: CanvasElement[] = [];
   @State private selectedElementIds: string[] = [];
   @State private imageElementEditDraft: ImageElementEditDraft | null = null;
@@ -35,13 +39,13 @@ export struct ElementLayer {
   build() {
     Stack() {
       ForEach(this.elements, (element: CanvasElement) => {
-        if (element.id !== this.editingElementId) {
+        if (this.shouldRenderElementContent(element)) {
           this.buildElement(element);
         }
       }, (element: CanvasElement): string => this.getElementRenderKey(element))
 
       ForEach(this.elements, (element: CanvasElement) => {
-        if (this.selectedElementIds.includes(element.id) && element.id !== this.editingElementId) {
+        if (this.shouldRenderElementSelection(element)) {
           ElementSelectionOverlay({ element: this.applyImageElementEditDraftFrame(element) })
         }
       }, (element: CanvasElement): string => this.getSelectionRenderKey(this.applyImageElementEditDraftFrame(element)))
@@ -122,19 +126,20 @@ export struct ElementLayer {
   }
 
   private getSelectionRenderKey(element: CanvasElement): string {
-    return `selection_${element.id}_${this.selectedElementIds.join('_')}_${element.updatedAt}_${element.x}_${element.y}_${element.width}_${element.height}`;
+    return `selection_${element.id}_${this.selectedElementIds.join('_')}_${element.updatedAt}_${element.x}_${element.y}_${element.width}_${element.height}_${element.zIndex}`;
   }
 
   private getElementRenderKey(element: CanvasElement): string {
+    const geometryKey = `${element.x}_${element.y}_${element.width}_${element.height}_${element.zIndex}`;
     if (element.type === 'shape') {
-      return `${element.id}_${element.updatedAt}_${element.outline.lineStyle}_${element.outline.color}_${element.outline.width}_${element.fillColor}`;
+      return `${element.id}_${element.updatedAt}_${geometryKey}_${element.outline.lineStyle}_${element.outline.color}_${element.outline.width}_${element.fillColor}`;
     }
 
     if (element.type === 'image') {
-      return `${element.id}_${element.updatedAt}_${element.outline.lineStyle}_${element.outline.color}_${element.outline.width}`;
+      return `${element.id}_${element.updatedAt}_${geometryKey}_${element.outline.lineStyle}_${element.outline.color}_${element.outline.width}`;
     }
 
-    return `${element.id}_${element.updatedAt}`;
+    return `${element.id}_${element.updatedAt}_${geometryKey}`;
   }
 
   private onPageIdChanged(): void {
@@ -153,9 +158,22 @@ export struct ElementLayer {
 
   private reloadElements(): void {
     const viewModel = this.getViewModel();
-    this.elements = viewModel === null ? [] : viewModel.getElements();
+    this.elements = viewModel === null ? [] : viewModel.getElementsForRendering();
     this.selectedElementIds = viewModel === null ? [] : viewModel.getSelectedElementIds();
     this.imageElementEditDraft = viewModel === null ? null : viewModel.getImageElementEditDraft();
+  }
+
+  private shouldRenderElementContent(element: CanvasElement): boolean {
+    return this.renderContent &&
+      element.id !== this.editingElementId &&
+      element.zIndex >= this.minZIndex &&
+      element.zIndex < this.maxZIndex;
+  }
+
+  private shouldRenderElementSelection(element: CanvasElement): boolean {
+    return this.renderSelection &&
+      this.selectedElementIds.includes(element.id) &&
+      element.id !== this.editingElementId;
   }
 
   private applyImageElementEditDraftFrame(element: CanvasElement): CanvasElement {

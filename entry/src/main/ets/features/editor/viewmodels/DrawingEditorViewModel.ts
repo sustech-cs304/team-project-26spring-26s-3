@@ -23,6 +23,7 @@ import { now } from '../../../common/utils/TimeUtil';
 import { EditorRepositoryImpl } from '../../../data/repositories/EditorRepositoryImpl';
 import {
   CanvasElement,
+  DEFAULT_STROKE_LAYER_Z_INDEX,
   ElementOutlineStyle,
   ImageCanvasElement,
   PAGE_CANVAS_CONTENT_VERSION,
@@ -50,6 +51,8 @@ import {
 } from '../controllers/UndoRedoController';
 import { SelectionController } from '../selection/SelectionController';
 import {
+  LayerActionAvailability,
+  LayerOrderAction,
   ResizeHandle,
   SelectionAction,
   SelectionActionResult,
@@ -149,6 +152,27 @@ export interface ImageInsertAsset {
   originalHeight: number;
 }
 
+type LayerStackItemKind = 'strokeLayer' | 'element';
+
+interface LayerStackItem {
+  kind: LayerStackItemKind;
+  id: string;
+  zIndex: number;
+  createdAt: number;
+  orderIndex: number;
+}
+
+interface LayerReorderResult {
+  changed: boolean;
+  strokeLayerZIndex: number;
+  elements: CanvasElement[];
+}
+
+interface ElementLayerOrderRecord {
+  element: CanvasElement;
+  orderIndex: number;
+}
+
 export interface ImageElementEditDraft {
   elementId: string;
   originalFrame: ElementFrame;
@@ -214,6 +238,7 @@ export class DrawingEditorViewModel {
   private pageId: string = '';
   private strokes: Stroke[] = [];
   private elements: CanvasElement[] = [];
+  private strokeLayerZIndex: number = DEFAULT_STROKE_LAYER_Z_INDEX;
   private toolSetting: ToolSetting = {
     tool: DEFAULT_TOOL_SETTING.tool,
     color: DEFAULT_TOOL_SETTING.color,
@@ -266,6 +291,7 @@ export class DrawingEditorViewModel {
       const pageContent: PageCanvasContent = await this.createRepository().getPageContent(pageId);
       this.strokes = pageContent.strokes;
       this.elements = pageContent.elements;
+      this.strokeLayerZIndex = pageContent.strokeLayerZIndex;
       this.rebuildStrokeSpatialIndex();
       this.resetTransientState();
       this.undoRedoController.seedLoadedStrokes(this.strokes);
@@ -279,6 +305,7 @@ export class DrawingEditorViewModel {
       this.errorMessage = this.stringifyError(error);
       this.strokes = [];
       this.elements = [];
+      this.strokeLayerZIndex = DEFAULT_STROKE_LAYER_Z_INDEX;
       this.strokeSpatialIndex.clear();
       this.resetTransientState();
       this.markFullRenderInvalidation('load');
@@ -380,7 +407,7 @@ export class DrawingEditorViewModel {
     this.appendDebugEvent('undo', `requested count=${this.strokes.length} history=${this.describeHistoryState()}`);
     const undoResult: UndoRedoApplyResult = EditorPerformanceTrace.measureSync(
       'undo.controller',
-      () => this.undoRedoController.undo(this.strokes, this.elements),
+      () => this.undoRedoController.undo(this.strokes, this.elements, this.strokeLayerZIndex),
       `beforeStrokes=${beforeStrokeCount} beforePoints=${beforePointCount}`,
       6
     );
@@ -392,6 +419,9 @@ export class DrawingEditorViewModel {
     const applyStartedAt = Date.now();
     this.strokes = undoResult.strokes;
     this.elements = undoResult.elements;
+    if (undoResult.strokeLayerZIndex !== null) {
+      this.strokeLayerZIndex = undoResult.strokeLayerZIndex;
+    }
     this.restoreSelectionSnapshot(undoResult.selection);
     this.lassoDraftPath = [];
     this.applyStrokeSpatialIndexMutation(undoResult.removed, undoResult.added);
@@ -431,7 +461,7 @@ export class DrawingEditorViewModel {
     this.appendDebugEvent('redo', `requested count=${this.strokes.length} history=${this.describeHistoryState()}`);
     const redoResult: UndoRedoApplyResult = EditorPerformanceTrace.measureSync(
       'redo.controller',
-      () => this.undoRedoController.redo(this.strokes, this.elements),
+      () => this.undoRedoController.redo(this.strokes, this.elements, this.strokeLayerZIndex),
       `beforeStrokes=${beforeStrokeCount} beforePoints=${beforePointCount}`,
       6
     );
@@ -443,6 +473,9 @@ export class DrawingEditorViewModel {
     const applyStartedAt = Date.now();
     this.strokes = redoResult.strokes;
     this.elements = redoResult.elements;
+    if (redoResult.strokeLayerZIndex !== null) {
+      this.strokeLayerZIndex = redoResult.strokeLayerZIndex;
+    }
     this.restoreSelectionSnapshot(redoResult.selection);
     this.lassoDraftPath = [];
     this.applyStrokeSpatialIndexMutation(redoResult.removed, redoResult.added);
@@ -570,7 +603,11 @@ export class DrawingEditorViewModel {
   }
 
   getElementsForRendering(): CanvasElement[] {
-    return this.elements;
+    return this.cloneElements(this.getElementsInLayerOrderAscending(this.elements));
+  }
+
+  getStrokeLayerZIndex(): number {
+    return this.strokeLayerZIndex;
   }
 
   getImageElementEditDraft(): ImageElementEditDraft | null {
@@ -814,6 +851,85 @@ export class DrawingEditorViewModel {
     }
 
     return this.replaceElementWithDelta('elementStyle', element, nextElement, 'elementStyle');
+  }
+
+  getElementLayerActionAvailability(elementId: string): LayerActionAvailability {
+    const stack = this.buildLayerStack();
+    const itemIndex = stack.findIndex((item: LayerStackItem): boolean => item.id === `element:${elementId}`);
+    if (itemIndex < 0) {
+      return {
+        canMoveUp: false,
+        canMoveDown: false,
+        canMoveTop: false,
+        canMoveBottom: false
+      };
+    }
+
+    const stackLength = stack.length;
+    return {
+      canMoveUp: itemIndex < stackLength - 1,
+      canMoveDown: itemIndex > 0,
+      canMoveTop: itemIndex < stackLength - 1,
+      canMoveBottom: itemIndex > 0
+    };
+  }
+
+  changeElementLayerById(elementId: string, action: LayerOrderAction): SelectionActionResult {
+    const element = this.getElementById(elementId);
+    if (element === null) {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    const beforeSelection = this.getCurrentSelectionSnapshot();
+    const beforeStrokeLayerZIndex = this.strokeLayerZIndex;
+    const beforeElements = this.cloneElements(this.elements);
+    const reorderResult = this.reorderLayerStack(`element:${elementId}`, action);
+    if (!reorderResult.changed) {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    this.elements = reorderResult.elements;
+    this.strokeLayerZIndex = reorderResult.strokeLayerZIndex;
+    const removedElements: IndexedElementRecord[] = [];
+    const addedElements: IndexedElementRecord[] = [];
+    for (let index = 0; index < beforeElements.length; index += 1) {
+      const beforeElement = beforeElements[index];
+      const afterElement = this.getElementByIdFromList(reorderResult.elements, beforeElement.id);
+      if (afterElement !== null &&
+        (beforeElement.zIndex !== afterElement.zIndex || !this.areElementsEquivalent(beforeElement, afterElement))) {
+        removedElements.push({
+          index,
+          element: this.cloneElement(beforeElement)
+        });
+        addedElements.push({
+          index,
+          element: this.cloneElement(afterElement)
+        });
+      }
+    }
+
+    this.undoRedoController.recordDelta(
+      [],
+      [],
+      'layer',
+      removedElements,
+      addedElements,
+      beforeSelection,
+      this.getCurrentSelectionSnapshot(),
+      beforeStrokeLayerZIndex,
+      this.strokeLayerZIndex
+    );
+    this.changeSequence += 1;
+    this.persistenceStatus = 'pending layer save';
+    this.schedulePersistCurrentStrokes('layer', 0);
+    this.errorMessage = '';
+    this.appendDebugEvent('layer', `element=${elementId} action=${action}`);
+    return {
+      changed: true,
+      changedStrokes: beforeStrokeLayerZIndex !== this.strokeLayerZIndex,
+      changedElements: removedElements.length > 0 || addedElements.length > 0,
+      elementSelectionChanged: false
+    };
   }
 
   beginLassoSelection(point: StrokePoint): void {
@@ -1861,7 +1977,8 @@ export class DrawingEditorViewModel {
 
   private hasUndoRedoChanges(result: UndoRedoApplyResult): boolean {
     return result.removed.length > 0 || result.added.length > 0 ||
-      result.removedElements.length > 0 || result.addedElements.length > 0;
+      result.removedElements.length > 0 || result.addedElements.length > 0 ||
+      result.strokeLayerZIndex !== null;
   }
 
   private schedulePersistCurrentStrokes(reason: string, delayMs: number = SAVE_DEBOUNCE_MS): void {
@@ -1904,6 +2021,7 @@ export class DrawingEditorViewModel {
     this.isPersisting = true;
     const strokeSnapshot = this.cloneStrokes(this.strokes);
     const elementSnapshot = this.cloneElements(this.elements);
+    const strokeLayerZIndexSnapshot = this.strokeLayerZIndex;
     const snapshotChangeSequence: number = this.changeSequence;
     this.persistenceStatus = `saving ${reason}`;
     const snapshotPointCount = this.countStrokePoints(strokeSnapshot);
@@ -1915,7 +2033,8 @@ export class DrawingEditorViewModel {
           await this.createRepository().savePageContent(this.pageId, {
             version: PAGE_CANVAS_CONTENT_VERSION,
             strokes: strokeSnapshot,
-            elements: elementSnapshot
+            elements: elementSnapshot,
+            strokeLayerZIndex: strokeLayerZIndexSnapshot
           });
         },
         `reason=${reason} strokes=${strokeSnapshot.length} points=${snapshotPointCount} elements=${elementSnapshot.length}`,
@@ -2033,9 +2152,7 @@ export class DrawingEditorViewModel {
   }
 
   private hitTestElement(point: StrokePoint): CanvasElement | null {
-    const sortedElements = this.elements
-      .map((element: CanvasElement): CanvasElement => element)
-      .sort((left: CanvasElement, right: CanvasElement): number => right.zIndex - left.zIndex);
+    const sortedElements = this.getElementsInLayerOrderDescending(this.elements);
 
     for (const element of sortedElements) {
       if (this.isPointInElement(point, element)) {
@@ -3465,6 +3582,190 @@ export class DrawingEditorViewModel {
     return Math.max(minValue, Math.min(maxValue, value));
   }
 
+  private buildLayerStack(): LayerStackItem[] {
+    const stack: LayerStackItem[] = [];
+
+    if (this.hasVisibleStrokeLayer()) {
+      stack.push({
+        kind: 'strokeLayer',
+        id: 'strokeLayer',
+        zIndex: this.strokeLayerZIndex,
+        createdAt: 0,
+        orderIndex: -1
+      });
+    }
+
+    for (let index = 0; index < this.elements.length; index += 1) {
+      const element = this.elements[index];
+      stack.push({
+        kind: 'element',
+        id: `element:${element.id}`,
+        zIndex: element.zIndex,
+        createdAt: element.createdAt,
+        orderIndex: index
+      });
+    }
+
+    return stack.sort((left: LayerStackItem, right: LayerStackItem): number =>
+      this.compareLayerStackItemAscending(left, right));
+  }
+
+  private hasVisibleStrokeLayer(): boolean {
+    return this.strokes.length > 0;
+  }
+
+  private getElementsInLayerOrderAscending(elements: CanvasElement[]): CanvasElement[] {
+    return elements
+      .map((element: CanvasElement, orderIndex: number): ElementLayerOrderRecord => ({ element, orderIndex }))
+      .sort((left: ElementLayerOrderRecord, right: ElementLayerOrderRecord): number =>
+        this.compareElementLayerOrderAscending(left.element, left.orderIndex, right.element, right.orderIndex))
+      .map((record: ElementLayerOrderRecord): CanvasElement => record.element);
+  }
+
+  private getElementsInLayerOrderDescending(elements: CanvasElement[]): CanvasElement[] {
+    return elements
+      .map((element: CanvasElement, orderIndex: number): ElementLayerOrderRecord => ({ element, orderIndex }))
+      .sort((left: ElementLayerOrderRecord, right: ElementLayerOrderRecord): number =>
+        this.compareElementLayerOrderAscending(right.element, right.orderIndex, left.element, left.orderIndex))
+      .map((record: ElementLayerOrderRecord): CanvasElement => record.element);
+  }
+
+  private compareElementLayerOrderAscending(
+    leftElement: CanvasElement,
+    leftOrderIndex: number,
+    rightElement: CanvasElement,
+    rightOrderIndex: number
+  ): number {
+    if (leftElement.zIndex !== rightElement.zIndex) {
+      return leftElement.zIndex - rightElement.zIndex;
+    }
+    if (leftOrderIndex !== rightOrderIndex) {
+      return leftOrderIndex - rightOrderIndex;
+    }
+    if (leftElement.createdAt !== rightElement.createdAt) {
+      return leftElement.createdAt - rightElement.createdAt;
+    }
+    return leftElement.id.localeCompare(rightElement.id);
+  }
+
+  private compareLayerStackItemAscending(left: LayerStackItem, right: LayerStackItem): number {
+    if (left.zIndex !== right.zIndex) {
+      return left.zIndex - right.zIndex;
+    }
+    if (left.orderIndex !== right.orderIndex) {
+      return left.orderIndex - right.orderIndex;
+    }
+    if (left.createdAt !== right.createdAt) {
+      return left.createdAt - right.createdAt;
+    }
+    return left.id.localeCompare(right.id);
+  }
+
+  private reorderLayerStack(itemId: string, action: LayerOrderAction): LayerReorderResult {
+    const stack = this.buildLayerStack();
+    const itemIndex = stack.findIndex((item: LayerStackItem): boolean => item.id === itemId);
+    if (itemIndex < 0) {
+      return {
+        changed: false,
+        strokeLayerZIndex: this.strokeLayerZIndex,
+        elements: this.cloneElements(this.elements)
+      };
+    }
+
+    const targetIndex = this.getLayerReorderTargetIndex(itemIndex, stack.length, action);
+    if (targetIndex === itemIndex) {
+      return {
+        changed: false,
+        strokeLayerZIndex: this.strokeLayerZIndex,
+        elements: this.cloneElements(this.elements)
+      };
+    }
+
+    const reorderedStack = stack.slice();
+    const movedItems = reorderedStack.splice(itemIndex, 1);
+    reorderedStack.splice(targetIndex, 0, movedItems[0]);
+    return this.buildLayerReorderResult(reorderedStack);
+  }
+
+  private getLayerReorderTargetIndex(currentIndex: number, stackLength: number, action: LayerOrderAction): number {
+    switch (action) {
+      case 'layerUp':
+        return Math.min(stackLength - 1, currentIndex + 1);
+      case 'layerDown':
+        return Math.max(0, currentIndex - 1);
+      case 'layerTop':
+        return stackLength - 1;
+      case 'layerBottom':
+        return 0;
+      default:
+        return currentIndex;
+    }
+  }
+
+  private buildLayerReorderResult(stack: LayerStackItem[]): LayerReorderResult {
+    let nextStrokeLayerZIndex = this.strokeLayerZIndex;
+    const nextElementZIndexById = new Map<string, number>();
+    for (let index = 0; index < stack.length; index += 1) {
+      const item = stack[index];
+      if (item.kind === 'strokeLayer') {
+        nextStrokeLayerZIndex = index;
+      } else {
+        nextElementZIndexById.set(item.id.substring('element:'.length), index);
+      }
+    }
+
+    const timestamp = now();
+    let changed = nextStrokeLayerZIndex !== this.strokeLayerZIndex;
+    const nextElements = this.elements.map((element: CanvasElement): CanvasElement => {
+      const nextZIndex = nextElementZIndexById.get(element.id) ?? element.zIndex;
+      if (nextZIndex === element.zIndex) {
+        return this.cloneElement(element);
+      }
+      changed = true;
+      return this.cloneElementWithZIndex(element, nextZIndex, timestamp);
+    });
+
+    return {
+      changed,
+      strokeLayerZIndex: nextStrokeLayerZIndex,
+      elements: nextElements
+    };
+  }
+
+  private getElementByIdFromList(elements: CanvasElement[], elementId: string): CanvasElement | null {
+    for (const element of elements) {
+      if (element.id === elementId) {
+        return element;
+      }
+    }
+
+    return null;
+  }
+
+  private cloneElementWithZIndex(element: CanvasElement, zIndex: number, updatedAt: number): CanvasElement {
+    if (element.type === 'text') {
+      return {
+        ...this.cloneTextElement(element),
+        zIndex,
+        updatedAt
+      };
+    }
+
+    if (element.type === 'shape') {
+      return {
+        ...this.cloneShapeElement(element),
+        zIndex,
+        updatedAt
+      };
+    }
+
+    return {
+      ...this.cloneImageElement(element),
+      zIndex,
+      updatedAt
+    };
+  }
+
   private recordElementDelta(
     label: EditorDeltaLabel,
     removedElements: IndexedElementRecord[],
@@ -4065,9 +4366,8 @@ export class DrawingEditorViewModel {
   }
 
   private getSelectedElementsInZOrderDescending(): CanvasElement[] {
-    return this.elements
-      .filter((element: CanvasElement): boolean => this.selectedElementIds.includes(element.id))
-      .sort((left: CanvasElement, right: CanvasElement): number => right.zIndex - left.zIndex);
+    return this.getElementsInLayerOrderDescending(this.elements)
+      .filter((element: CanvasElement): boolean => this.selectedElementIds.includes(element.id));
   }
 
   private getElementBoundingBox(element: CanvasElement): BoundingBox {
@@ -4382,7 +4682,7 @@ export class DrawingEditorViewModel {
   }
 
   private getNextElementZIndex(): number {
-    let maxZIndex = 0;
+    let maxZIndex = this.strokeLayerZIndex;
     for (const element of this.elements) {
       maxZIndex = Math.max(maxZIndex, element.zIndex);
     }

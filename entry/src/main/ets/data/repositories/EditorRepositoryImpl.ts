@@ -5,6 +5,7 @@ import fileIo from '@ohos.file.fs';
 import { NotebookRepositoryImpl } from './NotebookRepositoryImpl';
 import {
   CanvasElement,
+  DEFAULT_STROKE_LAYER_Z_INDEX,
   ElementOutlineStyle,
   ImageCanvasElement,
   isElementOutlineLineStyle,
@@ -99,7 +100,8 @@ export class EditorRepositoryImpl implements EditorRepository {
       await this.savePageContent(pageId, {
         version: PAGE_CONTENT_VERSION,
         strokes,
-        elements: pageContent.elements
+        elements: pageContent.elements,
+        strokeLayerZIndex: pageContent.strokeLayerZIndex
       });
       this.logDebug(`saveStrokes pageId=${pageId} count=${strokes.length}`);
     } catch (error) {
@@ -113,7 +115,8 @@ export class EditorRepositoryImpl implements EditorRepository {
       await this.savePageContent(pageId, {
         version: PAGE_CONTENT_VERSION,
         strokes: [],
-        elements: pageContent.elements
+        elements: pageContent.elements,
+        strokeLayerZIndex: pageContent.strokeLayerZIndex
       });
       this.logDebug(`clearStrokes pageId=${pageId}`);
     } catch (error) {
@@ -138,7 +141,8 @@ export class EditorRepositoryImpl implements EditorRepository {
     const normalizedContent: PageCanvasContent = {
       version: PAGE_CONTENT_VERSION,
       strokes: content.strokes,
-      elements: content.elements
+      elements: content.elements,
+      strokeLayerZIndex: this.parseStrokeLayerZIndex(content.strokeLayerZIndex)
     };
     const serialized = this.serializePageContent(normalizedContent);
     this.logDebug(
@@ -290,7 +294,8 @@ export class EditorRepositoryImpl implements EditorRepository {
         return {
           version: PAGE_CONTENT_VERSION,
           strokes: this.parseStrokeList(parsed, pageId),
-          elements: []
+          elements: [],
+          strokeLayerZIndex: DEFAULT_STROKE_LAYER_Z_INDEX
         };
       }
 
@@ -302,7 +307,8 @@ export class EditorRepositoryImpl implements EditorRepository {
       return {
         version: PAGE_CONTENT_VERSION,
         strokes: this.parseStrokeList(record.strokes, pageId),
-        elements: this.parseElementList(record.elements, pageId)
+        elements: this.parseElementList(record.elements, pageId),
+        strokeLayerZIndex: this.parseStrokeLayerZIndex(record.strokeLayerZIndex)
       };
     } catch (_error) {
       return this.buildEmptyPageContent();
@@ -313,8 +319,17 @@ export class EditorRepositoryImpl implements EditorRepository {
     return {
       version: PAGE_CONTENT_VERSION,
       strokes: [],
-      elements: []
+      elements: [],
+      strokeLayerZIndex: DEFAULT_STROKE_LAYER_Z_INDEX
     };
+  }
+
+  private parseStrokeLayerZIndex(value: Object | number): number {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return DEFAULT_STROKE_LAYER_Z_INDEX;
+    }
+
+    return Math.round(value);
   }
 
   private deserializeStrokes(rawValue: string, pageId: string): Stroke[] {

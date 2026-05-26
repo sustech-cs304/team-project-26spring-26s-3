@@ -29,6 +29,8 @@ import { IndexedStrokeRecord } from '../controllers/UndoRedoController';
 import { StrokeSpatialHashIndex } from '../controllers/StrokeSpatialHashIndex';
 import { SelectionController } from '../selection/SelectionController';
 import {
+  LayerActionAvailability,
+  LayerOrderAction,
   ResizeHandle,
   SelectionAction,
   SelectionContextMenuTarget,
@@ -106,7 +108,7 @@ const PARTIAL_REDRAW_OVERDRAW_VIEWPORT_PX = 2;
 const RECENT_COMMITTED_STROKE_LIMIT = 6;
 const RECENT_COMMITTED_IDLE_FLUSH_DELAY_MS = 420;
 type StrokeResizeUiMode = 'none' | 'ready' | 'resizing' | 'moving';
-type ElementStylePanelMode = 'none' | 'fill' | 'outline';
+type ElementStylePanelMode = 'none' | 'fill' | 'outline' | 'layer';
 const DEFAULT_VIEWPORT_WIDTH = 1600;
 const DEFAULT_VIEWPORT_HEIGHT = 900;
 const TEXT_EDIT_DOUBLE_TAP_MS = 360;
@@ -200,11 +202,14 @@ export struct CanvasBoard {
   private viewModel: DrawingEditorViewModel | null = null;
 
   private readonly committedRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
+  private readonly backgroundRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
   private readonly recentCommittedRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
   private readonly stablePreviewRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
   private readonly overlayRenderingSettings: RenderingContextSettings = new RenderingContextSettings(true);
   private readonly committedContext2D: CanvasRenderingContext2D =
     new CanvasRenderingContext2D(this.committedRenderingSettings);
+  private readonly backgroundContext2D: CanvasRenderingContext2D =
+    new CanvasRenderingContext2D(this.backgroundRenderingSettings);
   private readonly recentCommittedContext2D: CanvasRenderingContext2D =
     new CanvasRenderingContext2D(this.recentCommittedRenderingSettings);
   private readonly stablePreviewContext2D: CanvasRenderingContext2D =
@@ -251,6 +256,7 @@ export struct CanvasBoard {
   private lastHighQualityViewportRenderKey: string = '';
 
   @State private isCommittedLayerReady: boolean = false;
+  @State private isBackgroundLayerReady: boolean = false;
   @State private isRecentCommittedLayerReady: boolean = false;
   @State private isStablePreviewLayerReady: boolean = false;
   @State private isOverlayLayerReady: boolean = false;
@@ -279,6 +285,10 @@ export struct CanvasBoard {
   @State private selectionContextOutlineLineStyle: ElementOutlineLineStyle = 'solid';
   @State private selectionContextOutlineColor: string = '#111827';
   @State private selectionContextOutlineWidth: number = 2;
+  @State private canLayerMoveUp: boolean = false;
+  @State private canLayerMoveDown: boolean = false;
+  @State private canLayerMoveTop: boolean = false;
+  @State private canLayerMoveBottom: boolean = false;
   @State private selectionContextMenuX: number = 0;
   @State private selectionContextMenuY: number = 0;
   @State private isOcrRecognizing: boolean = false;
@@ -308,6 +318,42 @@ export struct CanvasBoard {
       Stack() {
         this.buildPageBackgroundImage()
       }
+        .width(this.elementLayerPageWidth)
+        .height(this.elementLayerPageHeight)
+        .position({
+          x: this.elementLayerOffsetX,
+          y: this.elementLayerOffsetY
+        })
+        .scale({
+          x: this.elementLayerScale,
+          y: this.elementLayerScale,
+          centerX: 0,
+          centerY: 0
+        })
+        .clip(true)
+        .hitTestBehavior(HitTestMode.None)
+
+      Canvas(this.backgroundContext2D)
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#00000000')
+        .hitTestBehavior(HitTestMode.None)
+        .onReady(() => {
+          this.isBackgroundLayerReady = true;
+          this.redrawBackgroundLayer();
+          this.redrawCommittedLayerAfterReadiness();
+        })
+
+      ElementLayer({
+        pageId: this.pageId,
+        refreshVersion: this.getElementLayerRefreshVersion(),
+        autoCreateSession: this.shouldAutoLoadCurrentSession(),
+        editingElementId: this.getInlineTextEditElementId(),
+        renderContent: true,
+        renderSelection: false,
+        minZIndex: -1000000000,
+        maxZIndex: this.getStrokeLayerZIndexForRendering()
+      })
         .width(this.elementLayerPageWidth)
         .height(this.elementLayerPageHeight)
         .position({
@@ -357,7 +403,24 @@ export struct CanvasBoard {
           pageId: this.pageId,
           refreshVersion: this.getElementLayerRefreshVersion(),
           autoCreateSession: this.shouldAutoLoadCurrentSession(),
-          editingElementId: this.getInlineTextEditElementId()
+          editingElementId: this.getInlineTextEditElementId(),
+          renderContent: true,
+          renderSelection: false,
+          minZIndex: this.getStrokeLayerZIndexForRendering(),
+          maxZIndex: 1000000000
+        })
+          .width('100%')
+          .height('100%')
+
+        ElementLayer({
+          pageId: this.pageId,
+          refreshVersion: this.getElementLayerRefreshVersion(),
+          autoCreateSession: this.shouldAutoLoadCurrentSession(),
+          editingElementId: this.getInlineTextEditElementId(),
+          renderContent: false,
+          renderSelection: true,
+          minZIndex: -1000000000,
+          maxZIndex: 1000000000
         })
           .width('100%')
           .height('100%')
@@ -422,6 +485,11 @@ export struct CanvasBoard {
       this.notifyCanvasMetricsChanged();
       this.requestViewportRedraw();
     })
+  }
+
+  private getStrokeLayerZIndexForRendering(): number {
+    const viewModel = this.getViewModel();
+    return viewModel === null ? 0 : viewModel.getStrokeLayerZIndex();
   }
 
   private resolvePageBackgroundImageUri(): string {
@@ -596,6 +664,8 @@ export struct CanvasBoard {
         this.buildFillStylePanel()
       } else if (this.elementStylePanelMode === 'outline') {
         this.buildOutlineStylePanel()
+      } else if (this.elementStylePanelMode === 'layer') {
+        this.buildLayerOrderPanel()
       } else if (this.selectionContextMenuTarget === 'strokeGroup') {
         Button('拷贝')
           .width('100%')
@@ -655,6 +725,7 @@ export struct CanvasBoard {
         if (this.isSelectionContextElementOutlineEditable()) {
           this.buildSelectionMenuButton('轮廓', 'outline')
         }
+        this.buildSelectionMenuButton('改变图层', 'layer')
         this.buildSelectionMenuButton('删除', 'delete', '#DC2626')
       }
     }
@@ -688,6 +759,9 @@ export struct CanvasBoard {
       .backgroundColor('#00000000')
       .enabled(enabled)
       .onClick(() => {
+        if (!enabled) {
+          return;
+        }
         this.handleSelectionContextMenuAction(action);
       })
   }
@@ -789,6 +863,40 @@ export struct CanvasBoard {
     }
       .width('100%')
       .padding(4)
+  }
+
+  @Builder
+  private buildLayerOrderPanel(): void {
+    Column({ space: 4 }) {
+      Text('改变图层')
+        .fontSize(12)
+        .fontColor('#475569')
+        .width('100%')
+
+      this.buildLayerOrderButton('上移一层', 'layerUp', this.canLayerMoveUp)
+      this.buildLayerOrderButton('下移一层', 'layerDown', this.canLayerMoveDown)
+      this.buildLayerOrderButton('置于顶层', 'layerTop', this.canLayerMoveTop)
+      this.buildLayerOrderButton('置于底层', 'layerBottom', this.canLayerMoveBottom)
+    }
+      .width('100%')
+      .padding(4)
+  }
+
+  @Builder
+  private buildLayerOrderButton(label: string, action: LayerOrderAction, enabled: boolean): void {
+    Button(label)
+      .width('100%')
+      .height(SELECTION_CONTEXT_MENU_ITEM_HEIGHT)
+      .fontSize(14)
+      .fontColor(this.isLayerOrderActionCurrentlyEnabled(action) ? '#111827' : '#94A3B8')
+      .backgroundColor('#00000000')
+      .enabled(this.isLayerOrderActionCurrentlyEnabled(action))
+      .onClick(() => {
+        if (!this.isLayerOrderActionCurrentlyEnabled(action)) {
+          return;
+        }
+        this.handleSelectionContextMenuAction(action);
+      })
   }
 
   @Builder
@@ -1861,6 +1969,42 @@ export struct CanvasBoard {
     };
   }
 
+  private redrawBackgroundLayer(
+    providedSize: CanvasSize | null = null,
+    providedTransform: PageViewportTransform | null = null,
+    providedVisibleRegion: PageRenderRegion | null = null
+  ): void {
+    if (!this.isBackgroundLayerReady) {
+      return;
+    }
+
+    const size = providedSize ?? this.getCanvasSize(this.backgroundContext2D);
+    const transform = providedTransform ?? this.getPageViewportTransform(size);
+    const visibleRegion = providedVisibleRegion ?? this.getVisiblePageRegion(transform);
+    this.backgroundContext2D.clearRect(0, 0, size.width, size.height);
+    if (visibleRegion === null) {
+      return;
+    }
+
+    this.backgroundContext2D.save();
+    this.applyPageTransformAndClip(this.backgroundContext2D, transform);
+    const didDrawBackgroundImage: boolean = this.drawPageBackgroundImageOnContext(
+      this.backgroundContext2D,
+      transform.pageWidth,
+      transform.pageHeight
+    );
+    PageTemplateRenderer.drawTemplateBackground(
+      this.backgroundContext2D,
+      this.templateType,
+      transform.pageWidth,
+      transform.pageHeight,
+      this.paperBackgroundColor,
+      visibleRegion,
+      this.resolvePageBackgroundImageUri().length === 0 || !didDrawBackgroundImage
+    );
+    this.backgroundContext2D.restore();
+  }
+
   private redrawCommittedLayer(
     useFastRendering: boolean = false,
     preserveRecentSplit: boolean = false,
@@ -1901,6 +2045,7 @@ export struct CanvasBoard {
     const transform = this.getPageViewportTransform(size);
     this.syncElementLayerTransform(transform);
     const visibleRegion = this.getVisiblePageRegion(transform);
+    this.redrawBackgroundLayer(size, transform, visibleRegion);
 
     if (useBufferedRendering &&
       this.redrawCommittedBaseLayerWithBuffer(size, transform, visibleRegion, strokes, flattenedStrokeCount,
@@ -2099,6 +2244,10 @@ export struct CanvasBoard {
 
     const size = this.getCanvasSize(this.committedContext2D);
     this.committedContext2D.clearRect(0, 0, size.width, size.height);
+    if (this.isBackgroundLayerReady) {
+      const backgroundSize = this.getCanvasSize(this.backgroundContext2D);
+      this.backgroundContext2D.clearRect(0, 0, backgroundSize.width, backgroundSize.height);
+    }
     this.clearRecentCommittedLayer();
     this.flattenedCommittedStrokeCount = 0;
     this.lastHighQualityViewportRenderKey = '';
@@ -2141,6 +2290,7 @@ export struct CanvasBoard {
     this.selectionContextMenuTarget = SelectionController.getContextMenuTarget(hitResult.target);
     this.selectionContextMenuElementId = '';
     this.elementStylePanelMode = 'none';
+    this.resetLayerActionAvailability();
     const menuHeight = this.getSelectionContextMenuHeight();
     const size = this.getCanvasSize(this.overlayContext2D);
     const transform = this.getPageViewportTransform(size);
@@ -2167,6 +2317,7 @@ export struct CanvasBoard {
     this.selectionContextMenuElementId = element.id;
     this.elementStylePanelMode = 'none';
     this.syncSelectionContextElementStyleState(element);
+    this.syncLayerActionAvailability();
     const menuHeight = this.getSelectionContextMenuHeight();
     const menuWidth = this.getSelectionContextMenuWidth();
     const screenX = transform.offsetX + (element.x + element.width) * transform.scale;
@@ -2197,6 +2348,7 @@ export struct CanvasBoard {
     this.selectionContextOutlineLineStyle = 'solid';
     this.selectionContextOutlineColor = '#111827';
     this.selectionContextOutlineWidth = 2;
+    this.resetLayerActionAvailability();
   }
 
   private getSelectionContextMenuHeight(): number {
@@ -2206,6 +2358,10 @@ export struct CanvasBoard {
 
     if (this.elementStylePanelMode === 'outline') {
       return 230;
+    }
+
+    if (this.elementStylePanelMode === 'layer') {
+      return SELECTION_CONTEXT_MENU_ITEM_HEIGHT * 4 + 34;
     }
 
     if (this.selectionContextMenuTarget === 'strokeGroup') {
@@ -2219,6 +2375,7 @@ export struct CanvasBoard {
     if (this.isSelectionContextElementOutlineEditable()) {
       itemCount += 1;
     }
+    itemCount += 1;
     return SELECTION_CONTEXT_MENU_ITEM_HEIGHT * itemCount + 8;
   }
 
@@ -2290,6 +2447,37 @@ export struct CanvasBoard {
       return;
     }
 
+    if (action === 'layer') {
+      this.syncLayerActionAvailability(viewModel);
+      this.elementStylePanelMode = 'layer';
+      this.clampSelectionContextMenuToCanvas();
+      return;
+    }
+
+    const layerOrderAction = this.toLayerOrderAction(action);
+    if (layerOrderAction !== null) {
+      if (this.selectionContextMenuElementId.length === 0) {
+        return;
+      }
+
+      const availability = viewModel.getElementLayerActionAvailability(this.selectionContextMenuElementId);
+      if (!this.isLayerOrderActionAvailable(availability, layerOrderAction)) {
+        this.syncLayerActionAvailability(viewModel);
+        return;
+      }
+
+      const result = viewModel.changeElementLayerById(this.selectionContextMenuElementId, layerOrderAction);
+      this.syncEditorSnapshot();
+      this.elementLayerLocalRefreshVersion += 1;
+      this.redrawOverlayLayer();
+      this.syncLayerActionAvailability(viewModel);
+      this.clampSelectionContextMenuToCanvas();
+      if (result.changed) {
+        this.onContentChanged(true, 'element');
+      }
+      return;
+    }
+
     if (action !== 'delete' || this.selectionContextMenuElementId.length === 0) {
       this.hideSelectionContextMenu();
       return;
@@ -2302,6 +2490,66 @@ export struct CanvasBoard {
     if (result.changed) {
       this.onContentChanged(true, 'element');
     }
+  }
+
+  private toLayerOrderAction(action: SelectionAction): LayerOrderAction | null {
+    if (action === 'layerUp' || action === 'layerDown' || action === 'layerTop' || action === 'layerBottom') {
+      return action;
+    }
+
+    return null;
+  }
+
+  private isLayerOrderActionAvailable(availability: LayerActionAvailability, action: LayerOrderAction): boolean {
+    switch (action) {
+      case 'layerUp':
+        return availability.canMoveUp;
+      case 'layerDown':
+        return availability.canMoveDown;
+      case 'layerTop':
+        return availability.canMoveTop;
+      case 'layerBottom':
+        return availability.canMoveBottom;
+      default:
+        return false;
+    }
+  }
+
+  private isLayerOrderActionCurrentlyEnabled(action: LayerOrderAction): boolean {
+    switch (action) {
+      case 'layerUp':
+        return this.canLayerMoveUp;
+      case 'layerDown':
+        return this.canLayerMoveDown;
+      case 'layerTop':
+        return this.canLayerMoveTop;
+      case 'layerBottom':
+        return this.canLayerMoveBottom;
+      default:
+        return false;
+    }
+  }
+
+  private syncLayerActionAvailability(viewModel: DrawingEditorViewModel | null = null): void {
+    const resolvedViewModel = viewModel ?? this.getViewModel();
+    if (resolvedViewModel === null || this.selectionContextMenuElementId.length === 0) {
+      this.resetLayerActionAvailability();
+      return;
+    }
+
+    const availability: LayerActionAvailability =
+      resolvedViewModel.getElementLayerActionAvailability(this.selectionContextMenuElementId);
+    this.canLayerMoveUp = availability.canMoveUp;
+    this.canLayerMoveDown = availability.canMoveDown;
+    this.canLayerMoveTop = availability.canMoveTop;
+    this.canLayerMoveBottom = availability.canMoveBottom;
+  }
+
+  private resetLayerActionAvailability(): void {
+    this.canLayerMoveUp = false;
+    this.canLayerMoveDown = false;
+    this.canLayerMoveTop = false;
+    this.canLayerMoveBottom = false;
   }
 
   private updateSelectionContextElementFill(color: string): void {
@@ -4059,34 +4307,6 @@ export struct CanvasBoard {
     offscreenContext.save();
     offscreenContext.translate(-viewportRegion.minX, -viewportRegion.minY);
     this.applyPageTransformAndClip(offscreenContext, transform);
-    offscreenContext.beginPath();
-    offscreenContext.rect(
-      redrawRegion.minX,
-      redrawRegion.minY,
-      redrawRegion.maxX - redrawRegion.minX,
-      redrawRegion.maxY - redrawRegion.minY
-    );
-    offscreenContext.clip();
-    const didDrawBackgroundImage: boolean = this.drawPageBackgroundImageOnContext(
-      offscreenContext,
-      transform.pageWidth,
-      transform.pageHeight
-    );
-    PageTemplateRenderer.drawTemplateBackground(
-      offscreenContext,
-      this.templateType,
-      transform.pageWidth,
-      transform.pageHeight,
-      this.paperBackgroundColor,
-      {
-        x: redrawRegion.minX,
-        y: redrawRegion.minY,
-        width: redrawRegion.maxX - redrawRegion.minX,
-        height: redrawRegion.maxY - redrawRegion.minY
-      },
-      this.resolvePageBackgroundImageUri().length === 0 || !didDrawBackgroundImage
-    );
-
     for (const strokeId of candidateStrokeIds) {
       if (this.hiddenStrokeIdsDuringSelectionMove.has(strokeId)) {
         continue;
@@ -4288,10 +4508,18 @@ export struct CanvasBoard {
       offscreenContext.fillRect(0, 0, width, height);
       offscreenContext.save();
       offscreenContext.translate(-paddedBounds.minX, -paddedBounds.minY);
+      const strokeLayerZIndex = viewModel.getStrokeLayerZIndex();
+      CanvasElementRenderer.drawElements(
+        offscreenContext,
+        elements.filter((element: CanvasElement): boolean => element.zIndex < strokeLayerZIndex)
+      );
       for (const stroke of strokes) {
         this.drawStroke(offscreenContext, stroke);
       }
-      CanvasElementRenderer.drawElements(offscreenContext, elements);
+      CanvasElementRenderer.drawElements(
+        offscreenContext,
+        elements.filter((element: CanvasElement): boolean => element.zIndex >= strokeLayerZIndex)
+      );
       offscreenContext.restore();
 
       const exporter = offscreenCanvas as Object as DataUrlExporter;
@@ -4436,20 +4664,6 @@ export struct CanvasBoard {
     const visibleBounds = this.toBoundingBox(visibleRegion);
     context.save();
     this.applyPageTransformAndClip(context, transform);
-    const didDrawBackgroundImage: boolean = this.drawPageBackgroundImageOnContext(
-      context,
-      transform.pageWidth,
-      transform.pageHeight
-    );
-    PageTemplateRenderer.drawTemplateBackground(
-      context,
-      this.templateType,
-      transform.pageWidth,
-      transform.pageHeight,
-      this.paperBackgroundColor,
-      visibleRegion,
-      this.resolvePageBackgroundImageUri().length === 0 || !didDrawBackgroundImage
-    );
     this.drawStrokeRange(context, strokes, 0, flattenedStrokeCount, visibleBounds, useFastRendering);
     context.restore();
   }
@@ -4658,7 +4872,7 @@ export struct CanvasBoard {
   }
 
   private areCommittedLayersReady(): boolean {
-    return this.isCommittedLayerReady && this.isRecentCommittedLayerReady;
+    return this.isBackgroundLayerReady && this.isCommittedLayerReady && this.isRecentCommittedLayerReady;
   }
 
   private describeBoundingBox(bounds: BoundingBox | null): string {
