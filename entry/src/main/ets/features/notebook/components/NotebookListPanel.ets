@@ -82,7 +82,7 @@ export struct NotebookListPanel {
   @Prop @Watch('onTopSortTypeChanged') topSortType: NotebookSortType = NotebookSortType.UPDATED_DESC;
   @Prop isSidebarCollapsed: boolean = false;
   private readonly actionMenuWidth: number = 236;
-  private readonly actionMenuHeight: number = 384;
+  private readonly actionMenuHeight: number = 300;
   private readonly actionMenuGap: number = 8;
   private readonly folderActionMenuWidth: number = 188;
   private readonly folderActionMenuHeight: number = 154;
@@ -94,6 +94,12 @@ export struct NotebookListPanel {
   private readonly portraitSidebarWidth: number = 161.2;
   private readonly workspacePanelPadding: number = 16;
   private readonly gridCardHorizontalInset: number = 4;
+  private readonly oneMinuteMs: number = 60 * 1000;
+  private readonly oneHourMs: number = 60 * 60 * 1000;
+  private readonly oneDayMs: number = 24 * 60 * 60 * 1000;
+  private readonly oneWeekMs: number = 7 * 24 * 60 * 60 * 1000;
+  private readonly oneMonthMs: number = 30 * 24 * 60 * 60 * 1000;
+  private readonly oneYearMs: number = 365 * 24 * 60 * 60 * 1000;
 
   @State private notebookList: Notebook[] = [];
   @State private notebookListRenderVersion: number = 0;
@@ -154,13 +160,14 @@ export struct NotebookListPanel {
   @State private folderDeleteTargetTitle: string = '';
   @State private isDeletingFolder: boolean = false;
   @State private isPickingNotebookCover: boolean = false;
-  @State private isNotebookColorDialogVisible: boolean = false;
-  @State private notebookColorTargetId: string = '';
+  @State private isNotebookCoverDialogVisible: boolean = false;
+  @State private notebookCoverTargetId: string = '';
+  @State private notebookCoverTargetTitle: string = '';
   @State private draftNotebookColor: string = NotebookEntity.DEFAULT_COVER_COLOR;
   @State private notebookColorR: number = 124;
   @State private notebookColorG: number = 155;
   @State private notebookColorB: number = 255;
-  @State private isUpdatingNotebookColor: boolean = false;
+  @State private isUpdatingNotebookCover: boolean = false;
 
   @State private isMoveDialogVisible: boolean = false;
   @State private isMovingNotebook: boolean = false;
@@ -346,7 +353,7 @@ export struct NotebookListPanel {
   private isActionBusy(): boolean {
     return this.isDeletingNotebook || this.isSubmittingDialog || this.isCreatingFolder || this.isMovingNotebook || this.isUpdatingTags ||
       this.isRenamingFolder || this.isUpdatingFolderColor || this.isDeletingFolder || this.isPickingNotebookCover ||
-      this.isUpdatingNotebookColor || this.isPickingExportPath || this.isExportingNotebook;
+      this.isUpdatingNotebookCover || this.isPickingExportPath || this.isExportingNotebook;
   }
 
   private isNotebookDeleted(notebook: Notebook): boolean {
@@ -393,9 +400,10 @@ export struct NotebookListPanel {
     this.folderDeleteTargetTitle = '';
   }
 
-  private dismissNotebookColorDialog(): void {
-    this.isNotebookColorDialogVisible = false;
-    this.notebookColorTargetId = '';
+  private dismissNotebookCoverDialog(): void {
+    this.isNotebookCoverDialogVisible = false;
+    this.notebookCoverTargetId = '';
+    this.notebookCoverTargetTitle = '';
     this.draftNotebookColor = NotebookEntity.DEFAULT_COVER_COLOR;
     this.notebookColorR = 124;
     this.notebookColorG = 155;
@@ -470,8 +478,8 @@ export struct NotebookListPanel {
       this.dismissFolderDeleteDialog();
     }
 
-    if (!this.isUpdatingNotebookColor) {
-      this.dismissNotebookColorDialog();
+    if (!this.isUpdatingNotebookCover && !this.isPickingNotebookCover) {
+      this.dismissNotebookCoverDialog();
     }
 
     if (!this.isPickingExportPath) {
@@ -1089,13 +1097,35 @@ export struct NotebookListPanel {
   }
 
   private formatTimestamp(timestamp: number): string {
+    if (!Number.isFinite(timestamp) || timestamp <= 0) {
+      return '--';
+    }
+
+    const now: number = Date.now();
+    const elapsed: number = Math.max(0, now - timestamp);
+    if (elapsed <= this.oneDayMs) {
+      const hours: number = Math.floor(elapsed / this.oneHourMs);
+      const minutes: number = Math.max(1, Math.floor((elapsed % this.oneHourMs) / this.oneMinuteMs));
+      return `${hours}时${minutes}分钟前`;
+    }
+
+    if (elapsed <= this.oneWeekMs) {
+      return `${Math.max(1, Math.floor(elapsed / this.oneDayMs))}天前`;
+    }
+
+    if (elapsed <= this.oneMonthMs) {
+      return `${Math.max(1, Math.floor(elapsed / this.oneWeekMs))}周前`;
+    }
+
     const date: Date = new Date(timestamp);
-    const year: string = date.getFullYear().toString();
     const month: string = this.padNumber(date.getMonth() + 1);
     const day: string = this.padNumber(date.getDate());
-    const hour: string = this.padNumber(date.getHours());
-    const minute: string = this.padNumber(date.getMinutes());
-    return `${year}-${month}-${day} ${hour}:${minute}`;
+    if (elapsed <= this.oneYearMs) {
+      return `${month}月${day}日`;
+    }
+
+    const year: string = date.getFullYear().toString();
+    return `${year}年${month}月${day}日`;
   }
 
   private padNumber(value: number): string {
@@ -1855,14 +1885,32 @@ export struct NotebookListPanel {
     }
   }
 
-  private async selectNotebookCoverImageFromActionMenu(): Promise<void> {
+  private openNotebookCoverDialogFromActionMenu(): void {
     if (this.isActionBusy()) {
       return;
     }
 
-    const notebookId: string = this.activeActionMenuNotebookId;
+    const notebook: Notebook | undefined = this.getNotebookById(this.activeActionMenuNotebookId);
     this.closeActionMenu();
-    if (notebookId.length === 0) {
+    if (notebook === undefined) {
+      return;
+    }
+
+    this.notebookCoverTargetId = notebook.id;
+    this.notebookCoverTargetTitle = notebook.title;
+    this.syncNotebookRgbFromColor(NotebookEntity.normalizeCoverColor(notebook.coverColor));
+    this.isNotebookCoverDialogVisible = true;
+  }
+
+  private closeNotebookCoverDialog(): void {
+    if (this.isPickingNotebookCover || this.isUpdatingNotebookCover) {
+      return;
+    }
+    this.dismissNotebookCoverDialog();
+  }
+
+  private async selectNotebookCoverImageFromDialog(): Promise<void> {
+    if (this.isPickingNotebookCover || this.isUpdatingNotebookCover || this.notebookCoverTargetId.length === 0) {
       return;
     }
 
@@ -1885,71 +1933,48 @@ export struct NotebookListPanel {
       }
 
       const importedAsset: ImportedImageAsset = await new ImageAssetDataSource(hostContext).importImage(selectedUri);
-      await this.ensureViewModel().updateNotebookCover(notebookId, importedAsset.uri);
+      await this.ensureViewModel().updateNotebookCover(this.notebookCoverTargetId, importedAsset.uri);
       await this.refreshNotebookCollection();
+      this.dismissNotebookCoverDialog();
     } catch (_error) {
     } finally {
       this.isPickingNotebookCover = false;
     }
   }
 
-  private openNotebookColorDialogFromActionMenu(): void {
-    if (this.isActionBusy()) {
+  private async applyNotebookTitleCoverFromDialog(): Promise<void> {
+    if (this.isPickingNotebookCover || this.isUpdatingNotebookCover || this.notebookCoverTargetId.length === 0) {
       return;
     }
 
-    const notebook: Notebook | undefined = this.getNotebookById(this.activeActionMenuNotebookId);
-    this.closeActionMenu();
-    if (notebook === undefined) {
-      return;
-    }
-
-    this.notebookColorTargetId = notebook.id;
-    this.syncNotebookRgbFromColor(NotebookEntity.normalizeCoverColor(notebook.coverColor));
-    this.isNotebookColorDialogVisible = true;
-  }
-
-  private closeNotebookColorDialog(): void {
-    if (this.isUpdatingNotebookColor) {
-      return;
-    }
-    this.dismissNotebookColorDialog();
-  }
-
-  private async submitNotebookColorDialog(): Promise<void> {
-    if (this.isUpdatingNotebookColor || this.notebookColorTargetId.length === 0) {
-      return;
-    }
-
-    this.isUpdatingNotebookColor = true;
+    this.isUpdatingNotebookCover = true;
     try {
-      await this.ensureViewModel().updateNotebookCover(this.notebookColorTargetId, '', this.draftNotebookColor);
+      await this.ensureViewModel().updateNotebookCover(
+        this.notebookCoverTargetId,
+        NotebookEntity.TITLE_COVER_IMAGE_URI,
+        this.draftNotebookColor
+      );
       await this.refreshNotebookCollection();
-      this.dismissNotebookColorDialog();
+      this.dismissNotebookCoverDialog();
     } catch (_error) {
     } finally {
-      this.isUpdatingNotebookColor = false;
+      this.isUpdatingNotebookCover = false;
     }
   }
 
-  private async resetNotebookCoverFromActionMenu(): Promise<void> {
-    if (this.isActionBusy()) {
+  private async applyDefaultNotebookCoverFromDialog(): Promise<void> {
+    if (this.isPickingNotebookCover || this.isUpdatingNotebookCover || this.notebookCoverTargetId.length === 0) {
       return;
     }
 
-    const notebookId: string = this.activeActionMenuNotebookId;
-    this.closeActionMenu();
-    if (notebookId.length === 0) {
-      return;
-    }
-
-    this.isPickingNotebookCover = true;
+    this.isUpdatingNotebookCover = true;
     try {
-      await this.ensureViewModel().updateNotebookCover(notebookId, '');
+      await this.ensureViewModel().updateNotebookCover(this.notebookCoverTargetId, '');
       await this.refreshNotebookCollection();
+      this.dismissNotebookCoverDialog();
     } catch (_error) {
     } finally {
-      this.isPickingNotebookCover = false;
+      this.isUpdatingNotebookCover = false;
     }
   }
 
@@ -2049,26 +2074,11 @@ export struct NotebookListPanel {
   }
 
   @Builder
-  private buildFolderIcon(color: string): void {
-    Column() {
-      Column() {}
-        .width(16)
-        .height(5)
-        .margin({ left: 3 })
-        .borderRadius(3)
-        .backgroundColor(color)
-
-      Column() {}
-        .width(28)
-        .height(16)
-        .margin({ top: 1 })
-        .borderRadius(5)
-        .backgroundColor(color)
-    }
-    .width(30)
-    .height(22)
-    .justifyContent(FlexAlign.Start)
-    .alignItems(HorizontalAlign.Start)
+  private buildFolderIcon(width: number = 34): void {
+    Image($r('app.media.folder_icon'))
+      .width(width)
+      .aspectRatio(1)
+      .objectFit(ImageFit.Contain)
   }
 
   @Builder
@@ -2128,7 +2138,7 @@ export struct NotebookListPanel {
   @Builder
   private buildSidebarFolderItem(folder: NotebookFolder): void {
     Row({ space: 8 }) {
-      this.buildFolderIcon(NotebookFolderEntity.normalizeColor(folder.color))
+      this.buildFolderIcon(24)
 
       Text(folder.title)
         .layoutWeight(1)
@@ -2214,7 +2224,7 @@ export struct NotebookListPanel {
           }
           .width('100%')
 
-          Text(`最近更新 ${this.formatTimestamp(notebook.updatedAt)}`)
+          Text(this.formatTimestamp(notebook.updatedAt))
             .fontSize($r('app.float.caption_text_size'))
             .fontColor($r('app.color.secondary_text'))
         }
@@ -2280,7 +2290,27 @@ export struct NotebookListPanel {
   @Builder
   private buildNotebookCoverPreview(notebook: Notebook): void {
     Stack() {
-      if (this.hasNotebookCoverSnapshot(notebook)) {
+      if (NotebookEntity.isTitleCoverImageUri(notebook.coverImageUri)) {
+        Column() {
+          Text(notebook.title.length > 10 ? `${notebook.title.slice(0, 10)}...` : notebook.title)
+            .fontSize(10)
+            .fontColor('#FFFFFF')
+            .maxLines(2)
+            .textAlign(TextAlign.Center)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .padding({ left: 4, right: 4 })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .backgroundColor(NotebookEntity.normalizeCoverColor(notebook.coverColor))
+      } else if (typeof notebook.coverImageUri === 'string' && notebook.coverImageUri.length > 0) {
+        Image(this.toDisplayImageUri(notebook.coverImageUri))
+          .width('100%')
+          .height('100%')
+          .objectFit(ImageFit.Cover)
+      } else if (this.hasNotebookCoverSnapshot(notebook)) {
         PageThumbnailCanvas({
           snapshot: this.buildNotebookCoverSnapshot(notebook),
           renderTick: this.notebookCoverRenderTick,
@@ -2290,11 +2320,6 @@ export struct NotebookListPanel {
         })
           .width('100%')
           .height('100%')
-      } else if (typeof notebook.coverImageUri === 'string' && notebook.coverImageUri.length > 0) {
-        Image(this.toDisplayImageUri(notebook.coverImageUri))
-          .width('100%')
-          .height('100%')
-          .objectFit(ImageFit.Contain)
       } else {
         Column() {
           Text(notebook.title.length > 10 ? `${notebook.title.slice(0, 10)}...` : notebook.title)
@@ -2424,42 +2449,7 @@ export struct NotebookListPanel {
   @Builder
   private buildRecentNotebookCard(notebook: Notebook): void {
     Column({ space: 8 }) {
-      Stack() {
-        if (this.hasNotebookCoverSnapshot(notebook)) {
-          PageThumbnailCanvas({
-            snapshot: this.buildNotebookCoverSnapshot(notebook),
-            renderTick: this.notebookCoverRenderTick,
-            onNeedSnapshot: (pageId: string): void => {
-              this.requestNotebookCoverSnapshot(notebook.id);
-            }
-          })
-            .width('100%')
-            .height('100%')
-        } else if (typeof notebook.coverImageUri === 'string' && notebook.coverImageUri.length > 0) {
-          Image(this.toDisplayImageUri(notebook.coverImageUri))
-            .width('100%')
-            .height('100%')
-            .objectFit(ImageFit.Contain)
-        } else {
-          Column() {
-            Text(notebook.title.length > 12 ? `${notebook.title.slice(0, 12)}...` : notebook.title)
-              .fontSize(12)
-              .fontColor('#FFFFFF')
-              .maxLines(2)
-              .textAlign(TextAlign.Center)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .padding({ left: 8, right: 8 })
-          }
-          .width('100%')
-          .height('100%')
-          .justifyContent(FlexAlign.Center)
-          .alignItems(HorizontalAlign.Center)
-          .backgroundColor(NotebookEntity.normalizeCoverColor(notebook.coverColor))
-          .onAppear(() => {
-            this.requestNotebookCoverSnapshot(notebook.id);
-          })
-        }
-
+      Column({ space: 8 }) {
         Button('⋯')
           .width(26)
           .height(26)
@@ -2468,7 +2458,7 @@ export struct NotebookListPanel {
           .fontSize(18)
           .borderRadius(13)
           .padding(0)
-          .position({ x: '82%', y: 6 })
+          .alignSelf(ItemAlign.End)
           .onAreaChange((_oldValue: Area, newValue: Area) => {
             this.updateActionMenuAnchor(notebook.id, newValue);
           })
@@ -2483,15 +2473,17 @@ export struct NotebookListPanel {
           .onClick(() => {
             this.toggleActionMenu(notebook.id);
           })
+
+        Stack() {
+          this.buildNotebookCoverPreview(notebook)
+        }
+        .width('100%')
+        .aspectRatio(this.getNotebookCoverAspectRatio(notebook))
+        .borderRadius(10)
+        .clip(true)
+        .backgroundColor('#E8EEF6')
       }
       .width('100%')
-      .aspectRatio(this.getNotebookCoverAspectRatio(notebook))
-      .borderRadius(10)
-      .clip(true)
-      .backgroundColor('#E8EEF6')
-      .onAppear(() => {
-        this.requestNotebookCoverSnapshot(notebook.id);
-      })
 
       Text(notebook.title)
         .fontSize($r('app.float.caption_text_size'))
@@ -2500,7 +2492,7 @@ export struct NotebookListPanel {
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
 
-      Text(`修改 ${this.formatTimestamp(notebook.updatedAt)}`)
+      Text(this.formatTimestamp(notebook.updatedAt))
         .fontSize(11)
         .fontColor($r('app.color.secondary_text'))
         .maxLines(1)
@@ -2856,26 +2848,29 @@ export struct NotebookListPanel {
 
   @Builder
   private buildAllNotesFolderCard(folder: NotebookFolder): void {
-    Column({ space: 8 }) {
-      Row({ space: 8 }) {
-        this.buildFolderIcon(NotebookFolderEntity.normalizeColor(folder.color))
+    Column({ space: 10 }) {
+      Row({ space: 12 }) {
+        this.buildFolderIcon(58)
 
-        Text(folder.title)
+        Column({ space: 6 }) {
+          Text(folder.title)
+            .fontSize($r('app.float.body_text_size'))
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.primary_text'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+          Text(`${this.getFolderNotebookList(folder.id).length} 个笔记本`)
+            .fontSize($r('app.float.caption_text_size'))
+            .fontColor($r('app.color.secondary_text'))
+        }
           .layoutWeight(1)
-          .fontSize($r('app.float.body_text_size'))
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.primary_text'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .alignItems(HorizontalAlign.Start)
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)
 
-      Text(`${this.getFolderNotebookList(folder.id).length} 个笔记本`)
-        .fontSize($r('app.float.caption_text_size'))
-        .fontColor($r('app.color.secondary_text'))
-
-      Text(`最近修改 ${this.formatFolderActivityTimestamp(folder.id)}`)
+      Text(this.formatFolderActivityTimestamp(folder.id))
         .fontSize(11)
         .fontColor($r('app.color.secondary_text'))
 
@@ -3256,34 +3251,14 @@ export struct NotebookListPanel {
             this.openTagDialogFromActionMenu();
           })
 
-        Button('背景图...')
+        Button('更换封面…')
           .width('100%')
           .height(42)
           .backgroundColor('#00FFFFFF')
           .fontColor($r('app.color.primary_text'))
           .borderRadius(8)
           .onClick(() => {
-            void this.selectNotebookCoverImageFromActionMenu();
-          })
-
-        Button('背景色...')
-          .width('100%')
-          .height(42)
-          .backgroundColor('#00FFFFFF')
-          .fontColor($r('app.color.primary_text'))
-          .borderRadius(8)
-          .onClick(() => {
-            this.openNotebookColorDialogFromActionMenu();
-          })
-
-        Button('恢复默认封面')
-          .width('100%')
-          .height(42)
-          .backgroundColor('#00FFFFFF')
-          .fontColor($r('app.color.primary_text'))
-          .borderRadius(8)
-          .onClick(() => {
-            void this.resetNotebookCoverFromActionMenu();
+            this.openNotebookCoverDialogFromActionMenu();
           })
 
         Divider()
@@ -3798,29 +3773,60 @@ export struct NotebookListPanel {
         .backgroundColor($r('app.color.overlay_mask'))
       }
 
-      if (this.isNotebookColorDialogVisible) {
+      if (this.isNotebookCoverDialogVisible) {
         Column() {
           Column({ space: 16 }) {
             Column({ space: 6 }) {
-              Text('笔记本背景色')
+              Text('更换封面')
                 .fontSize($r('app.float.section_title_size'))
                 .fontWeight(FontWeight.Bold)
                 .fontColor($r('app.color.primary_text'))
 
-              Text('RGB 颜色选择')
+              Text(this.notebookCoverTargetTitle)
                 .fontSize($r('app.float.caption_text_size'))
                 .fontColor($r('app.color.secondary_text'))
             }
             .width('100%')
             .alignItems(HorizontalAlign.Start)
 
+            Button(this.isPickingNotebookCover ? '选择中...' : '上传封面图')
+              .width('100%')
+              .height($r('app.float.button_height'))
+              .backgroundColor('#EEF2FF')
+              .fontColor('#2E6BFF')
+              .enabled(!this.isPickingNotebookCover && !this.isUpdatingNotebookCover)
+              .onClick(() => {
+                void this.selectNotebookCoverImageFromDialog();
+              })
+
+            Divider()
+              .strokeWidth(1)
+              .color('#E6EAF2')
+
+            Text('纯色标题封面')
+              .fontSize($r('app.float.body_text_size'))
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.primary_text'))
+
             Row({ space: 10 }) {
-              Column() {}
-                .width(44)
-                .height(44)
-                .borderRadius(8)
-                .backgroundColor(this.draftNotebookColor)
-                .border({ width: 1, color: '#D0D5DD' })
+              Column() {
+                Text(this.notebookCoverTargetTitle.length > 12 ? `${this.notebookCoverTargetTitle.slice(0, 12)}...` :
+                  this.notebookCoverTargetTitle)
+                  .fontSize(12)
+                  .fontColor('#FFFFFF')
+                  .fontWeight(FontWeight.Medium)
+                  .maxLines(2)
+                  .textAlign(TextAlign.Center)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .padding({ left: 8, right: 8 })
+              }
+              .width(92)
+              .height(58)
+              .justifyContent(FlexAlign.Center)
+              .alignItems(HorizontalAlign.Center)
+              .borderRadius(10)
+              .backgroundColor(this.draftNotebookColor)
+              .border({ width: 1, color: '#D0D5DD' })
 
               Text(this.draftNotebookColor)
                 .fontSize(12)
@@ -3848,20 +3854,32 @@ export struct NotebookListPanel {
                 .height($r('app.float.button_height'))
                 .backgroundColor($r('app.color.app_background'))
                 .fontColor($r('app.color.primary_text'))
+                .enabled(!this.isPickingNotebookCover && !this.isUpdatingNotebookCover)
                 .onClick(() => {
-                  this.closeNotebookColorDialog();
+                  this.closeNotebookCoverDialog();
                 })
 
-              Button(this.isUpdatingNotebookColor ? '处理中...' : '确认')
+              Button(this.isUpdatingNotebookCover ? '处理中...' : '使用纯色')
                 .layoutWeight(1)
                 .height($r('app.float.button_height'))
                 .backgroundColor($r('app.color.primary_text'))
                 .fontColor($r('app.color.inverse_text'))
+                .enabled(!this.isPickingNotebookCover && !this.isUpdatingNotebookCover)
                 .onClick(() => {
-                  this.submitNotebookColorDialog();
+                  void this.applyNotebookTitleCoverFromDialog();
                 })
             }
             .width('100%')
+
+            Button('使用默认缩略图封面')
+              .width('100%')
+              .height($r('app.float.button_height'))
+              .backgroundColor('#F7F8FC')
+              .fontColor($r('app.color.primary_text'))
+              .enabled(!this.isPickingNotebookCover && !this.isUpdatingNotebookCover)
+              .onClick(() => {
+                void this.applyDefaultNotebookCoverFromDialog();
+              })
           }
           .width('100%')
           .constraintSize({ maxWidth: 560 })
