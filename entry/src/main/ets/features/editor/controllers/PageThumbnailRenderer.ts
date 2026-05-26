@@ -1,4 +1,7 @@
-import { CanvasElement } from '../../../domain/entities/CanvasElement';
+import {
+  CanvasElement,
+  DEFAULT_STROKE_LAYER_Z_INDEX
+} from '../../../domain/entities/CanvasElement';
 import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
 import { CanvasDrawContext } from './CanvasDrawContext';
@@ -22,6 +25,7 @@ export interface PageThumbnailRenderSnapshot {
   isLoading: boolean;
   strokes: Stroke[];
   elements: CanvasElement[];
+  strokeLayerZIndex: number;
   activeStroke: Stroke | null;
 }
 
@@ -55,6 +59,7 @@ export function createEmptyPageThumbnailRenderSnapshot(pageId: string = ''): Pag
     isLoading: false,
     strokes: [],
     elements: [],
+    strokeLayerZIndex: DEFAULT_STROKE_LAYER_Z_INDEX,
     activeStroke: null
   };
 }
@@ -79,6 +84,7 @@ export class PageThumbnailRenderer {
       Math.round(snapshot.canvasHeight),
       snapshot.contentVersion,
       snapshot.activeStrokeVersion,
+      snapshot.strokeLayerZIndex,
       snapshot.isLoading ? 'loading' : 'ready',
       Math.round(viewportSize.width),
       Math.round(viewportSize.height)
@@ -114,7 +120,7 @@ export class PageThumbnailRenderer {
       sourceSize.height,
       snapshot.paperBackgroundColor,
       undefined,
-      snapshot.backgroundImageUri.length === 0 || !didDrawBackgroundImage
+      this.shouldFillTemplateBackground(snapshot.backgroundImageUri, didDrawBackgroundImage)
     );
     this.drawContent(context, snapshot, scale);
     context.restore();
@@ -195,6 +201,10 @@ export class PageThumbnailRenderer {
   private static buildImageSourceCandidates(uri: string): string[] {
     const candidates: string[] = [];
     this.appendImageSourceCandidate(candidates, uri);
+    const decodedUri = this.decodeUriSegment(uri);
+    if (decodedUri !== uri) {
+      this.appendImageSourceCandidate(candidates, decodedUri);
+    }
 
     if (uri.startsWith('file://')) {
       const rawLocalPath = uri.substring('file://'.length);
@@ -202,9 +212,28 @@ export class PageThumbnailRenderer {
       if (!rawLocalPath.startsWith('/')) {
         this.appendImageSourceCandidate(candidates, `/${rawLocalPath}`);
       }
+      const decodedLocalPath = this.decodeUriSegment(rawLocalPath);
+      if (decodedLocalPath !== rawLocalPath) {
+        this.appendImageSourceCandidate(candidates, decodedLocalPath);
+        if (!decodedLocalPath.startsWith('/')) {
+          this.appendImageSourceCandidate(candidates, `/${decodedLocalPath}`);
+        }
+      }
+    }
+
+    if (decodedUri.startsWith('file://')) {
+      const decodedSchemePath = decodedUri.substring('file://'.length);
+      this.appendImageSourceCandidate(candidates, decodedSchemePath);
+      if (!decodedSchemePath.startsWith('/')) {
+        this.appendImageSourceCandidate(candidates, `/${decodedSchemePath}`);
+      }
     }
 
     return candidates;
+  }
+
+  private static shouldFillTemplateBackground(backgroundImageUri: string, didDrawBackgroundImage: boolean): boolean {
+    return this.resolveImageUri(backgroundImageUri).length === 0 || !didDrawBackgroundImage;
   }
 
   private static appendImageSourceCandidate(candidates: string[], candidate: string): void {
@@ -214,20 +243,36 @@ export class PageThumbnailRenderer {
     candidates.push(candidate);
   }
 
+  private static decodeUriSegment(text: string): string {
+    try {
+      return decodeURIComponent(text);
+    } catch (_error) {
+      return text;
+    }
+  }
+
   private static drawContent(
     context: CanvasDrawContext,
     snapshot: PageThumbnailRenderSnapshot,
     scale: number
   ): void {
+    CanvasElementRenderer.drawElements(
+      context,
+      snapshot.elements.filter((element: CanvasElement): boolean => element.zIndex < snapshot.strokeLayerZIndex)
+    );
+
     for (const stroke of snapshot.strokes) {
       this.drawStroke(context, stroke, scale, 1);
     }
 
-    CanvasElementRenderer.drawElements(context, snapshot.elements);
-
     if (snapshot.activeStroke !== null) {
       this.drawStroke(context, snapshot.activeStroke, scale, PREVIEW_ALPHA_SCALE);
     }
+
+    CanvasElementRenderer.drawElements(
+      context,
+      snapshot.elements.filter((element: CanvasElement): boolean => element.zIndex >= snapshot.strokeLayerZIndex)
+    );
   }
 
   private static drawStroke(

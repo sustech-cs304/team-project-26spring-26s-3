@@ -1,4 +1,10 @@
-import { CanvasElement, ImageCanvasElement, ShapeCanvasElement, TextCanvasElement } from '../../../domain/entities/CanvasElement';
+import {
+  CanvasElement,
+  ElementOutlineStyle,
+  ImageCanvasElement,
+  ShapeCanvasElement,
+  TextCanvasElement
+} from '../../../domain/entities/CanvasElement';
 import { CanvasDrawContext } from './CanvasDrawContext';
 import { ShapeRenderer } from './ShapeRenderer';
 
@@ -83,6 +89,7 @@ export class CanvasElementRenderer {
         context.drawImage(imageBitmap, element.x, element.y, element.width, element.height);
         context.restore();
         hasSavedContext = false;
+        CanvasElementRenderer.drawImageOutline(context, element);
         return;
       } catch (_error) {
         if (hasSavedContext) {
@@ -102,11 +109,64 @@ export class CanvasElementRenderer {
     }
 
     CanvasElementRenderer.drawImagePlaceholder(context, element);
+    CanvasElementRenderer.drawImageOutline(context, element);
+  }
+
+  private static drawImageOutline(context: CanvasDrawContext, element: ImageCanvasElement): void {
+    const lineWidth = CanvasElementRenderer.getVisibleOutlineWidth(element.outline);
+    if (lineWidth <= 0) {
+      return;
+    }
+
+    context.save();
+    try {
+      context.globalAlpha = 1;
+      context.strokeStyle = element.outline.color;
+      context.lineWidth = lineWidth;
+      CanvasElementRenderer.applyLineDash(context, element.outline, lineWidth);
+      context.strokeRect(
+        element.x + lineWidth / 2,
+        element.y + lineWidth / 2,
+        Math.max(0, element.width - lineWidth),
+        Math.max(0, element.height - lineWidth)
+      );
+    } finally {
+      try {
+        context.restore();
+      } catch (_restoreError) {
+      }
+    }
+  }
+
+  private static getVisibleOutlineWidth(outline: ElementOutlineStyle): number {
+    if (outline.lineStyle === 'none' || outline.width <= 0) {
+      return 0;
+    }
+
+    return Math.max(1, outline.width);
+  }
+
+  private static applyLineDash(context: CanvasDrawContext, outline: ElementOutlineStyle, lineWidth: number): void {
+    if (context.setLineDash === undefined) {
+      return;
+    }
+
+    if (outline.lineStyle === 'dashed') {
+      context.setLineDash([Math.max(4, lineWidth * 3), Math.max(3, lineWidth * 2)]);
+    } else if (outline.lineStyle === 'dotted') {
+      context.setLineDash([Math.max(1, lineWidth), Math.max(3, lineWidth * 2)]);
+    } else {
+      context.setLineDash([]);
+    }
   }
 
   private static buildImageSourceCandidates(path: string): string[] {
     const candidates: string[] = [];
     CanvasElementRenderer.appendImageSourceCandidate(candidates, path);
+    const decodedPath: string = CanvasElementRenderer.decodeUriSegment(path);
+    if (decodedPath !== path) {
+      CanvasElementRenderer.appendImageSourceCandidate(candidates, decodedPath);
+    }
 
     if (path.startsWith('file://')) {
       const rawLocalPath: string = path.substring('file://'.length);
@@ -114,8 +174,23 @@ export class CanvasElementRenderer {
       if (!rawLocalPath.startsWith('/')) {
         CanvasElementRenderer.appendImageSourceCandidate(candidates, `/${rawLocalPath}`);
       }
+      const decodedLocalPath: string = CanvasElementRenderer.decodeUriSegment(rawLocalPath);
+      if (decodedLocalPath !== rawLocalPath) {
+        CanvasElementRenderer.appendImageSourceCandidate(candidates, decodedLocalPath);
+        if (!decodedLocalPath.startsWith('/')) {
+          CanvasElementRenderer.appendImageSourceCandidate(candidates, `/${decodedLocalPath}`);
+        }
+      }
     } else if (!path.startsWith('http://') && !path.startsWith('https://')) {
       CanvasElementRenderer.appendImageSourceCandidate(candidates, `file://${path}`);
+    }
+
+    if (decodedPath.startsWith('file://')) {
+      const decodedSchemePath: string = decodedPath.substring('file://'.length);
+      CanvasElementRenderer.appendImageSourceCandidate(candidates, decodedSchemePath);
+      if (!decodedSchemePath.startsWith('/')) {
+        CanvasElementRenderer.appendImageSourceCandidate(candidates, `/${decodedSchemePath}`);
+      }
     }
 
     return candidates;
@@ -127,6 +202,14 @@ export class CanvasElementRenderer {
     }
     if (!candidates.includes(candidate)) {
       candidates.push(candidate);
+    }
+  }
+
+  private static decodeUriSegment(text: string): string {
+    try {
+      return decodeURIComponent(text);
+    } catch (_error) {
+      return text;
     }
   }
 

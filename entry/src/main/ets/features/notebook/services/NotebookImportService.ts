@@ -11,7 +11,13 @@ import { StorageKeys } from '../../../common/constants/StorageKeys';
 import { Notebook, NotebookEntity } from '../../../domain/entities/Notebook';
 import { NotebookPage, NotebookPageEntity } from '../../../domain/entities/NotebookPage';
 import { NotebookPageCanvas, NotebookPageCanvasEntity } from '../../../domain/entities/NotebookPageCanvas';
-import { CanvasElement, PageCanvasContent, TRANSPARENT_ELEMENT_BACKGROUND_COLOR } from '../../../domain/entities/CanvasElement';
+import {
+  CanvasElement,
+  DEFAULT_STROKE_LAYER_Z_INDEX,
+  PAGE_CANVAS_CONTENT_VERSION,
+  PageCanvasContent,
+  TRANSPARENT_ELEMENT_BACKGROUND_COLOR
+} from '../../../domain/entities/CanvasElement';
 import { FileDataSource } from '../../../data/sources/local/FileDataSource';
 import { ImageAssetDataSource, ImportedImageAsset } from '../../../data/sources/local/ImageAssetDataSource';
 import { PreferencesDataSource } from '../../../data/sources/local/PreferencesDataSource';
@@ -145,6 +151,11 @@ export class NotebookImportService {
 
   private async importAsVisualNotebook(profile: ImportFileProfile, sourceUri: string): Promise<ImportResult | null> {
     const importedAsset: ImportedImageAsset = await this.importImageAsset(sourceUri);
+    if (importedAsset.uri.length === 0) {
+      this.lastFailureMessage = `图片导入失败：无法读取 ${profile.fileName}，请确认文件未损坏或重新选择一次。`;
+      return null;
+    }
+
     const notebook: Notebook = await this.ensureNotebookCreated(profile.baseName, importedAsset.uri);
     const pageId: string = await this.ensureNotebookBackgroundPage(notebook.id, importedAsset, sourceUri, profile.lowerExtension);
     await this.persistImportSource(notebook.id, profile, importedAsset.uri);
@@ -308,9 +319,10 @@ export class NotebookImportService {
       updatedAt: currentTime
     });
     await this.writePageContent(notebookPage.id, {
-      version: 2,
+      version: PAGE_CANVAS_CONTENT_VERSION,
       strokes: [],
-      elements: []
+      elements: [],
+      strokeLayerZIndex: DEFAULT_STROKE_LAYER_Z_INDEX
     });
     return notebookPage.id;
   }
@@ -353,9 +365,10 @@ export class NotebookImportService {
     );
 
     await this.writePageContent(pageId, {
-      version: 2,
+      version: PAGE_CANVAS_CONTENT_VERSION,
       strokes: [],
-      elements: [element]
+      elements: [element],
+      strokeLayerZIndex: DEFAULT_STROKE_LAYER_Z_INDEX
     });
     return pageId;
   }
@@ -408,9 +421,10 @@ export class NotebookImportService {
         updatedAt: page.updatedAt
       });
       await this.writePageContent(page.id, {
-        version: 2,
+        version: PAGE_CANVAS_CONTENT_VERSION,
         strokes: [],
-        elements: []
+        elements: [],
+        strokeLayerZIndex: DEFAULT_STROKE_LAYER_Z_INDEX
       });
     }
 
@@ -461,9 +475,10 @@ export class NotebookImportService {
         updatedAt: page.updatedAt
       });
       await this.writePageContent(page.id, {
-        version: 2,
+        version: PAGE_CANVAS_CONTENT_VERSION,
         strokes: [],
-        elements: this.buildOfficeTextElements(page.id, pageSpec, page.createdAt)
+        elements: this.buildOfficeTextElements(page.id, pageSpec, page.createdAt),
+        strokeLayerZIndex: DEFAULT_STROKE_LAYER_Z_INDEX
       });
     }
 
@@ -497,7 +512,7 @@ export class NotebookImportService {
     });
 
     await this.writePageContent(pageId, {
-      version: 2,
+      version: PAGE_CANVAS_CONTENT_VERSION,
       strokes: [],
       elements: [
         {
@@ -517,7 +532,8 @@ export class NotebookImportService {
           fontSize: 18,
           backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR
         }
-      ]
+      ],
+      strokeLayerZIndex: DEFAULT_STROKE_LAYER_Z_INDEX
     });
     return pageId;
   }
@@ -693,9 +709,9 @@ export class NotebookImportService {
       return await new ImageAssetDataSource(this.context).importImage(sourceUri);
     } catch (_error) {
       return {
-        uri: sourceUri,
-        originalWidth: 1,
-        originalHeight: 1
+        uri: '',
+        originalWidth: 0,
+        originalHeight: 0
       };
     }
   }

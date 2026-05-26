@@ -5,7 +5,10 @@ import fileIo from '@ohos.file.fs';
 import { NotebookRepositoryImpl } from './NotebookRepositoryImpl';
 import {
   CanvasElement,
+  DEFAULT_STROKE_LAYER_Z_INDEX,
+  ElementOutlineStyle,
   ImageCanvasElement,
+  isElementOutlineLineStyle,
   isShapeGeometryKind,
   isShapeType,
   TEXT_RECOGNITION_SOURCES,
@@ -28,6 +31,16 @@ const PAGE_STROKES_KEY_PREFIX = 'page_strokes_';
 const LEGACY_STORAGE_DIR_NAME = 'editor_store';
 const LEGACY_FILE_SUFFIX = '.json';
 const PAGE_CONTENT_VERSION = PAGE_CANVAS_CONTENT_VERSION;
+const DEFAULT_SHAPE_OUTLINE: ElementOutlineStyle = {
+  lineStyle: 'solid',
+  color: '#111827',
+  width: 2
+};
+const DEFAULT_IMAGE_OUTLINE: ElementOutlineStyle = {
+  lineStyle: 'none',
+  color: '#111827',
+  width: 2
+};
 
 const MEMORY_STORES: Map<string, Map<string, preferences.ValueType>> = new Map<string, Map<string, preferences.ValueType>>();
 
@@ -87,7 +100,8 @@ export class EditorRepositoryImpl implements EditorRepository {
       await this.savePageContent(pageId, {
         version: PAGE_CONTENT_VERSION,
         strokes,
-        elements: pageContent.elements
+        elements: pageContent.elements,
+        strokeLayerZIndex: pageContent.strokeLayerZIndex
       });
       this.logDebug(`saveStrokes pageId=${pageId} count=${strokes.length}`);
     } catch (error) {
@@ -101,7 +115,8 @@ export class EditorRepositoryImpl implements EditorRepository {
       await this.savePageContent(pageId, {
         version: PAGE_CONTENT_VERSION,
         strokes: [],
-        elements: pageContent.elements
+        elements: pageContent.elements,
+        strokeLayerZIndex: pageContent.strokeLayerZIndex
       });
       this.logDebug(`clearStrokes pageId=${pageId}`);
     } catch (error) {
@@ -126,7 +141,8 @@ export class EditorRepositoryImpl implements EditorRepository {
     const normalizedContent: PageCanvasContent = {
       version: PAGE_CONTENT_VERSION,
       strokes: content.strokes,
-      elements: content.elements
+      elements: content.elements,
+      strokeLayerZIndex: this.parseStrokeLayerZIndex(content.strokeLayerZIndex)
     };
     const serialized = this.serializePageContent(normalizedContent);
     this.logDebug(
@@ -278,7 +294,8 @@ export class EditorRepositoryImpl implements EditorRepository {
         return {
           version: PAGE_CONTENT_VERSION,
           strokes: this.parseStrokeList(parsed, pageId),
-          elements: []
+          elements: [],
+          strokeLayerZIndex: DEFAULT_STROKE_LAYER_Z_INDEX
         };
       }
 
@@ -290,7 +307,8 @@ export class EditorRepositoryImpl implements EditorRepository {
       return {
         version: PAGE_CONTENT_VERSION,
         strokes: this.parseStrokeList(record.strokes, pageId),
-        elements: this.parseElementList(record.elements, pageId)
+        elements: this.parseElementList(record.elements, pageId),
+        strokeLayerZIndex: this.parseStrokeLayerZIndex(record.strokeLayerZIndex)
       };
     } catch (_error) {
       return this.buildEmptyPageContent();
@@ -301,8 +319,17 @@ export class EditorRepositoryImpl implements EditorRepository {
     return {
       version: PAGE_CONTENT_VERSION,
       strokes: [],
-      elements: []
+      elements: [],
+      strokeLayerZIndex: DEFAULT_STROKE_LAYER_Z_INDEX
     };
+  }
+
+  private parseStrokeLayerZIndex(value: Object | number): number {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return DEFAULT_STROKE_LAYER_Z_INDEX;
+    }
+
+    return Math.round(value);
   }
 
   private deserializeStrokes(rawValue: string, pageId: string): Stroke[] {
@@ -450,6 +477,7 @@ export class EditorRepositoryImpl implements EditorRepository {
     const originalWidth = Math.max(1, this.parseFiniteNumber(candidate.originalWidth, width));
     const originalHeight = Math.max(1, this.parseFiniteNumber(candidate.originalHeight, height));
     const opacity = Math.max(0, Math.min(1, this.parseFiniteNumber(candidate.opacity, 1)));
+    const outline = this.parseElementOutline(candidate.outline, DEFAULT_IMAGE_OUTLINE);
 
     return {
       id,
@@ -466,7 +494,8 @@ export class EditorRepositoryImpl implements EditorRepository {
       uri,
       originalWidth,
       originalHeight,
-      opacity
+      opacity,
+      outline
     };
   }
 
@@ -491,12 +520,10 @@ export class EditorRepositoryImpl implements EditorRepository {
     const updatedAt = this.parseFiniteNumber(candidate.updatedAt, createdAt);
     const shapeTypeValue = typeof candidate.shapeType === 'string' ? candidate.shapeType : '';
     const shapeType = isShapeType(shapeTypeValue) ? shapeTypeValue : 'rectangle';
-    const strokeColor = typeof candidate.strokeColor === 'string' && candidate.strokeColor.length > 0 ?
-      candidate.strokeColor : '#111827';
     const fillColor = typeof candidate.fillColor === 'string' && candidate.fillColor.length > 0 ?
       candidate.fillColor : TRANSPARENT_ELEMENT_BACKGROUND_COLOR;
-    const strokeWidth = Math.max(1, this.parseFiniteNumber(candidate.strokeWidth, 2));
     const opacity = Math.max(0, Math.min(1, this.parseFiniteNumber(candidate.opacity, 1)));
+    const outline = this.parseElementOutline(candidate.outline, DEFAULT_SHAPE_OUTLINE);
 
     return {
       id,
@@ -512,10 +539,26 @@ export class EditorRepositoryImpl implements EditorRepository {
       updatedAt,
       shapeType,
       geometry,
-      strokeColor,
       fillColor,
-      strokeWidth,
+      outline,
       opacity
+    };
+  }
+
+  private parseElementOutline(value: Object, fallback: ElementOutlineStyle): ElementOutlineStyle {
+    if (!value || typeof value !== 'object') {
+      return { ...fallback };
+    }
+
+    const candidate = value as Record<string, Object>;
+    const lineStyleValue = typeof candidate.lineStyle === 'string' ? candidate.lineStyle : '';
+    const lineStyle = isElementOutlineLineStyle(lineStyleValue) ? lineStyleValue : fallback.lineStyle;
+    const color = typeof candidate.color === 'string' && candidate.color.length > 0 ? candidate.color : fallback.color;
+    const width = Math.max(0, this.parseFiniteNumber(candidate.width, fallback.width));
+    return {
+      lineStyle,
+      color,
+      width
     };
   }
 

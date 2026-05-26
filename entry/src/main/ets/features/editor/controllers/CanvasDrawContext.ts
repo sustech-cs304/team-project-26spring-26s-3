@@ -31,6 +31,7 @@ export interface CanvasDrawContext {
   quadraticCurveTo(cpx: number, cpy: number, x: number, y: number): void;
   arc(x: number, y: number, radius: number, startAngle: number, endAngle: number): void;
   drawImage(image: Object, dx: number, dy: number, dWidth: number, dHeight: number): void;
+  setLineDash?(segments: number[]): void;
   stroke(): void;
   fill(): void;
 }

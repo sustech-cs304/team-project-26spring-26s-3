@@ -795,6 +795,7 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       width: targetWidth,
       height: targetHeight,
       backgroundColor: currentNotebookPageCanvas.backgroundColor,
+      backgroundImageUri: currentNotebookPageCanvas.backgroundImageUri,
       createdAt: currentNotebookPageCanvas.createdAt,
       updatedAt: currentTime
     };

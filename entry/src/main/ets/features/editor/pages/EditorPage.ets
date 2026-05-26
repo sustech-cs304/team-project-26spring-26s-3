@@ -2019,6 +2019,7 @@ struct EditorPage {
         this.activePageId = notebookPage.id;
         this.focusedPageId = notebookPage.id;
         this.retainEditableDocumentPage(notebookPage.id);
+        this.requestDocumentViewportForPage(notebookPage.id);
       }
 
       await this.loadActivePageCanvas();
@@ -2063,7 +2064,7 @@ struct EditorPage {
       this.activePageId = pageId;
       this.focusedPageId = pageId;
       this.retainEditableDocumentPage(pageId);
-      this.activePageCanvas = null;
+      this.activePageCanvas = this.getCachedPageCanvas(pageId);
       this.pendingDocumentViewportPageId = '';
       this.closePageActionMenu();
       this.scheduleActivePageCanvasLoad(pageId);
@@ -2522,8 +2523,9 @@ struct EditorPage {
       };
     }
 
-    if (this.activePageCanvas !== null) {
-      return this.normalizeCanvasRenderSize(this.activePageCanvas.width, this.activePageCanvas.height);
+    const activeCanvas: NotebookPageCanvas | null = this.getActivePageCanvasForPage(this.activePageId);
+    if (activeCanvas !== null) {
+      return this.normalizeCanvasRenderSize(activeCanvas.width, activeCanvas.height);
     }
 
     return {
@@ -3505,8 +3507,9 @@ struct EditorPage {
   }
 
   private getPageCanvasBackgroundColor(pageId: string): string {
-    if (pageId === this.activePageId) {
-      return this.getActiveCanvasBackgroundColor();
+    const activeCanvas: NotebookPageCanvas | null = this.getActivePageCanvasForPage(pageId);
+    if (activeCanvas !== null) {
+      return activeCanvas.backgroundColor;
     }
 
     const cachedCanvas = this.pageCanvasMetadataMap.get(pageId);
@@ -3523,14 +3526,22 @@ struct EditorPage {
   }
 
   private getPageCanvasBackgroundImageUri(pageId: string): string {
-    if (this.activePageCanvas !== null && this.activePageCanvas.pageId === pageId &&
-      typeof this.activePageCanvas.backgroundImageUri === 'string') {
-      return this.activePageCanvas.backgroundImageUri;
+    const activeCanvas: NotebookPageCanvas | null = this.getActivePageCanvasForPage(pageId);
+    if (activeCanvas !== null && typeof activeCanvas.backgroundImageUri === 'string') {
+      const activeBackgroundImageUri: string = NotebookPageCanvasEntity.normalizeBackgroundImageUri(
+        activeCanvas.backgroundImageUri
+      );
+      if (activeBackgroundImageUri.length > 0) {
+        return activeBackgroundImageUri;
+      }
     }
 
     const cachedCanvas = this.pageCanvasMetadataMap.get(pageId);
     if (cachedCanvas !== undefined && typeof cachedCanvas.backgroundImageUri === 'string') {
-      return cachedCanvas.backgroundImageUri;
+      const cachedBackgroundImageUri: string = cachedCanvas.backgroundImageUri.trim();
+      if (cachedBackgroundImageUri.length > 0) {
+        return cachedBackgroundImageUri;
+      }
     }
 
     return '';
@@ -3542,8 +3553,9 @@ struct EditorPage {
       return cachedSize.width;
     }
 
-    if (pageId === this.activePageId) {
-      return this.getActiveCanvasWidth();
+    const activeCanvas: NotebookPageCanvas | null = this.getActivePageCanvasForPage(pageId);
+    if (activeCanvas !== null) {
+      return this.normalizeCanvasRenderSize(activeCanvas.width, activeCanvas.height).width;
     }
 
     return NotebookPageCanvasEntity.DEFAULT_WIDTH;
@@ -3555,8 +3567,9 @@ struct EditorPage {
       return cachedSize.height;
     }
 
-    if (pageId === this.activePageId) {
-      return this.getActiveCanvasHeight();
+    const activeCanvas: NotebookPageCanvas | null = this.getActivePageCanvasForPage(pageId);
+    if (activeCanvas !== null) {
+      return this.normalizeCanvasRenderSize(activeCanvas.width, activeCanvas.height).height;
     }
 
     return NotebookPageCanvasEntity.DEFAULT_HEIGHT;
@@ -3954,20 +3967,23 @@ struct EditorPage {
       return;
     }
 
+    const viewportPageId: string = this.getDocumentViewportPageIdForPageReorder();
     const rollbackPageList: NotebookPage[] = this.cloneNotebookPageList(this.notebookPageList);
     const rollbackActivePageId: string = this.activePageId;
     if (!this.applyNotebookPageMoveLocally(fromIndex, toIndex)) {
       return;
     }
 
-    void this.persistNotebookPageMove(fromIndex, toIndex, rollbackPageList, rollbackActivePageId);
+    this.restoreDocumentViewportAfterPageReorder(viewportPageId);
+    void this.persistNotebookPageMove(fromIndex, toIndex, rollbackPageList, rollbackActivePageId, viewportPageId);
   }
 
   private async persistNotebookPageMove(
     fromIndex: number,
     toIndex: number,
     rollbackPageList: NotebookPage[],
-    rollbackActivePageId: string
+    rollbackActivePageId: string,
+    viewportPageId: string
   ): Promise<void> {
     if (fromIndex === toIndex || this.notebookId.length === 0) {
       return;
@@ -3977,7 +3993,7 @@ struct EditorPage {
     try {
       const hasReordered: boolean = await this.ensureViewModel().reorderNotebookPages(this.notebookId, fromIndex, toIndex);
       if (!hasReordered) {
-        this.restoreNotebookPageListAfterFailedMove(rollbackPageList, rollbackActivePageId);
+        this.restoreNotebookPageListAfterFailedMove(rollbackPageList, rollbackActivePageId, viewportPageId);
         return;
       }
 
@@ -3989,8 +4005,9 @@ struct EditorPage {
       this.notebookPageList = this.ensureViewModel().getCachedNotebookPages();
       this.retainThumbnailPages();
       this.syncActivePageId(this.activePageId);
+      this.restoreDocumentViewportAfterPageReorder(viewportPageId);
     } catch (_error) {
-      this.restoreNotebookPageListAfterFailedMove(rollbackPageList, rollbackActivePageId);
+      this.restoreNotebookPageListAfterFailedMove(rollbackPageList, rollbackActivePageId, viewportPageId);
     } finally {
       this.isReorderingPages = false;
     }
@@ -4014,6 +4031,29 @@ struct EditorPage {
     this.retainThumbnailPages();
     this.syncActivePageId(this.activePageId);
     return true;
+  }
+
+  private getDocumentViewportPageIdForPageReorder(): string {
+    const visualPageId: string = this.getVisualPageId();
+    if (this.isKnownNotebookPage(visualPageId)) {
+      return visualPageId;
+    }
+
+    return this.activePageId;
+  }
+
+  private restoreDocumentViewportAfterPageReorder(pageId: string): void {
+    if (!this.isContinuousDocumentViewEnabled()) {
+      return;
+    }
+
+    const targetPageId: string = this.isKnownNotebookPage(pageId) ? pageId : this.activePageId;
+    if (targetPageId.length === 0 || !this.isKnownNotebookPage(targetPageId)) {
+      return;
+    }
+
+    this.pendingDocumentViewportPageId = '';
+    this.scrollDocumentToPage(targetPageId);
   }
 
   private buildReorderedNotebookPageList(
@@ -4059,7 +4099,8 @@ struct EditorPage {
 
   private restoreNotebookPageListAfterFailedMove(
     rollbackPageList: NotebookPage[],
-    rollbackActivePageId: string
+    rollbackActivePageId: string,
+    viewportPageId: string
   ): void {
     if (rollbackPageList.length === 0) {
       return;
@@ -4069,6 +4110,7 @@ struct EditorPage {
     this.retainThumbnailPages();
     this.activePageId = rollbackActivePageId;
     this.syncActivePageId(rollbackActivePageId);
+    this.restoreDocumentViewportAfterPageReorder(viewportPageId);
   }
 
   private getActivePage(): NotebookPage | null {
@@ -4328,6 +4370,9 @@ struct EditorPage {
       backgroundColor: currentCanvas === null
         ? NotebookPageCanvasEntity.DEFAULT_BACKGROUND_COLOR
         : currentCanvas.backgroundColor,
+      backgroundImageUri: currentCanvas === null
+        ? this.getPageCanvasBackgroundImageUri(activePage.id)
+        : NotebookPageCanvasEntity.normalizeBackgroundImageUri(currentCanvas.backgroundImageUri),
       createdAt: currentCanvas === null ? activePage.createdAt : currentCanvas.createdAt,
       updatedAt: currentTime
     };
@@ -4421,6 +4466,7 @@ struct EditorPage {
       width: notebookPageCanvas.width,
       height: notebookPageCanvas.height,
       backgroundColor: notebookPageCanvas.backgroundColor,
+      backgroundImageUri: NotebookPageCanvasEntity.normalizeBackgroundImageUri(notebookPageCanvas.backgroundImageUri),
       createdAt: notebookPageCanvas.createdAt,
       updatedAt: notebookPageCanvas.updatedAt
     };
@@ -4490,27 +4536,11 @@ struct EditorPage {
     return `${visualPage.order + 1}/${this.notebookPageList.length}`;
   }
 
-  private getActiveCanvasBackgroundColor(): string {
-    if (this.activePageCanvas === null) {
-      return '#FFFFFF';
+  private getActivePageCanvasForPage(pageId: string): NotebookPageCanvas | null {
+    if (this.activePageCanvas !== null && this.activePageCanvas.pageId === pageId) {
+      return this.activePageCanvas;
     }
-    return this.activePageCanvas.backgroundColor;
-  }
-
-  private getActiveCanvasWidth(): number {
-    if (this.activePageCanvas === null) {
-      return NotebookPageCanvasEntity.DEFAULT_WIDTH;
-    }
-
-    return this.normalizeCanvasRenderSize(this.activePageCanvas.width, this.activePageCanvas.height).width;
-  }
-
-  private getActiveCanvasHeight(): number {
-    if (this.activePageCanvas === null) {
-      return NotebookPageCanvasEntity.DEFAULT_HEIGHT;
-    }
-
-    return this.normalizeCanvasRenderSize(this.activePageCanvas.width, this.activePageCanvas.height).height;
+    return null;
   }
 
   private normalizeCanvasRenderSize(width: number, height: number): PageCanvasRenderSize {
@@ -4533,10 +4563,11 @@ struct EditorPage {
     if (this.isCanvasLoading) {
       return 'Loading';
     }
-    if (this.activePageCanvas === null) {
+    const activeCanvas: NotebookPageCanvas | null = this.getActivePageCanvasForPage(this.activePageId);
+    if (activeCanvas === null) {
       return 'Unavailable';
     }
-    return `${this.activePageCanvas.width} x ${this.activePageCanvas.height}`;
+    return `${activeCanvas.width} x ${activeCanvas.height}`;
   }
 
   private getEditorDebugSummary(): string {

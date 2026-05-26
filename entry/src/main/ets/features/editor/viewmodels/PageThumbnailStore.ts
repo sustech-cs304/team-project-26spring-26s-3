@@ -1,6 +1,10 @@
 import common from '@ohos.app.ability.common';
 
-import { CanvasElement, PageCanvasContent } from '../../../domain/entities/CanvasElement';
+import {
+  CanvasElement,
+  DEFAULT_STROKE_LAYER_Z_INDEX,
+  PageCanvasContent
+} from '../../../domain/entities/CanvasElement';
 import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { Stroke } from '../../../domain/entities/Stroke';
 import { EditorRepositoryImpl } from '../../../data/repositories/EditorRepositoryImpl';
@@ -24,6 +28,7 @@ interface CachedPageThumbnailContent {
   revision: number;
   strokes: Stroke[];
   elements: CanvasElement[];
+  strokeLayerZIndex: number;
 }
 
 export class PageThumbnailStore {
@@ -45,10 +50,10 @@ export class PageThumbnailStore {
     this.loadingPageIds.add(pageId);
     try {
       const pageContent: PageCanvasContent = await this.repository.getPageContent(pageId);
-      this.replacePageContent(pageId, pageContent.strokes, pageContent.elements);
+      this.replacePageContent(pageId, pageContent.strokes, pageContent.elements, pageContent.strokeLayerZIndex);
       return true;
     } catch (_error) {
-      this.replacePageContent(pageId, [], []);
+      this.replacePageContent(pageId, [], [], DEFAULT_STROKE_LAYER_Z_INDEX);
       return true;
     } finally {
       this.loadingPageIds.delete(pageId);
@@ -60,7 +65,12 @@ export class PageThumbnailStore {
       return false;
     }
 
-    this.replacePageContent(pageId, session.getStrokesForRendering(), session.getElementsForRendering());
+    this.replacePageContent(
+      pageId,
+      session.getStrokesForRendering(),
+      session.getElementsForRendering(),
+      session.getStrokeLayerZIndex()
+    );
     return true;
   }
 
@@ -89,6 +99,9 @@ export class PageThumbnailStore {
     const elements = hasActiveSession
       ? (request.activeSession as DrawingEditorViewModel).getElementsForRendering()
       : (cachedContent === undefined ? [] : cachedContent.elements);
+    const strokeLayerZIndex = hasActiveSession
+      ? (request.activeSession as DrawingEditorViewModel).getStrokeLayerZIndex()
+      : (cachedContent === undefined ? DEFAULT_STROKE_LAYER_Z_INDEX : cachedContent.strokeLayerZIndex);
     const activeStroke = hasActiveSession
       ? (request.activeSession as DrawingEditorViewModel).getActiveStrokeForRendering()
       : null;
@@ -106,15 +119,22 @@ export class PageThumbnailStore {
       isLoading: this.loadingPageIds.has(request.pageId),
       strokes,
       elements,
+      strokeLayerZIndex,
       activeStroke
     };
   }
 
-  private replacePageContent(pageId: string, strokes: Stroke[], elements: CanvasElement[]): void {
+  private replacePageContent(
+    pageId: string,
+    strokes: Stroke[],
+    elements: CanvasElement[],
+    strokeLayerZIndex: number
+  ): void {
     this.contentByPageId.set(pageId, {
       revision: this.allocateRevision(),
       strokes,
-      elements
+      elements,
+      strokeLayerZIndex
     });
   }
 
