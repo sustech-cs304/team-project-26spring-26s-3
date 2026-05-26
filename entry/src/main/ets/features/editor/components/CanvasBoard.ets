@@ -40,7 +40,7 @@ import {
   SelectionTarget
 } from '../selection/SelectionTypes';
 import { EditorDebugSnapshot } from '../viewmodels/EditorDebugSnapshot';
-import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
+import { DrawingEditorViewModel, ElementLayerChangePreview } from '../viewmodels/DrawingEditorViewModel';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
 import { RenderInvalidation } from '../viewmodels/RenderInvalidation';
 import { XFYUN_FORMULA_CONFIG } from '../services/XfyunFormulaConfig';
@@ -104,6 +104,13 @@ interface RecognitionEncodedPng {
   bytes: Uint8Array;
 }
 
+interface ImageWarmPreviewLayerAction {
+  elementId: string;
+  action: LayerOrderAction;
+  targetRole: string;
+  token: number;
+}
+
 interface ExtendedTouchObject extends TouchObject {
   pressure?: number;
   force?: number;
@@ -114,6 +121,31 @@ interface ExtendedTouchObject extends TouchObject {
 
 type CanvasDrawContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 type RecognitionExportMode = 'ocr' | 'formula';
+
+function createEmptyImageWarmPreviewElement(): ImageCanvasElement {
+  return {
+    id: '',
+    pageId: '',
+    type: 'image',
+    x: 0,
+    y: 0,
+    width: 1,
+    height: 1,
+    rotation: 0,
+    zIndex: 0,
+    createdAt: 0,
+    updatedAt: 0,
+    uri: '',
+    originalWidth: 1,
+    originalHeight: 1,
+    opacity: 1,
+    outline: {
+      lineStyle: 'none',
+      color: '#111827',
+      width: 0
+    }
+  };
+}
 
 const COMMITTED_TILE_SIZE = 256;
 const PARTIAL_REDRAW_OVERDRAW_VIEWPORT_PX = 2;
@@ -142,6 +174,11 @@ const SELECTION_CONTEXT_MENU_WIDTH = 144;
 const SELECTION_CONTEXT_MENU_ITEM_HEIGHT = 38;
 const ELEMENT_LAYER_Z_INDEX_MIN = -1000000000;
 const ELEMENT_LAYER_Z_INDEX_MAX = 1000000000;
+const IMAGE_WARM_PREVIEW_PRELOAD_OPACITY = 0.001;
+const IMAGE_WARM_PREVIEW_READY_FALLBACK_MS = 160;
+const IMAGE_WARM_PREVIEW_COMMIT_DELAY_MS = 32;
+const IMAGE_WARM_PREVIEW_COVER_FALLBACK_MS = 1200;
+const IMAGE_WARM_PREVIEW_READY_HIDE_DELAY_MS = 160;
 const SELECTION_CONTEXT_MENU_OFFSET = 8;
 const ELEMENT_STYLE_PANEL_WIDTH = 220;
 const ELEMENT_STYLE_PANEL_COLOR_OPTIONS: string[] = [
@@ -277,6 +314,13 @@ export struct CanvasBoard {
   private viewportQualityRedrawTimerId: number = -1;
   private recentCommittedFlushTimerId: number = -1;
   private lastHighQualityViewportRenderKey: string = '';
+  private imageWarmPreviewCommitTimerId: number = -1;
+  private imageWarmPreviewCoverTimerId: number = -1;
+  private nextImageWarmPreviewToken: number = 1;
+  private imageWarmPreviewElementId: string = '';
+  private pendingImageWarmPreviewLayerAction: ImageWarmPreviewLayerAction | null = null;
+  private imageWarmPreviewBelowReady: boolean = false;
+  private imageWarmPreviewAboveReady: boolean = false;
 
   @State private isCommittedLayerReady: boolean = false;
   @State private isBackgroundLayerReady: boolean = false;
@@ -289,6 +333,10 @@ export struct CanvasBoard {
   @State private elementLayerOffsetX: number = 0;
   @State private elementLayerOffsetY: number = 0;
   @State private elementLayerLocalRefreshVersion: number = 0;
+  @State private imageWarmPreviewActive: boolean = false;
+  @State private imageWarmPreviewElement: ImageCanvasElement = createEmptyImageWarmPreviewElement();
+  @State private imageWarmPreviewVisibleRole: string = '';
+  @State private imageWarmPreviewToken: number = 0;
   @State private inlineTextEditElement: TextCanvasElement | null = null;
   @State private inlineTextEditContent: string = '';
   @State private inlineTextEditX: number = 0;
@@ -332,6 +380,7 @@ export struct CanvasBoard {
     this.clearViewportRedrawTimers();
     this.clearRecentCommittedIdleFlushTimer();
     this.clearSelectionOverlayResumeTimer();
+    this.clearImageWarmPreview();
     this.commitInlineTextEdit(true);
     this.releaseBackgroundPixelMap();
   }
@@ -375,8 +424,33 @@ export struct CanvasBoard {
         renderContent: true,
         renderSelection: false,
         minZIndex: ELEMENT_LAYER_Z_INDEX_MIN,
-        maxZIndex: this.getStrokeLayerZIndexForRendering()
+        maxZIndex: this.getStrokeLayerZIndexForRendering(),
+        contentLayerRole: 'below',
+        imageContentReadyElementId: this.imageWarmPreviewElementId,
+        imageContentReadyRole: this.imageWarmPreviewVisibleRole,
+        imageContentReadyToken: this.imageWarmPreviewToken,
+        onImageContentReady: (elementId: string, token: number): void => {
+          this.completeImageWarmPreviewContent(elementId, token);
+        }
       })
+        .width(this.elementLayerPageWidth)
+        .height(this.elementLayerPageHeight)
+        .position({
+          x: this.elementLayerOffsetX,
+          y: this.elementLayerOffsetY
+        })
+        .scale({
+          x: this.elementLayerScale,
+          y: this.elementLayerScale,
+          centerX: 0,
+          centerY: 0
+        })
+        .clip(true)
+        .hitTestBehavior(HitTestMode.None)
+
+      Stack() {
+        this.buildImageWarmPreviewContent('below')
+      }
         .width(this.elementLayerPageWidth)
         .height(this.elementLayerPageHeight)
         .position({
@@ -422,6 +496,8 @@ export struct CanvasBoard {
         })
 
       Stack() {
+        this.buildImageWarmPreviewContent('above')
+
         ElementLayer({
           pageId: this.pageId,
           refreshVersion: this.getElementLayerRefreshVersion(),
@@ -430,7 +506,14 @@ export struct CanvasBoard {
           renderContent: true,
           renderSelection: false,
           minZIndex: this.getStrokeLayerZIndexForRendering(),
-          maxZIndex: ELEMENT_LAYER_Z_INDEX_MAX
+          maxZIndex: ELEMENT_LAYER_Z_INDEX_MAX,
+          contentLayerRole: 'above',
+          imageContentReadyElementId: this.imageWarmPreviewElementId,
+          imageContentReadyRole: this.imageWarmPreviewVisibleRole,
+          imageContentReadyToken: this.imageWarmPreviewToken,
+          onImageContentReady: (elementId: string, token: number): void => {
+            this.completeImageWarmPreviewContent(elementId, token);
+          }
         })
           .width('100%')
           .height('100%')
@@ -536,6 +619,22 @@ export struct CanvasBoard {
     return `file://${backgroundImageUri}`;
   }
 
+  private toImageSourceUri(path: string): string {
+    if (path.startsWith('file://')) {
+      if (path.startsWith('file:///')) {
+        return path;
+      }
+      const rawLocalPath: string = path.substring('file://'.length);
+      return rawLocalPath.startsWith('/') ? `file://${rawLocalPath}` : `file:///${rawLocalPath}`;
+    }
+
+    if (path.startsWith('http://') || path.startsWith('https://')) {
+      return path;
+    }
+
+    return `file://${path}`;
+  }
+
   @Builder
   private buildPageBackgroundImage(): void {
     if (this.resolvePageBackgroundImageUri().length > 0) {
@@ -545,6 +644,67 @@ export struct CanvasBoard {
         .objectFit(ImageFit.Fill)
         .hitTestBehavior(HitTestMode.None)
     }
+  }
+
+  @Builder
+  private buildImageWarmPreviewContent(role: string): void {
+    if (this.shouldRenderImageWarmPreview(role)) {
+      this.buildImageWarmPreviewBox(role, this.imageWarmPreviewElement, this.imageWarmPreviewToken)
+    }
+  }
+
+  @Builder
+  private buildImageWarmPreviewBox(role: string, element: ImageCanvasElement, token: number): void {
+    Stack() {
+      Image(this.toImageSourceUri(element.uri))
+        .width('100%')
+        .height('100%')
+        .objectFit(ImageFit.Fill)
+        .opacity(element.opacity)
+        .hitTestBehavior(HitTestMode.None)
+        .onComplete(() => {
+          this.markImageWarmPreviewRoleReady(role, element.id, token);
+        })
+    }
+    .width(element.width)
+    .height(element.height)
+    .position({
+      x: element.x,
+      y: element.y
+    })
+    .border({
+      width: this.getImageWarmPreviewOutlineWidth(element),
+      color: element.outline.color,
+      style: this.getImageWarmPreviewOutlineBorderStyle(element)
+    })
+    .opacity(this.getImageWarmPreviewOpacity(role))
+    .hitTestBehavior(HitTestMode.None)
+  }
+
+  private shouldRenderImageWarmPreview(role: string): boolean {
+    return this.imageWarmPreviewActive &&
+      this.imageWarmPreviewElement.id.length > 0 &&
+      (role === 'below' || role === 'above');
+  }
+
+  private getImageWarmPreviewOpacity(role: string): number {
+    return role === this.imageWarmPreviewVisibleRole ? 1 : IMAGE_WARM_PREVIEW_PRELOAD_OPACITY;
+  }
+
+  private getImageWarmPreviewOutlineWidth(element: ImageCanvasElement): number {
+    return element.outline.lineStyle === 'none' ? 0 : Math.max(0, element.outline.width);
+  }
+
+  private getImageWarmPreviewOutlineBorderStyle(element: ImageCanvasElement): BorderStyle {
+    if (element.outline.lineStyle === 'dashed') {
+      return BorderStyle.Dashed;
+    }
+
+    if (element.outline.lineStyle === 'dotted') {
+      return BorderStyle.Dotted;
+    }
+
+    return BorderStyle.Solid;
   }
 
   private drawPageBackgroundImageOnContext(
@@ -2365,6 +2525,7 @@ export struct CanvasBoard {
     this.selectionContextMenuTarget = SelectionController.getContextMenuTarget(hitResult.target);
     this.selectionContextMenuElementId = '';
     this.elementStylePanelMode = 'none';
+    this.clearImageWarmPreview();
     this.resetLayerActionAvailability();
     const menuHeight = this.getSelectionContextMenuHeight();
     const size = this.getCanvasSize(this.overlayContext2D);
@@ -2392,6 +2553,11 @@ export struct CanvasBoard {
     this.selectionContextMenuElementId = element.id;
     this.elementStylePanelMode = 'none';
     this.syncSelectionContextElementStyleState(element);
+    if (element.type === 'image') {
+      this.beginImageWarmPreview(element as ImageCanvasElement);
+    } else {
+      this.clearImageWarmPreview();
+    }
     this.syncLayerActionAvailability();
     const menuHeight = this.getSelectionContextMenuHeight();
     const menuWidth = this.getSelectionContextMenuWidth();
@@ -2412,6 +2578,7 @@ export struct CanvasBoard {
 
   private hideSelectionContextMenu(): void {
     if (!this.isSelectionContextMenuVisible) {
+      this.clearImageWarmPreview();
       return;
     }
 
@@ -2424,6 +2591,7 @@ export struct CanvasBoard {
     this.selectionContextOutlineColor = '#111827';
     this.selectionContextOutlineWidth = 2;
     this.resetLayerActionAvailability();
+    this.clearImageWarmPreview();
   }
 
   private getSelectionContextMenuHeight(): number {
@@ -2541,15 +2709,7 @@ export struct CanvasBoard {
         return;
       }
 
-      const result = viewModel.changeElementLayerById(this.selectionContextMenuElementId, layerOrderAction);
-      this.syncEditorSnapshot();
-      this.elementLayerLocalRefreshVersion += 1;
-      this.redrawOverlayLayer();
-      this.syncLayerActionAvailability(viewModel);
-      this.clampSelectionContextMenuToCanvas();
-      if (result.changed) {
-        this.onContentChanged(true, 'element');
-      }
+      this.applyElementLayerOrderAction(viewModel, this.selectionContextMenuElementId, layerOrderAction);
       return;
     }
 
@@ -2573,6 +2733,262 @@ export struct CanvasBoard {
     }
 
     return null;
+  }
+
+  private applyElementLayerOrderAction(
+    viewModel: DrawingEditorViewModel,
+    elementId: string,
+    layerOrderAction: LayerOrderAction
+  ): void {
+    this.clearImageWarmPreviewCommitTimer();
+    this.pendingImageWarmPreviewLayerAction = null;
+    const preview = viewModel.previewElementLayerChangeById(elementId, layerOrderAction);
+    if (this.shouldUseImageWarmPreview(preview)) {
+      this.commitElementLayerOrderActionWithWarmPreview(viewModel, elementId, layerOrderAction, preview);
+      return;
+    }
+
+    this.imageWarmPreviewVisibleRole = '';
+    this.commitElementLayerOrderAction(viewModel, elementId, layerOrderAction);
+    this.refreshImageWarmPreviewFromSelection(viewModel);
+  }
+
+  private shouldUseImageWarmPreview(preview: ElementLayerChangePreview): boolean {
+    if (!preview.changed || preview.beforeElement === null || preview.afterElement === null) {
+      return false;
+    }
+
+    if (preview.beforeElement.type !== 'image' || preview.afterElement.type !== 'image') {
+      return false;
+    }
+
+    const wasBelowStrokeLayer = preview.beforeElement.zIndex < preview.beforeStrokeLayerZIndex;
+    const willBeBelowStrokeLayer = preview.afterElement.zIndex < preview.afterStrokeLayerZIndex;
+    return wasBelowStrokeLayer !== willBeBelowStrokeLayer;
+  }
+
+  private getImageWarmPreviewTargetRole(preview: ElementLayerChangePreview): string {
+    if (preview.afterElement === null) {
+      return '';
+    }
+
+    return preview.afterElement.zIndex < preview.afterStrokeLayerZIndex ? 'below' : 'above';
+  }
+
+  private commitElementLayerOrderActionWithWarmPreview(
+    viewModel: DrawingEditorViewModel,
+    elementId: string,
+    layerOrderAction: LayerOrderAction,
+    preview: ElementLayerChangePreview
+  ): void {
+    if (preview.afterElement === null || preview.afterElement.type !== 'image') {
+      this.commitElementLayerOrderAction(viewModel, elementId, layerOrderAction);
+      return;
+    }
+
+    if (!this.isImageWarmPreviewActiveFor(elementId)) {
+      const sourceElement = preview.beforeElement !== null && preview.beforeElement.type === 'image' ?
+        (preview.beforeElement as ImageCanvasElement) : (preview.afterElement as ImageCanvasElement);
+      this.beginImageWarmPreview(sourceElement);
+    }
+
+    this.clearImageWarmPreviewCommitTimer();
+    this.clearImageWarmPreviewCoverTimer();
+    const token = this.imageWarmPreviewToken;
+    this.imageWarmPreviewElement = preview.afterElement as ImageCanvasElement;
+    this.pendingImageWarmPreviewLayerAction = {
+      elementId,
+      action: layerOrderAction,
+      targetRole: this.getImageWarmPreviewTargetRole(preview),
+      token
+    };
+    this.startPendingImageWarmPreviewLayerActionWhenReady(viewModel);
+  }
+
+  private beginImageWarmPreview(element: ImageCanvasElement): void {
+    this.clearImageWarmPreviewCommitTimer();
+    this.clearImageWarmPreviewCoverTimer();
+    if (!this.isImageWarmPreviewActiveFor(element.id)) {
+      this.imageWarmPreviewToken = this.nextImageWarmPreviewToken;
+      this.nextImageWarmPreviewToken += 1;
+      this.imageWarmPreviewBelowReady = false;
+      this.imageWarmPreviewAboveReady = false;
+    }
+
+    this.pendingImageWarmPreviewLayerAction = null;
+    this.imageWarmPreviewElementId = element.id;
+    this.imageWarmPreviewElement = element;
+    this.imageWarmPreviewVisibleRole = '';
+    this.imageWarmPreviewActive = true;
+  }
+
+  private markImageWarmPreviewRoleReady(role: string, elementId: string, token: number): void {
+    if (!this.isImageWarmPreviewActiveFor(elementId) || this.imageWarmPreviewToken !== token) {
+      return;
+    }
+
+    const wasReady = this.isImageWarmPreviewRoleReady(role);
+    if (role === 'below') {
+      this.imageWarmPreviewBelowReady = true;
+    } else if (role === 'above') {
+      this.imageWarmPreviewAboveReady = true;
+    }
+
+    if (!wasReady &&
+      this.pendingImageWarmPreviewLayerAction !== null &&
+      this.pendingImageWarmPreviewLayerAction.targetRole === role &&
+      this.pendingImageWarmPreviewLayerAction.token === token) {
+      const viewModel = this.getViewModel();
+      if (viewModel !== null) {
+        this.startPendingImageWarmPreviewLayerAction(viewModel);
+      }
+    }
+  }
+
+  private startPendingImageWarmPreviewLayerActionWhenReady(viewModel: DrawingEditorViewModel): void {
+    if (this.pendingImageWarmPreviewLayerAction === null) {
+      return;
+    }
+
+    if (this.isImageWarmPreviewRoleReady(this.pendingImageWarmPreviewLayerAction.targetRole)) {
+      this.startPendingImageWarmPreviewLayerAction(viewModel);
+      return;
+    }
+
+    const token = this.pendingImageWarmPreviewLayerAction.token;
+    this.imageWarmPreviewCommitTimerId = setTimeout(() => {
+      if (this.pendingImageWarmPreviewLayerAction !== null &&
+        this.pendingImageWarmPreviewLayerAction.token === token) {
+        const currentViewModel = this.getViewModel();
+        if (currentViewModel !== null) {
+          this.startPendingImageWarmPreviewLayerAction(currentViewModel);
+        }
+      }
+    }, IMAGE_WARM_PREVIEW_READY_FALLBACK_MS);
+  }
+
+  private startPendingImageWarmPreviewLayerAction(viewModel: DrawingEditorViewModel): void {
+    if (this.pendingImageWarmPreviewLayerAction === null) {
+      return;
+    }
+
+    const pending = this.pendingImageWarmPreviewLayerAction;
+    this.clearImageWarmPreviewCommitTimer();
+    this.imageWarmPreviewVisibleRole = pending.targetRole;
+    this.imageWarmPreviewCommitTimerId = setTimeout(() => {
+      if (this.pendingImageWarmPreviewLayerAction === null ||
+        this.pendingImageWarmPreviewLayerAction.token !== pending.token ||
+        !this.isImageWarmPreviewActiveFor(pending.elementId) ||
+        this.imageWarmPreviewToken !== pending.token) {
+        return;
+      }
+
+      this.pendingImageWarmPreviewLayerAction = null;
+      this.commitElementLayerOrderAction(viewModel, pending.elementId, pending.action);
+      this.refreshImageWarmPreviewFromSelection(viewModel);
+      this.imageWarmPreviewCoverTimerId = setTimeout(() => {
+        if (this.isImageWarmPreviewActiveFor(pending.elementId) && this.imageWarmPreviewToken === pending.token) {
+          this.imageWarmPreviewVisibleRole = '';
+        }
+      }, IMAGE_WARM_PREVIEW_COVER_FALLBACK_MS);
+    }, IMAGE_WARM_PREVIEW_COMMIT_DELAY_MS);
+  }
+
+  private isImageWarmPreviewRoleReady(role: string): boolean {
+    if (role === 'below') {
+      return this.imageWarmPreviewBelowReady;
+    }
+
+    if (role === 'above') {
+      return this.imageWarmPreviewAboveReady;
+    }
+
+    return false;
+  }
+
+  private refreshImageWarmPreviewFromSelection(viewModel: DrawingEditorViewModel | null = null): void {
+    if (!this.imageWarmPreviewActive || this.imageWarmPreviewElementId.length === 0) {
+      return;
+    }
+
+    const resolvedViewModel = viewModel ?? this.getViewModel();
+    if (resolvedViewModel === null) {
+      return;
+    }
+
+    const element = resolvedViewModel.getElementForRendering(this.imageWarmPreviewElementId);
+    if (element === null || element.type !== 'image') {
+      this.clearImageWarmPreview();
+      return;
+    }
+
+    this.imageWarmPreviewElement = element as ImageCanvasElement;
+  }
+
+  private completeImageWarmPreviewContent(elementId: string, token: number): void {
+    if (!this.isImageWarmPreviewActiveFor(elementId) || this.imageWarmPreviewToken !== token ||
+      this.imageWarmPreviewVisibleRole.length === 0) {
+      return;
+    }
+
+    this.clearImageWarmPreviewCoverTimer();
+    this.imageWarmPreviewCoverTimerId = setTimeout(() => {
+      if (this.isImageWarmPreviewActiveFor(elementId) && this.imageWarmPreviewToken === token) {
+        this.imageWarmPreviewVisibleRole = '';
+      }
+    }, IMAGE_WARM_PREVIEW_READY_HIDE_DELAY_MS);
+  }
+
+  private commitElementLayerOrderAction(
+    viewModel: DrawingEditorViewModel,
+    elementId: string,
+    layerOrderAction: LayerOrderAction
+  ): void {
+    const result = viewModel.changeElementLayerById(elementId, layerOrderAction);
+    this.syncEditorSnapshot();
+    this.elementLayerLocalRefreshVersion += 1;
+    this.redrawOverlayLayer();
+    this.syncLayerActionAvailability(viewModel);
+    this.clampSelectionContextMenuToCanvas();
+    if (result.changed) {
+      this.onContentChanged(true, 'element');
+    }
+  }
+
+  private isImageWarmPreviewActiveFor(elementId: string): boolean {
+    return this.imageWarmPreviewActive && this.imageWarmPreviewElementId === elementId &&
+      this.imageWarmPreviewToken > 0;
+  }
+
+  private clearImageWarmPreview(): void {
+    this.clearImageWarmPreviewCommitTimer();
+    this.clearImageWarmPreviewCoverTimer();
+    this.pendingImageWarmPreviewLayerAction = null;
+    this.imageWarmPreviewActive = false;
+    this.imageWarmPreviewElement = createEmptyImageWarmPreviewElement();
+    this.imageWarmPreviewVisibleRole = '';
+    this.imageWarmPreviewToken = 0;
+    this.imageWarmPreviewElementId = '';
+    this.imageWarmPreviewBelowReady = false;
+    this.imageWarmPreviewAboveReady = false;
+  }
+
+  private clearImageWarmPreviewCommitTimer(): void {
+    if (this.imageWarmPreviewCommitTimerId < 0) {
+      return;
+    }
+
+    clearTimeout(this.imageWarmPreviewCommitTimerId);
+    this.imageWarmPreviewCommitTimerId = -1;
+  }
+
+  private clearImageWarmPreviewCoverTimer(): void {
+    if (this.imageWarmPreviewCoverTimerId < 0) {
+      return;
+    }
+
+    clearTimeout(this.imageWarmPreviewCoverTimerId);
+    this.imageWarmPreviewCoverTimerId = -1;
   }
 
   private isLayerOrderActionEnabled(
@@ -2726,6 +3142,7 @@ export struct CanvasBoard {
     this.syncEditorSnapshot();
     this.redrawOverlayLayer();
     if (result.changed) {
+      this.refreshImageWarmPreviewFromSelection(viewModel);
       if (recordHistory) {
         this.onContentChanged(true, 'element');
       } else {
