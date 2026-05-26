@@ -11,6 +11,7 @@ export type SelectionAction =
   'ocr' |
   'formula' |
   'fill' |
+  'background' |
   'outline' |
   'layer' |
   LayerOrderAction;

@@ -197,6 +197,11 @@ const DEFAULT_SHAPE_OUTLINE: ElementOutlineStyle = {
   color: '#111827',
   width: 2
 };
+const DEFAULT_TEXT_OUTLINE: ElementOutlineStyle = {
+  lineStyle: 'none',
+  color: '#111827',
+  width: 2
+};
 const DEFAULT_IMAGE_OUTLINE: ElementOutlineStyle = {
   lineStyle: 'none',
   color: '#111827',
@@ -794,9 +799,23 @@ export class DrawingEditorViewModel {
     return this.replaceElementWithDelta('elementStyle', element, nextElement, 'elementStyle');
   }
 
+  updateTextBackgroundColorById(elementId: string, backgroundColor: string): SelectionActionResult {
+    const element = this.getElementById(elementId);
+    if (element === null || element.type !== 'text' || element.backgroundColor === backgroundColor) {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    const nextElement: TextCanvasElement = {
+      ...this.cloneTextElement(element),
+      backgroundColor,
+      updatedAt: now()
+    };
+    return this.replaceElementWithDelta('elementStyle', element, nextElement, 'elementStyle');
+  }
+
   beginElementOutlineEdit(elementId: string): boolean {
     const element = this.getElementById(elementId);
-    if (element === null || element.type === 'text') {
+    if (element === null) {
       this.elementOutlineEditGesture = null;
       return false;
     }
@@ -816,8 +835,7 @@ export class DrawingEditorViewModel {
     }
 
     const currentElement = this.getElementById(elementId);
-    if (currentElement === null || currentElement.type === 'text' ||
-      this.areElementsEquivalent(gesture.originalElement, currentElement)) {
+    if (currentElement === null || this.areElementsEquivalent(gesture.originalElement, currentElement)) {
       return { ...EMPTY_SELECTION_ACTION_RESULT };
     }
 
@@ -831,7 +849,7 @@ export class DrawingEditorViewModel {
     recordHistory: boolean = true
   ): SelectionActionResult {
     const element = this.getElementById(elementId);
-    if (element === null || element.type === 'text') {
+    if (element === null) {
       return { ...EMPTY_SELECTION_ACTION_RESULT };
     }
     if (recordHistory) {
@@ -1477,7 +1495,8 @@ export class DrawingEditorViewModel {
       content: 'Text',
       color: this.toolSetting.color,
       fontSize,
-      backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR
+      backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR,
+      outline: { ...DEFAULT_TEXT_OUTLINE }
     };
 
     const insertionIndex = this.elements.length;
@@ -1718,6 +1737,7 @@ export class DrawingEditorViewModel {
         color: element.color,
         fontSize: element.fontSize,
         backgroundColor: element.backgroundColor,
+        outline: this.cloneElementOutline(element.outline ?? DEFAULT_TEXT_OUTLINE),
         updatedAt: timestamp
       };
       updatedTextElement = this.cloneTextElement(nextElement);
@@ -1782,6 +1802,7 @@ export class DrawingEditorViewModel {
       color: '#111827',
       fontSize,
       backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR,
+      outline: { ...DEFAULT_TEXT_OUTLINE },
       recognition: options.recognition
     };
 
@@ -2892,10 +2913,18 @@ export class DrawingEditorViewModel {
   }
 
   private cloneElementWithOutline(
-    element: ShapeCanvasElement | ImageCanvasElement,
+    element: TextCanvasElement | ShapeCanvasElement | ImageCanvasElement,
     outline: ElementOutlineStyle,
     updatedAt: number
   ): CanvasElement {
+    if (element.type === 'text') {
+      return {
+        ...this.cloneTextElement(element),
+        outline: this.cloneElementOutline(outline),
+        updatedAt
+      };
+    }
+
     if (element.type === 'shape') {
       return {
         ...this.cloneShapeElement(element),
@@ -4618,6 +4647,7 @@ export class DrawingEditorViewModel {
       color: element.color,
       fontSize: element.fontSize,
       backgroundColor: element.backgroundColor,
+      outline: this.cloneElementOutline(element.outline ?? DEFAULT_TEXT_OUTLINE),
       recognition: element.recognition ? {
         source: element.recognition.source,
         sid: element.recognition.sid,

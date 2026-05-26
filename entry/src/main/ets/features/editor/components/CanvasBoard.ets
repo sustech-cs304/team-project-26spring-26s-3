@@ -12,6 +12,7 @@ import {
 import { clampElementFrameToBounds, ElementBounds } from '../../../common/utils/ElementBoundsUtil';
 import {
   CanvasElement,
+  ElementOutlineStyle,
   ElementOutlineLineStyle,
   ImageCanvasElement,
   ShapeType,
@@ -151,7 +152,7 @@ const PARTIAL_REDRAW_OVERDRAW_VIEWPORT_PX = 2;
 const RECENT_COMMITTED_STROKE_LIMIT = 6;
 const RECENT_COMMITTED_IDLE_FLUSH_DELAY_MS = 420;
 type StrokeResizeUiMode = 'none' | 'ready' | 'resizing' | 'moving';
-type ElementStylePanelMode = 'none' | 'fill' | 'outline' | 'layer';
+type ElementStylePanelMode = 'none' | 'fill' | 'background' | 'outline' | 'layer';
 const DEFAULT_VIEWPORT_WIDTH = 1600;
 const DEFAULT_VIEWPORT_HEIGHT = 900;
 const TEXT_EDIT_DOUBLE_TAP_MS = 360;
@@ -196,6 +197,11 @@ const ELEMENT_OUTLINE_WIDTH_MIN = 1;
 const ELEMENT_OUTLINE_WIDTH_MAX = 16;
 const ELEMENT_OUTLINE_WIDTH_STEP = 1;
 const ELEMENT_OUTLINE_LINE_STYLE_OPTIONS: ElementOutlineLineStyle[] = ['none', 'solid', 'dashed', 'dotted'];
+const DEFAULT_TEXT_OUTLINE: ElementOutlineStyle = {
+  lineStyle: 'none',
+  color: '#111827',
+  width: 2
+};
 const FORMULA_EXPORT_PADDING = 36;
 const FORMULA_EXPORT_MIN_EDGE = 320;
 const FORMULA_EXPORT_SCALE = 3;
@@ -901,6 +907,8 @@ export struct CanvasBoard {
     Column() {
       if (this.elementStylePanelMode === 'fill') {
         this.buildFillStylePanel()
+      } else if (this.elementStylePanelMode === 'background') {
+        this.buildBackgroundStylePanel()
       } else if (this.elementStylePanelMode === 'outline') {
         this.buildOutlineStylePanel()
       } else if (this.elementStylePanelMode === 'layer') {
@@ -961,6 +969,9 @@ export struct CanvasBoard {
         if (this.isSelectionContextElementShape()) {
           this.buildSelectionMenuButton('填充', 'fill')
         }
+        if (this.isSelectionContextElementText()) {
+          this.buildSelectionMenuButton('背景', 'background')
+        }
         if (this.isSelectionContextElementOutlineEditable()) {
           this.buildSelectionMenuButton('轮廓', 'outline')
         }
@@ -1016,6 +1027,25 @@ export struct CanvasBoard {
       Flex({ wrap: FlexWrap.Wrap }) {
         ForEach(ELEMENT_STYLE_PANEL_COLOR_OPTIONS, (color: string) => {
           this.buildFillColorSwatch(color)
+        }, (color: string): string => color)
+      }
+        .width('100%')
+    }
+      .width('100%')
+      .padding(4)
+  }
+
+  @Builder
+  private buildBackgroundStylePanel(): void {
+    Column({ space: 8 }) {
+      Text('背景')
+        .fontSize(12)
+        .fontColor('#475569')
+        .width('100%')
+
+      Flex({ wrap: FlexWrap.Wrap }) {
+        ForEach(ELEMENT_STYLE_PANEL_COLOR_OPTIONS, (color: string) => {
+          this.buildBackgroundColorSwatch(color)
         }, (color: string): string => color)
       }
         .width('100%')
@@ -1162,6 +1192,29 @@ export struct CanvasBoard {
   }
 
   @Builder
+  private buildBackgroundColorSwatch(color: string): void {
+    Stack({ alignContent: Alignment.Center }) {
+      if (color === '#00FFFFFF') {
+        Text('/')
+          .fontSize(16)
+          .fontColor('#DC2626')
+      }
+    }
+      .width(24)
+      .height(24)
+      .margin({ right: 6, bottom: 6 })
+      .backgroundColor(color === '#00FFFFFF' ? '#FFFFFF' : color)
+      .borderRadius(12)
+      .border({
+        width: this.getSelectionContextFillColor() === color ? 3 : 1,
+        color: this.getSelectionContextFillColor() === color ? '#111827' : '#CBD5E1'
+      })
+      .onClick(() => {
+        this.updateSelectionContextElementBackground(color);
+      })
+  }
+
+  @Builder
   private buildOutlineColorSwatch(color: string): void {
     Stack() {}
       .width(24)
@@ -1240,7 +1293,7 @@ export struct CanvasBoard {
         x: this.elementLayerOffsetX + this.inlineTextEditX * this.elementLayerScale,
         y: this.elementLayerOffsetY + this.inlineTextEditY * this.elementLayerScale
       })
-      .backgroundColor('#FFFFFF')
+      .backgroundColor(element.backgroundColor)
       .border({
         width: 2,
         color: '#2563EB'
@@ -2702,7 +2755,7 @@ export struct CanvasBoard {
   }
 
   private getSelectionContextMenuHeight(): number {
-    if (this.elementStylePanelMode === 'fill') {
+    if (this.elementStylePanelMode === 'fill' || this.elementStylePanelMode === 'background') {
       return 96;
     }
 
@@ -2720,6 +2773,9 @@ export struct CanvasBoard {
 
     let itemCount = 1;
     if (this.isSelectionContextElementShape()) {
+      itemCount += 1;
+    }
+    if (this.isSelectionContextElementText()) {
       itemCount += 1;
     }
     if (this.isSelectionContextElementOutlineEditable()) {
@@ -2784,6 +2840,14 @@ export struct CanvasBoard {
     if (action === 'fill') {
       if (this.isSelectionContextElementShape()) {
         this.elementStylePanelMode = 'fill';
+        this.clampSelectionContextMenuToCanvas();
+      }
+      return;
+    }
+
+    if (action === 'background') {
+      if (this.isSelectionContextElementText()) {
+        this.elementStylePanelMode = 'background';
         this.clampSelectionContextMenuToCanvas();
       }
       return;
@@ -3163,6 +3227,21 @@ export struct CanvasBoard {
     }
   }
 
+  private updateSelectionContextElementBackground(color: string): void {
+    const viewModel = this.getViewModel();
+    if (viewModel === null || this.selectionContextMenuElementId.length === 0) {
+      return;
+    }
+
+    this.selectionContextFillColor = color;
+    const result = viewModel.updateTextBackgroundColorById(this.selectionContextMenuElementId, color);
+    this.syncEditorSnapshot();
+    this.redrawOverlayLayer();
+    if (result.changed) {
+      this.onContentChanged(true, 'element');
+    }
+  }
+
   private updateSelectionContextOutlineWidthFromSlider(width: number, mode: SliderChangeMode): void {
     if (mode === SliderChangeMode.Begin) {
       this.beginSelectionContextOutlineWidthDrag();
@@ -3235,7 +3314,7 @@ export struct CanvasBoard {
 
     const currentElement = this.getSelectionContextElement();
     const nextLineStyle = lineStyle ?? (
-      currentElement !== null && currentElement.type !== 'text' && currentElement.outline.lineStyle === 'none' &&
+      currentElement !== null && currentElement.outline.lineStyle === 'none' &&
         (color !== null || width !== null) ? 'solid' : null
     );
     this.selectionContextOutlineLineStyle = nextLineStyle ?? this.selectionContextOutlineLineStyle;
@@ -3276,9 +3355,13 @@ export struct CanvasBoard {
     return this.getSelectionContextElement()?.type === 'shape';
   }
 
+  private isSelectionContextElementText(): boolean {
+    return this.getSelectionContextElement()?.type === 'text';
+  }
+
   private isSelectionContextElementOutlineEditable(): boolean {
     const element = this.getSelectionContextElement();
-    return element !== null && (element.type === 'shape' || element.type === 'image');
+    return element !== null && (element.type === 'text' || element.type === 'shape' || element.type === 'image');
   }
 
   private getSelectionContextFillColor(): string {
@@ -3302,11 +3385,12 @@ export struct CanvasBoard {
   }
 
   private syncSelectionContextElementStyleState(element: CanvasElement): void {
-    this.selectionContextFillColor = element.type === 'shape' ? element.fillColor : '#00FFFFFF';
+    this.selectionContextFillColor = element.type === 'shape' ? element.fillColor :
+      element.type === 'text' ? element.backgroundColor : '#00FFFFFF';
     if (element.type === 'text') {
-      this.selectionContextOutlineLineStyle = 'solid';
-      this.selectionContextOutlineColor = '#111827';
-      this.selectionContextOutlineWidth = 2;
+      this.selectionContextOutlineLineStyle = element.outline?.lineStyle ?? DEFAULT_TEXT_OUTLINE.lineStyle;
+      this.selectionContextOutlineColor = element.outline?.color ?? DEFAULT_TEXT_OUTLINE.color;
+      this.selectionContextOutlineWidth = element.outline?.width ?? DEFAULT_TEXT_OUTLINE.width;
       return;
     }
 
@@ -3736,6 +3820,11 @@ export struct CanvasBoard {
       color: element.color,
       fontSize: element.fontSize,
       backgroundColor: element.backgroundColor,
+      outline: {
+        lineStyle: element.outline?.lineStyle ?? DEFAULT_TEXT_OUTLINE.lineStyle,
+        color: element.outline?.color ?? DEFAULT_TEXT_OUTLINE.color,
+        width: element.outline?.width ?? DEFAULT_TEXT_OUTLINE.width
+      },
       recognition: element.recognition ? {
         source: element.recognition.source,
         sid: element.recognition.sid,
