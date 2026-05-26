@@ -14,6 +14,7 @@ import {
   createNotebookExportBaseName,
   stripNotebookExportExtension
 } from '../models/NotebookExportOptions';
+import { NotebookExportResult, NotebookExportService } from '../services/NotebookExportService';
 import { NotebookImportService } from '../services/NotebookImportService';
 import { NotebookListViewModel } from '../viewmodels/NotebookListViewModel';
 
@@ -157,14 +158,19 @@ export struct NotebookListPanel {
 
   @State private isExportDialogVisible: boolean = false;
   @State private isPickingExportPath: boolean = false;
+  @State private isExportingNotebook: boolean = false;
+  @State private exportFailureMessage: string = '';
   @State private exportTargetNotebookId: string = '';
   @State private exportTargetNotebookTitle: string = '';
   @State private draftExportFileName: string = '';
   @State private draftExportPath: string = '';
   @State private draftExportFormat: string = 'pdf';
+  @State private draftExportScope: string = 'all';
+  @State private draftExportPageRange: string = '';
 
   private notebookListViewModel?: NotebookListViewModel;
   private notebookImportService?: NotebookImportService;
+  private notebookExportService?: NotebookExportService;
   private hasLoadedInitialNotebookList: boolean = false;
 
   aboutToAppear(): void {
@@ -217,6 +223,18 @@ export struct NotebookListPanel {
     }
 
     return this.notebookImportService as NotebookImportService;
+  }
+
+  private ensureExportService(): NotebookExportService {
+    if (this.notebookExportService === undefined) {
+      const hostContext: common.Context | undefined = this.getUIContext().getHostContext() as common.Context | undefined;
+      if (hostContext === undefined) {
+        throw new Error('Host context is unavailable.');
+      }
+      this.notebookExportService = new NotebookExportService(hostContext);
+    }
+
+    return this.notebookExportService as NotebookExportService;
   }
 
   private async loadNotebookList(): Promise<void> {
@@ -288,7 +306,7 @@ export struct NotebookListPanel {
   private isActionBusy(): boolean {
     return this.isDeletingNotebook || this.isSubmittingDialog || this.isCreatingFolder || this.isMovingNotebook || this.isUpdatingTags ||
       this.isRenamingFolder || this.isUpdatingFolderColor || this.isDeletingFolder || this.isPickingNotebookCover ||
-      this.isUpdatingNotebookColor || this.isPickingExportPath;
+      this.isUpdatingNotebookColor || this.isPickingExportPath || this.isExportingNotebook;
   }
 
   private isNotebookDeleted(notebook: Notebook): boolean {
@@ -362,15 +380,22 @@ export struct NotebookListPanel {
 
   private dismissExportDialog(): void {
     this.isExportDialogVisible = false;
+    this.isExportingNotebook = false;
     this.exportTargetNotebookId = '';
     this.exportTargetNotebookTitle = '';
     this.draftExportFileName = '';
     this.draftExportPath = '';
     this.draftExportFormat = 'pdf';
+    this.draftExportScope = 'all';
+    this.draftExportPageRange = '';
   }
 
   private closeImportFailureMessage(): void {
     this.importFailureMessage = '';
+  }
+
+  private closeExportFailureMessage(): void {
+    this.exportFailureMessage = '';
   }
 
   private closePassiveDialogs(): void {
@@ -725,27 +750,55 @@ export struct NotebookListPanel {
     this.draftExportFileName = createNotebookExportBaseName(notebook.title);
     this.draftExportPath = '';
     this.draftExportFormat = 'pdf';
+    this.draftExportScope = 'all';
+    this.draftExportPageRange = '';
     this.isExportDialogVisible = true;
   }
 
   private closeExportDialog(): void {
-    if (this.isPickingExportPath) {
+    if (this.isPickingExportPath || this.isExportingNotebook) {
       return;
     }
 
     this.dismissExportDialog();
   }
 
-  private confirmExportDialog(): void {
-    if (this.isPickingExportPath) {
+  private async confirmExportDialog(): Promise<void> {
+    if (this.isPickingExportPath || this.isExportingNotebook) {
       return;
     }
 
-    this.dismissExportDialog();
+    const outputUris: string[] = this.parseExportOutputUris(this.draftExportPath);
+    if (outputUris.length === 0) {
+      await this.selectExportPathFromDialog();
+      if (this.parseExportOutputUris(this.draftExportPath).length === 0) {
+        return;
+      }
+    }
+
+    this.isExportingNotebook = true;
+    this.exportFailureMessage = '';
+    try {
+      const exportResult: NotebookExportResult = await this.ensureExportService().exportNotebook({
+        notebookId: this.exportTargetNotebookId,
+        fileName: this.getExportPickerBaseFileName(),
+        format: this.draftExportFormat,
+        outputUris: this.parseExportOutputUris(this.draftExportPath)
+      });
+      if (exportResult.success) {
+        this.dismissExportDialog();
+      } else {
+        this.exportFailureMessage = exportResult.message;
+      }
+    } catch (_error) {
+      this.exportFailureMessage = '导出失败，请重新选择保存位置后再试。';
+    } finally {
+      this.isExportingNotebook = false;
+    }
   }
 
   private async selectExportPathFromDialog(): Promise<void> {
-    if (this.isPickingExportPath) {
+    if (this.isPickingExportPath || this.isExportingNotebook) {
       return;
     }
 
@@ -757,12 +810,18 @@ export struct NotebookListPanel {
     this.isPickingExportPath = true;
     try {
       const saveOptions = new picker.DocumentSaveOptions();
-      saveOptions.newFileNames = [this.getExportPickerBaseFileName()];
+      const exportService: NotebookExportService = this.ensureExportService();
+      const pageCount: number = await exportService.getNotebookPageCount(this.exportTargetNotebookId);
+      saveOptions.newFileNames = exportService.buildExportFileNames(
+        this.getExportPickerBaseFileName(),
+        this.draftExportFormat,
+        pageCount
+      );
       saveOptions.fileSuffixChoices = [buildNotebookExportSuffixChoice(this.draftExportFormat)];
       const documentPicker = new picker.DocumentViewPicker(hostContext);
       const selectedUris: string[] = await documentPicker.save(saveOptions);
       if (selectedUris.length > 0) {
-        this.draftExportPath = selectedUris[0];
+        this.draftExportPath = selectedUris.join('\n');
       }
     } catch (_error) {
     } finally {
@@ -776,6 +835,23 @@ export struct NotebookListPanel {
       return cleanName;
     }
     return createNotebookExportBaseName(this.exportTargetNotebookTitle);
+  }
+
+  private parseExportOutputUris(rawPath: string): string[] {
+    const rawParts: string[] = rawPath.split('\n');
+    const result: string[] = [];
+    for (const rawPart of rawParts) {
+      const normalizedPart: string = rawPart.trim();
+      if (normalizedPart.length > 0 && !result.includes(normalizedPart)) {
+        result.push(normalizedPart);
+      }
+    }
+    return result;
+  }
+
+  private changeExportFormat(format: string): void {
+    this.draftExportFormat = format;
+    this.draftExportPath = '';
   }
 
   private tagsToDraftText(rawTags?: string[]): string {
@@ -3007,8 +3083,12 @@ export struct NotebookListPanel {
             fileName: $draftExportFileName,
             outputPath: $draftExportPath,
             selectedFormat: $draftExportFormat,
+            selectedScope: $draftExportScope,
+            pageRange: $draftExportPageRange,
             notebookTitle: this.exportTargetNotebookTitle,
             isChoosingPath: this.isPickingExportPath,
+            isExporting: this.isExportingNotebook,
+            showScopeOptions: false,
             onCancel: (): void => {
               this.closeExportDialog();
             },
@@ -3016,7 +3096,13 @@ export struct NotebookListPanel {
               void this.selectExportPathFromDialog();
             },
             onConfirm: (): void => {
-              this.confirmExportDialog();
+              void this.confirmExportDialog();
+            },
+            onFormatChange: (format: string): void => {
+              this.changeExportFormat(format);
+            },
+            onPageRangeChange: (range: string): void => {
+              this.draftExportPageRange = range;
             }
           })
         }
@@ -3547,6 +3633,48 @@ export struct NotebookListPanel {
               .fontColor($r('app.color.inverse_text'))
               .onClick(() => {
                 this.closeImportFailureMessage();
+              })
+          }
+          .width('100%')
+          .constraintSize({ maxWidth: 560 })
+          .alignItems(HorizontalAlign.Start)
+          .padding(24)
+          .backgroundColor($r('app.color.surface_background'))
+          .borderRadius($r('app.float.card_radius'))
+          .border({ width: 1, color: $r('app.color.card_border') })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .padding({
+          left: $r('app.float.page_padding_horizontal'),
+          right: $r('app.float.page_padding_horizontal'),
+          top: $r('app.float.page_padding_vertical'),
+          bottom: $r('app.float.page_padding_vertical')
+        })
+        .backgroundColor($r('app.color.overlay_mask'))
+      }
+
+      if (this.exportFailureMessage.length > 0) {
+        Column() {
+          Column({ space: 16 }) {
+            Text('导出未完成')
+              .fontSize($r('app.float.section_title_size'))
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.primary_text'))
+
+            Text(this.exportFailureMessage)
+              .fontSize($r('app.float.body_text_size'))
+              .fontColor($r('app.color.secondary_text'))
+
+            Button('知道了')
+              .width('100%')
+              .height($r('app.float.button_height'))
+              .backgroundColor($r('app.color.editor_accent'))
+              .fontColor($r('app.color.inverse_text'))
+              .onClick(() => {
+                this.closeExportFailureMessage();
               })
           }
           .width('100%')

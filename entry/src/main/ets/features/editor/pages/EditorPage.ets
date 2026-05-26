@@ -20,8 +20,10 @@ import { NotebookExportDialog } from '../../notebook/components/NotebookExportDi
 import {
   buildNotebookExportSuffixChoice,
   createNotebookExportBaseName,
+  normalizeNotebookExportScope,
   stripNotebookExportExtension
 } from '../../notebook/models/NotebookExportOptions';
+import { NotebookExportResult, NotebookExportService } from '../../notebook/services/NotebookExportService';
 import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
 import { EditorDebugSnapshot } from '../viewmodels/EditorDebugSnapshot';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
@@ -51,6 +53,11 @@ interface PaperSizeTemplateOption {
   description: string;
   width: number;
   height: number;
+}
+
+interface NotebookExportPageRangeResult {
+  pageIds: string[];
+  message: string;
 }
 
 const SIDEBAR_EXPANDED_PADDING = 16;
@@ -149,9 +156,13 @@ struct EditorPage {
   @State private deleteTargetPageOrder: number = -1;
   @State private isExportDialogVisible: boolean = false;
   @State private isPickingExportPath: boolean = false;
+  @State private isExportingNotebook: boolean = false;
+  @State private exportFailureMessage: string = '';
   @State private draftExportFileName: string = '';
   @State private draftExportPath: string = '';
   @State private draftExportFormat: string = 'pdf';
+  @State private draftExportScope: string = 'all';
+  @State private draftExportPageRange: string = '';
   @State private hasMissingNotebookId: boolean = false;
   @State private isNotebookMissing: boolean = false;
   @State private toolSetting: ToolSetting = this.buildDefaultToolSetting();
@@ -212,6 +223,7 @@ struct EditorPage {
   private documentViewportGestureStartDistance: number = 1;
   private documentViewportGestureStartWorkspaceX: number = 0;
   private documentViewportGestureStartWorkspaceY: number = 0;
+  private notebookExportService?: NotebookExportService;
   private lastDocumentTouchSignature: string = '';
   private pendingDocumentViewportPageId: string = '';
   private editorViewModel?: EditorViewModel;
@@ -259,6 +271,10 @@ struct EditorPage {
 
       if (this.isExportDialogVisible) {
         this.buildNotebookExportDialog();
+      }
+
+      if (this.exportFailureMessage.length > 0) {
+        this.buildExportFailureDialog();
       }
     }
     .width('100%')
@@ -1682,8 +1698,12 @@ struct EditorPage {
         fileName: $draftExportFileName,
         outputPath: $draftExportPath,
         selectedFormat: $draftExportFormat,
+        selectedScope: $draftExportScope,
+        pageRange: $draftExportPageRange,
         notebookTitle: this.notebookTitle,
         isChoosingPath: this.isPickingExportPath,
+        isExporting: this.isExportingNotebook,
+        showScopeOptions: true,
         onCancel: (): void => {
           this.closeNotebookExportDialog();
         },
@@ -1691,9 +1711,61 @@ struct EditorPage {
           void this.selectNotebookExportPath();
         },
         onConfirm: (): void => {
-          this.confirmNotebookExportDialog();
+          void this.confirmNotebookExportDialog();
+        },
+        onFormatChange: (format: string): void => {
+          this.changeNotebookExportFormat(format);
+        },
+        onScopeChange: (scope: string): void => {
+          this.changeNotebookExportScope(scope);
+        },
+        onPageRangeChange: (range: string): void => {
+          this.changeNotebookExportPageRange(range);
         }
       })
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+    .padding({
+      left: $r('app.float.page_padding_horizontal'),
+      right: $r('app.float.page_padding_horizontal'),
+      top: $r('app.float.page_padding_vertical'),
+      bottom: $r('app.float.page_padding_vertical')
+    })
+    .backgroundColor($r('app.color.overlay_mask'))
+  }
+
+  @Builder
+  private buildExportFailureDialog(): void {
+    Column() {
+      Column({ space: 16 }) {
+        Text('导出未完成')
+          .fontSize($r('app.float.section_title_size'))
+          .fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.primary_text'))
+
+        Text(this.exportFailureMessage)
+          .fontSize($r('app.float.body_text_size'))
+          .fontColor($r('app.color.secondary_text'))
+
+        Button('知道了')
+          .width('100%')
+          .height($r('app.float.button_height'))
+          .backgroundColor($r('app.color.editor_accent'))
+          .fontColor($r('app.color.inverse_text'))
+          .onClick(() => {
+            this.closeExportFailureMessage();
+          })
+      }
+      .width('100%')
+      .constraintSize({ maxWidth: 560 })
+      .alignItems(HorizontalAlign.Start)
+      .padding(24)
+      .backgroundColor($r('app.color.surface_background'))
+      .borderRadius($r('app.float.card_radius'))
+      .border({ width: 1, color: $r('app.color.card_border') })
     }
     .width('100%')
     .height('100%')
@@ -1784,6 +1856,18 @@ struct EditorPage {
     }
 
     return this.thumbnailStore as PageThumbnailStore;
+  }
+
+  private ensureNotebookExportService(): NotebookExportService {
+    if (this.notebookExportService === undefined) {
+      const hostContext: common.Context | undefined = this.getUIContext().getHostContext() as common.Context | undefined;
+      if (hostContext === undefined) {
+        throw new Error('Host context is unavailable.');
+      }
+      this.notebookExportService = new NotebookExportService(hostContext);
+    }
+
+    return this.notebookExportService as NotebookExportService;
   }
 
   private buildPageThumbnailSnapshot(page: NotebookPage): PageThumbnailRenderSnapshot {
@@ -3803,7 +3887,7 @@ struct EditorPage {
 
   private openNotebookExportDialog(): void {
     if (this.isLoading || this.hasMissingNotebookId || this.isNotebookMissing || this.notebookId.length === 0 ||
-      this.isPickingExportPath) {
+      this.isPickingExportPath || this.isExportingNotebook) {
       return;
     }
 
@@ -3811,34 +3895,74 @@ struct EditorPage {
     this.draftExportFileName = createNotebookExportBaseName(this.notebookTitle);
     this.draftExportPath = '';
     this.draftExportFormat = 'pdf';
+    this.draftExportScope = 'all';
+    this.draftExportPageRange = '';
     this.isExportDialogVisible = true;
   }
 
   private closeNotebookExportDialog(): void {
-    if (this.isPickingExportPath) {
+    if (this.isPickingExportPath || this.isExportingNotebook) {
       return;
     }
 
     this.dismissNotebookExportDialog();
   }
 
-  private confirmNotebookExportDialog(): void {
-    if (this.isPickingExportPath) {
+  private async confirmNotebookExportDialog(): Promise<void> {
+    if (this.isPickingExportPath || this.isExportingNotebook) {
       return;
     }
 
-    this.dismissNotebookExportDialog();
+    const exportPageIds: string[] | undefined = this.getNotebookExportPageIds();
+    if (normalizeNotebookExportScope(this.draftExportScope) !== 'all' &&
+      (exportPageIds === undefined || exportPageIds.length === 0)) {
+      this.exportFailureMessage = this.getNotebookExportPageRangeMessage();
+      return;
+    }
+
+    const outputUris: string[] = this.parseExportOutputUris(this.draftExportPath);
+    if (outputUris.length === 0) {
+      await this.selectNotebookExportPath();
+      if (this.parseExportOutputUris(this.draftExportPath).length === 0) {
+        return;
+      }
+    }
+
+    this.isExportingNotebook = true;
+    this.exportFailureMessage = '';
+    try {
+      await this.flushActiveDrawingSession();
+      const exportResult: NotebookExportResult = await this.ensureNotebookExportService().exportNotebook({
+        notebookId: this.notebookId,
+        fileName: this.getExportPickerBaseFileName(),
+        format: this.draftExportFormat,
+        outputUris: this.parseExportOutputUris(this.draftExportPath),
+        pageIds: exportPageIds
+      });
+      if (exportResult.success) {
+        this.dismissNotebookExportDialog();
+      } else {
+        this.exportFailureMessage = exportResult.message;
+      }
+    } catch (_error) {
+      this.exportFailureMessage = '导出失败，请重新选择保存位置后再试。';
+    } finally {
+      this.isExportingNotebook = false;
+    }
   }
 
   private dismissNotebookExportDialog(): void {
     this.isExportDialogVisible = false;
+    this.isExportingNotebook = false;
     this.draftExportFileName = '';
     this.draftExportPath = '';
     this.draftExportFormat = 'pdf';
+    this.draftExportScope = 'all';
+    this.draftExportPageRange = '';
   }
 
   private async selectNotebookExportPath(): Promise<void> {
-    if (this.isPickingExportPath) {
+    if (this.isPickingExportPath || this.isExportingNotebook) {
       return;
     }
 
@@ -3846,16 +3970,26 @@ struct EditorPage {
     if (hostContext === undefined) {
       return;
     }
+    const pageCount: number = this.getNotebookExportPageCount();
+    if (pageCount <= 0) {
+      this.exportFailureMessage = this.getNotebookExportPageRangeMessage();
+      return;
+    }
 
     this.isPickingExportPath = true;
     try {
       const saveOptions = new picker.DocumentSaveOptions();
-      saveOptions.newFileNames = [this.getExportPickerBaseFileName()];
+      const exportService: NotebookExportService = this.ensureNotebookExportService();
+      saveOptions.newFileNames = exportService.buildExportFileNames(
+        this.getExportPickerBaseFileName(),
+        this.draftExportFormat,
+        this.getNotebookExportPageCount()
+      );
       saveOptions.fileSuffixChoices = [buildNotebookExportSuffixChoice(this.draftExportFormat)];
       const documentPicker = new picker.DocumentViewPicker(hostContext);
       const selectedUris: string[] = await documentPicker.save(saveOptions);
       if (selectedUris.length > 0) {
-        this.draftExportPath = selectedUris[0];
+        this.draftExportPath = selectedUris.join('\n');
       }
     } catch (_error) {
     } finally {
@@ -3869,6 +4003,153 @@ struct EditorPage {
       return cleanName;
     }
     return createNotebookExportBaseName(this.notebookTitle);
+  }
+
+  private changeNotebookExportScope(scope: string): void {
+    const normalizedScope: string = normalizeNotebookExportScope(scope);
+    this.draftExportScope = normalizedScope;
+    this.draftExportPath = '';
+    if (normalizedScope !== 'range') {
+      this.draftExportPageRange = '';
+    }
+  }
+
+  private changeNotebookExportFormat(format: string): void {
+    this.draftExportFormat = format;
+    this.draftExportPath = '';
+  }
+
+  private changeNotebookExportPageRange(range: string): void {
+    this.draftExportPageRange = range;
+    this.draftExportPath = '';
+  }
+
+  private getNotebookExportPageIds(): string[] | undefined {
+    const normalizedScope: string = normalizeNotebookExportScope(this.draftExportScope);
+    if (normalizedScope === 'all') {
+      return undefined;
+    }
+    if (normalizedScope === 'range') {
+      const rangeResult: NotebookExportPageRangeResult = this.parseNotebookExportPageRange();
+      return rangeResult.pageIds.length > 0 ? rangeResult.pageIds : [];
+    }
+    const pageId: string = this.activePageId.length > 0 ? this.activePageId : this.getFallbackExportPageId();
+    return pageId.length > 0 ? [pageId] : undefined;
+  }
+
+  private getNotebookExportPageCount(): number {
+    const normalizedScope: string = normalizeNotebookExportScope(this.draftExportScope);
+    if (normalizedScope === 'current') {
+      return 1;
+    }
+    if (normalizedScope === 'range') {
+      return this.parseNotebookExportPageRange().pageIds.length;
+    }
+    return Math.max(1, this.notebookPageList.length);
+  }
+
+  private getNotebookExportPageRangeMessage(): string {
+    if (normalizeNotebookExportScope(this.draftExportScope) !== 'range') {
+      return '当前没有可导出的页面。';
+    }
+    const rangeResult: NotebookExportPageRangeResult = this.parseNotebookExportPageRange();
+    return rangeResult.message.length > 0 ? rangeResult.message : '请先输入有效的导出页码范围。';
+  }
+
+  private parseNotebookExportPageRange(): NotebookExportPageRangeResult {
+    const rawRange: string = this.draftExportPageRange.trim();
+    const pageCount: number = this.notebookPageList.length;
+    if (rawRange.length === 0) {
+      return {
+        pageIds: [],
+        message: '请输入导出页码范围。'
+      };
+    }
+    if (pageCount === 0) {
+      return {
+        pageIds: [],
+        message: '当前笔记本没有可导出的页面。'
+      };
+    }
+
+    const pageIndexes: number[] = [];
+    const segments: string[] = rawRange.split(',');
+    for (const segment of segments) {
+      const normalizedSegment: string = segment.trim();
+      if (normalizedSegment.length === 0) {
+        continue;
+      }
+
+      const dashIndex: number = normalizedSegment.indexOf('-');
+      if (dashIndex >= 0) {
+        const startText: string = normalizedSegment.substring(0, dashIndex).trim();
+        const endText: string = normalizedSegment.substring(dashIndex + 1).trim();
+        const startPage: number = Number.parseInt(startText, 10);
+        const endPage: number = Number.parseInt(endText, 10);
+        if (!Number.isFinite(startPage) || !Number.isFinite(endPage) || startPage <= 0 || endPage <= 0 ||
+          startPage > endPage || endPage > pageCount) {
+          return {
+            pageIds: [],
+            message: `页码范围无效：${normalizedSegment}`
+          };
+        }
+        for (let pageNumber: number = startPage; pageNumber <= endPage; pageNumber += 1) {
+          this.appendExportPageIndex(pageIndexes, pageNumber - 1);
+        }
+        continue;
+      }
+
+      const pageNumber: number = Number.parseInt(normalizedSegment, 10);
+      if (!Number.isFinite(pageNumber) || pageNumber <= 0 || pageNumber > pageCount) {
+        return {
+          pageIds: [],
+          message: `页码无效：${normalizedSegment}`
+        };
+      }
+      this.appendExportPageIndex(pageIndexes, pageNumber - 1);
+    }
+
+    if (pageIndexes.length === 0) {
+      return {
+        pageIds: [],
+        message: '请输入导出页码范围。'
+      };
+    }
+
+    return {
+      pageIds: pageIndexes.map((pageIndex: number): string => this.notebookPageList[pageIndex].id),
+      message: ''
+    };
+  }
+
+  private appendExportPageIndex(pageIndexes: number[], pageIndex: number): void {
+    if (pageIndex < 0 || pageIndex >= this.notebookPageList.length || pageIndexes.includes(pageIndex)) {
+      return;
+    }
+    pageIndexes.push(pageIndex);
+  }
+
+  private getFallbackExportPageId(): string {
+    if (this.notebookPageList.length === 0) {
+      return '';
+    }
+    return this.notebookPageList[0].id;
+  }
+
+  private parseExportOutputUris(rawPath: string): string[] {
+    const rawParts: string[] = rawPath.split('\n');
+    const result: string[] = [];
+    for (const rawPart of rawParts) {
+      const normalizedPart: string = rawPart.trim();
+      if (normalizedPart.length > 0 && !result.includes(normalizedPart)) {
+        result.push(normalizedPart);
+      }
+    }
+    return result;
+  }
+
+  private closeExportFailureMessage(): void {
+    this.exportFailureMessage = '';
   }
 
   private closePageActionMenu(): void {
