@@ -407,7 +407,7 @@ export class DrawingEditorViewModel {
     this.appendDebugEvent('undo', `requested count=${this.strokes.length} history=${this.describeHistoryState()}`);
     const undoResult: UndoRedoApplyResult = EditorPerformanceTrace.measureSync(
       'undo.controller',
-      () => this.undoRedoController.undo(this.strokes, this.elements, this.strokeLayerZIndex),
+      () => this.undoRedoController.undo(this.strokes, this.elements),
       `beforeStrokes=${beforeStrokeCount} beforePoints=${beforePointCount}`,
       6
     );
@@ -461,7 +461,7 @@ export class DrawingEditorViewModel {
     this.appendDebugEvent('redo', `requested count=${this.strokes.length} history=${this.describeHistoryState()}`);
     const redoResult: UndoRedoApplyResult = EditorPerformanceTrace.measureSync(
       'redo.controller',
-      () => this.undoRedoController.redo(this.strokes, this.elements, this.strokeLayerZIndex),
+      () => this.undoRedoController.redo(this.strokes, this.elements),
       `beforeStrokes=${beforeStrokeCount} beforePoints=${beforePointCount}`,
       6
     );
@@ -1291,11 +1291,7 @@ export class DrawingEditorViewModel {
       return false;
     }
 
-    this.selectedElementId = hitElement.id;
-    if (!this.selectedElementIds.includes(hitElement.id)) {
-      this.selectedElementIds = [...this.selectedElementIds, hitElement.id];
-      this.selectionVersion += 1;
-    }
+    this.activateHitElementSelection(hitElement);
     this.elementEditGesture = {
       elementId: hitElement.id,
       kind: 'move',
@@ -1305,6 +1301,18 @@ export class DrawingEditorViewModel {
     this.beginImageElementEditDraft(hitElement);
     this.appendDebugEvent('beginElementEdit', `element=${hitElement.id} kind=move`);
     return true;
+  }
+
+  private activateHitElementSelection(hitElement: CanvasElement): void {
+    const wasAlreadySelected = this.selectedElementIds.includes(hitElement.id);
+    this.selectedElementId = hitElement.id;
+    if (wasAlreadySelected) {
+      return;
+    }
+
+    this.selectedElementIds = [hitElement.id];
+    this.selectedStrokeTargets = [];
+    this.selectionVersion += 1;
   }
 
   updateElementEditGesture(point: StrokePoint, bounds: ElementBounds): boolean {

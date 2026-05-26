@@ -128,6 +128,8 @@ const SELECTION_MOVE_START_THRESHOLD_SCREEN_PX = 4;
 const SELECTION_MOVE_REDRAW_INTERVAL_MS = 24;
 const SELECTION_CONTEXT_MENU_WIDTH = 144;
 const SELECTION_CONTEXT_MENU_ITEM_HEIGHT = 38;
+const ELEMENT_LAYER_Z_INDEX_MIN = -1000000000;
+const ELEMENT_LAYER_Z_INDEX_MAX = 1000000000;
 const SELECTION_CONTEXT_MENU_OFFSET = 8;
 const ELEMENT_STYLE_PANEL_WIDTH = 220;
 const ELEMENT_STYLE_PANEL_COLOR_OPTIONS: string[] = [
@@ -351,7 +353,7 @@ export struct CanvasBoard {
         editingElementId: this.getInlineTextEditElementId(),
         renderContent: true,
         renderSelection: false,
-        minZIndex: -1000000000,
+        minZIndex: ELEMENT_LAYER_Z_INDEX_MIN,
         maxZIndex: this.getStrokeLayerZIndexForRendering()
       })
         .width(this.elementLayerPageWidth)
@@ -407,7 +409,7 @@ export struct CanvasBoard {
           renderContent: true,
           renderSelection: false,
           minZIndex: this.getStrokeLayerZIndexForRendering(),
-          maxZIndex: 1000000000
+          maxZIndex: ELEMENT_LAYER_Z_INDEX_MAX
         })
           .width('100%')
           .height('100%')
@@ -419,8 +421,8 @@ export struct CanvasBoard {
           editingElementId: this.getInlineTextEditElementId(),
           renderContent: false,
           renderSelection: true,
-          minZIndex: -1000000000,
-          maxZIndex: 1000000000
+          minZIndex: ELEMENT_LAYER_Z_INDEX_MIN,
+          maxZIndex: ELEMENT_LAYER_Z_INDEX_MAX
         })
           .width('100%')
           .height('100%')
@@ -873,26 +875,26 @@ export struct CanvasBoard {
         .fontColor('#475569')
         .width('100%')
 
-      this.buildLayerOrderButton('上移一层', 'layerUp', this.canLayerMoveUp)
-      this.buildLayerOrderButton('下移一层', 'layerDown', this.canLayerMoveDown)
-      this.buildLayerOrderButton('置于顶层', 'layerTop', this.canLayerMoveTop)
-      this.buildLayerOrderButton('置于底层', 'layerBottom', this.canLayerMoveBottom)
+      this.buildLayerOrderButton('上移一层', 'layerUp')
+      this.buildLayerOrderButton('下移一层', 'layerDown')
+      this.buildLayerOrderButton('置于顶层', 'layerTop')
+      this.buildLayerOrderButton('置于底层', 'layerBottom')
     }
       .width('100%')
       .padding(4)
   }
 
   @Builder
-  private buildLayerOrderButton(label: string, action: LayerOrderAction, enabled: boolean): void {
+  private buildLayerOrderButton(label: string, action: LayerOrderAction): void {
     Button(label)
       .width('100%')
       .height(SELECTION_CONTEXT_MENU_ITEM_HEIGHT)
       .fontSize(14)
-      .fontColor(this.isLayerOrderActionCurrentlyEnabled(action) ? '#111827' : '#94A3B8')
+      .fontColor(this.isLayerOrderActionEnabled(action) ? '#111827' : '#94A3B8')
       .backgroundColor('#00000000')
-      .enabled(this.isLayerOrderActionCurrentlyEnabled(action))
+      .enabled(this.isLayerOrderActionEnabled(action))
       .onClick(() => {
-        if (!this.isLayerOrderActionCurrentlyEnabled(action)) {
+        if (!this.isLayerOrderActionEnabled(action)) {
           return;
         }
         this.handleSelectionContextMenuAction(action);
@@ -2461,7 +2463,7 @@ export struct CanvasBoard {
       }
 
       const availability = viewModel.getElementLayerActionAvailability(this.selectionContextMenuElementId);
-      if (!this.isLayerOrderActionAvailable(availability, layerOrderAction)) {
+      if (!this.isLayerOrderActionEnabled(layerOrderAction, availability)) {
         this.syncLayerActionAvailability(viewModel);
         return;
       }
@@ -2500,34 +2502,32 @@ export struct CanvasBoard {
     return null;
   }
 
-  private isLayerOrderActionAvailable(availability: LayerActionAvailability, action: LayerOrderAction): boolean {
+  private isLayerOrderActionEnabled(
+    action: LayerOrderAction,
+    availability: LayerActionAvailability | null = null
+  ): boolean {
+    const resolvedAvailability = availability ?? this.getCurrentLayerActionAvailability();
     switch (action) {
       case 'layerUp':
-        return availability.canMoveUp;
+        return resolvedAvailability.canMoveUp;
       case 'layerDown':
-        return availability.canMoveDown;
+        return resolvedAvailability.canMoveDown;
       case 'layerTop':
-        return availability.canMoveTop;
+        return resolvedAvailability.canMoveTop;
       case 'layerBottom':
-        return availability.canMoveBottom;
+        return resolvedAvailability.canMoveBottom;
       default:
         return false;
     }
   }
 
-  private isLayerOrderActionCurrentlyEnabled(action: LayerOrderAction): boolean {
-    switch (action) {
-      case 'layerUp':
-        return this.canLayerMoveUp;
-      case 'layerDown':
-        return this.canLayerMoveDown;
-      case 'layerTop':
-        return this.canLayerMoveTop;
-      case 'layerBottom':
-        return this.canLayerMoveBottom;
-      default:
-        return false;
-    }
+  private getCurrentLayerActionAvailability(): LayerActionAvailability {
+    return {
+      canMoveUp: this.canLayerMoveUp,
+      canMoveDown: this.canLayerMoveDown,
+      canMoveTop: this.canLayerMoveTop,
+      canMoveBottom: this.canLayerMoveBottom
+    };
   }
 
   private syncLayerActionAvailability(viewModel: DrawingEditorViewModel | null = null): void {

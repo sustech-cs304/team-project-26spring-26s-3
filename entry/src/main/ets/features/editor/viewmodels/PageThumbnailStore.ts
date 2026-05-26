@@ -1,6 +1,10 @@
 import common from '@ohos.app.ability.common';
 
-import { CanvasElement, PageCanvasContent } from '../../../domain/entities/CanvasElement';
+import {
+  CanvasElement,
+  DEFAULT_STROKE_LAYER_Z_INDEX,
+  PageCanvasContent
+} from '../../../domain/entities/CanvasElement';
 import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { Stroke } from '../../../domain/entities/Stroke';
 import { EditorRepositoryImpl } from '../../../data/repositories/EditorRepositoryImpl';
@@ -49,7 +53,7 @@ export class PageThumbnailStore {
       this.replacePageContent(pageId, pageContent.strokes, pageContent.elements, pageContent.strokeLayerZIndex);
       return true;
     } catch (_error) {
-      this.replacePageContent(pageId, [], [], 0);
+      this.replacePageContent(pageId, [], [], DEFAULT_STROKE_LAYER_Z_INDEX);
       return true;
     } finally {
       this.loadingPageIds.delete(pageId);
@@ -97,7 +101,7 @@ export class PageThumbnailStore {
       : (cachedContent === undefined ? [] : cachedContent.elements);
     const strokeLayerZIndex = hasActiveSession
       ? (request.activeSession as DrawingEditorViewModel).getStrokeLayerZIndex()
-      : (cachedContent === undefined ? 0 : cachedContent.strokeLayerZIndex);
+      : (cachedContent === undefined ? DEFAULT_STROKE_LAYER_Z_INDEX : cachedContent.strokeLayerZIndex);
     const activeStroke = hasActiveSession
       ? (request.activeSession as DrawingEditorViewModel).getActiveStrokeForRendering()
       : null;

@@ -1,4 +1,7 @@
-import { CanvasElement } from '../../../domain/entities/CanvasElement';
+import {
+  CanvasElement,
+  DEFAULT_STROKE_LAYER_Z_INDEX
+} from '../../../domain/entities/CanvasElement';
 import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
 import { CanvasDrawContext } from './CanvasDrawContext';
@@ -56,7 +59,7 @@ export function createEmptyPageThumbnailRenderSnapshot(pageId: string = ''): Pag
     isLoading: false,
     strokes: [],
     elements: [],
-    strokeLayerZIndex: 0,
+    strokeLayerZIndex: DEFAULT_STROKE_LAYER_Z_INDEX,
     activeStroke: null
   };
 }

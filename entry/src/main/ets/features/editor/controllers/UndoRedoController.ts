@@ -129,8 +129,7 @@ export class UndoRedoController {
 
   undo(
     currentStrokes: Stroke[],
-    currentElements: CanvasElement[] = [],
-    currentStrokeLayerZIndex: number = 0
+    currentElements: CanvasElement[] = []
   ): UndoRedoApplyResult {
     const operation = this.undoStack.pop();
     if (!operation) {
@@ -147,13 +146,12 @@ export class UndoRedoController {
     }
 
     this.redoStack.push(this.cloneOperation(operation));
-    return this.applyInverse(operation, currentStrokes, currentElements, currentStrokeLayerZIndex);
+    return this.applyInverse(operation, currentStrokes, currentElements);
   }
 
   redo(
     currentStrokes: Stroke[],
-    currentElements: CanvasElement[] = [],
-    currentStrokeLayerZIndex: number = 0
+    currentElements: CanvasElement[] = []
   ): UndoRedoApplyResult {
     const operation = this.redoStack.pop();
     if (!operation) {
@@ -170,7 +168,7 @@ export class UndoRedoController {
     }
 
     this.undoStack.push(this.cloneOperation(operation));
-    return this.applyForward(operation, currentStrokes, currentElements, currentStrokeLayerZIndex);
+    return this.applyForward(operation, currentStrokes, currentElements);
   }
 
   canUndo(): boolean {
@@ -220,8 +218,7 @@ export class UndoRedoController {
   private applyForward(
     operation: EditorOperation,
     currentStrokes: Stroke[],
-    currentElements: CanvasElement[],
-    currentStrokeLayerZIndex: number
+    currentElements: CanvasElement[]
   ): UndoRedoApplyResult {
     switch (operation.type) {
       case 'append_stroke': {
@@ -251,7 +248,7 @@ export class UndoRedoController {
           operation.removedElements,
           operation.addedElements,
           operation.afterSelection,
-          operation.afterStrokeLayerZIndex ?? currentStrokeLayerZIndex
+          operation.afterStrokeLayerZIndex ?? null
         );
       default:
         return {
@@ -270,8 +267,7 @@ export class UndoRedoController {
   private applyInverse(
     operation: EditorOperation,
     currentStrokes: Stroke[],
-    currentElements: CanvasElement[],
-    currentStrokeLayerZIndex: number
+    currentElements: CanvasElement[]
   ): UndoRedoApplyResult {
     switch (operation.type) {
       case 'append_stroke':
@@ -285,7 +281,7 @@ export class UndoRedoController {
           operation.addedElements,
           operation.removedElements,
           operation.beforeSelection,
-          operation.beforeStrokeLayerZIndex ?? currentStrokeLayerZIndex
+          operation.beforeStrokeLayerZIndex ?? null
         );
       default:
         return {

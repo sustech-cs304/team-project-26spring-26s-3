@@ -12,6 +12,8 @@ import { ImageElementView } from './ImageElementView';
 import { ShapeElementView } from './ShapeElementView';
 
 const TEXT_LINE_HEIGHT_FACTOR = 1.35;
+const ELEMENT_LAYER_Z_INDEX_MIN = -1000000000;
+const ELEMENT_LAYER_Z_INDEX_MAX = 1000000000;
 
 @Component
 export struct ElementLayer {
@@ -24,8 +26,8 @@ export struct ElementLayer {
   @Prop editingElementId: string = '';
   @Prop renderContent: boolean = true;
   @Prop renderSelection: boolean = true;
-  @Prop minZIndex: number = -1000000000;
-  @Prop maxZIndex: number = 1000000000;
+  @Prop minZIndex: number = ELEMENT_LAYER_Z_INDEX_MIN;
+  @Prop maxZIndex: number = ELEMENT_LAYER_Z_INDEX_MAX;
   @State private elements: CanvasElement[] = [];
   @State private selectedElementIds: string[] = [];
   @State private imageElementEditDraft: ImageElementEditDraft | null = null;
