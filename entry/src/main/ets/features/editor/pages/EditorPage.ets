@@ -2485,8 +2485,9 @@ struct EditorPage {
       };
     }
 
-    if (this.activePageCanvas !== null) {
-      return this.normalizeCanvasRenderSize(this.activePageCanvas.width, this.activePageCanvas.height);
+    const activeCanvas: NotebookPageCanvas | null = this.getActivePageCanvasForPage(this.activePageId);
+    if (activeCanvas !== null) {
+      return this.normalizeCanvasRenderSize(activeCanvas.width, activeCanvas.height);
     }
 
     return {
@@ -3468,8 +3469,9 @@ struct EditorPage {
   }
 
   private getPageCanvasBackgroundColor(pageId: string): string {
-    if (pageId === this.activePageId) {
-      return this.getActiveCanvasBackgroundColor();
+    const activeCanvas: NotebookPageCanvas | null = this.getActivePageCanvasForPage(pageId);
+    if (activeCanvas !== null) {
+      return activeCanvas.backgroundColor;
     }
 
     const cachedCanvas = this.pageCanvasMetadataMap.get(pageId);
@@ -3486,9 +3488,9 @@ struct EditorPage {
   }
 
   private getPageCanvasBackgroundImageUri(pageId: string): string {
-    if (this.activePageCanvas !== null && this.activePageCanvas.pageId === pageId &&
-      typeof this.activePageCanvas.backgroundImageUri === 'string') {
-      return this.activePageCanvas.backgroundImageUri;
+    const activeCanvas: NotebookPageCanvas | null = this.getActivePageCanvasForPage(pageId);
+    if (activeCanvas !== null && typeof activeCanvas.backgroundImageUri === 'string') {
+      return activeCanvas.backgroundImageUri;
     }
 
     const cachedCanvas = this.pageCanvasMetadataMap.get(pageId);
@@ -3505,8 +3507,9 @@ struct EditorPage {
       return cachedSize.width;
     }
 
-    if (pageId === this.activePageId) {
-      return this.getActiveCanvasWidth();
+    const activeCanvas: NotebookPageCanvas | null = this.getActivePageCanvasForPage(pageId);
+    if (activeCanvas !== null) {
+      return this.normalizeCanvasRenderSize(activeCanvas.width, activeCanvas.height).width;
     }
 
     return NotebookPageCanvasEntity.DEFAULT_WIDTH;
@@ -3518,8 +3521,9 @@ struct EditorPage {
       return cachedSize.height;
     }
 
-    if (pageId === this.activePageId) {
-      return this.getActiveCanvasHeight();
+    const activeCanvas: NotebookPageCanvas | null = this.getActivePageCanvasForPage(pageId);
+    if (activeCanvas !== null) {
+      return this.normalizeCanvasRenderSize(activeCanvas.width, activeCanvas.height).height;
     }
 
     return NotebookPageCanvasEntity.DEFAULT_HEIGHT;
@@ -4291,6 +4295,9 @@ struct EditorPage {
       backgroundColor: currentCanvas === null
         ? NotebookPageCanvasEntity.DEFAULT_BACKGROUND_COLOR
         : currentCanvas.backgroundColor,
+      backgroundImageUri: currentCanvas === null
+        ? ''
+        : NotebookPageCanvasEntity.normalizeBackgroundImageUri(currentCanvas.backgroundImageUri),
       createdAt: currentCanvas === null ? activePage.createdAt : currentCanvas.createdAt,
       updatedAt: currentTime
     };
@@ -4384,6 +4391,7 @@ struct EditorPage {
       width: notebookPageCanvas.width,
       height: notebookPageCanvas.height,
       backgroundColor: notebookPageCanvas.backgroundColor,
+      backgroundImageUri: NotebookPageCanvasEntity.normalizeBackgroundImageUri(notebookPageCanvas.backgroundImageUri),
       createdAt: notebookPageCanvas.createdAt,
       updatedAt: notebookPageCanvas.updatedAt
     };
@@ -4453,27 +4461,11 @@ struct EditorPage {
     return `${visualPage.order + 1}/${this.notebookPageList.length}`;
   }
 
-  private getActiveCanvasBackgroundColor(): string {
-    if (this.activePageCanvas === null) {
-      return '#FFFFFF';
+  private getActivePageCanvasForPage(pageId: string): NotebookPageCanvas | null {
+    if (this.activePageCanvas !== null && this.activePageCanvas.pageId === pageId) {
+      return this.activePageCanvas;
     }
-    return this.activePageCanvas.backgroundColor;
-  }
-
-  private getActiveCanvasWidth(): number {
-    if (this.activePageCanvas === null) {
-      return NotebookPageCanvasEntity.DEFAULT_WIDTH;
-    }
-
-    return this.normalizeCanvasRenderSize(this.activePageCanvas.width, this.activePageCanvas.height).width;
-  }
-
-  private getActiveCanvasHeight(): number {
-    if (this.activePageCanvas === null) {
-      return NotebookPageCanvasEntity.DEFAULT_HEIGHT;
-    }
-
-    return this.normalizeCanvasRenderSize(this.activePageCanvas.width, this.activePageCanvas.height).height;
+    return null;
   }
 
   private normalizeCanvasRenderSize(width: number, height: number): PageCanvasRenderSize {
@@ -4496,10 +4488,11 @@ struct EditorPage {
     if (this.isCanvasLoading) {
       return 'Loading';
     }
-    if (this.activePageCanvas === null) {
+    const activeCanvas: NotebookPageCanvas | null = this.getActivePageCanvasForPage(this.activePageId);
+    if (activeCanvas === null) {
       return 'Unavailable';
     }
-    return `${this.activePageCanvas.width} x ${this.activePageCanvas.height}`;
+    return `${activeCanvas.width} x ${activeCanvas.height}`;
   }
 
   private buildDefaultToolSetting(): ToolSetting {

@@ -1990,7 +1990,8 @@ export struct CanvasBoard {
 
     this.backgroundContext2D.save();
     this.applyPageTransformAndClip(this.backgroundContext2D, transform);
-    const didDrawBackgroundImage: boolean = this.drawPageBackgroundImageOnContext(
+    const backgroundImageUri: string = this.resolvePageBackgroundImageUri();
+    this.drawPageBackgroundImageOnContext(
       this.backgroundContext2D,
       transform.pageWidth,
       transform.pageHeight
@@ -2002,7 +2003,7 @@ export struct CanvasBoard {
       transform.pageHeight,
       this.paperBackgroundColor,
       visibleRegion,
-      this.resolvePageBackgroundImageUri().length === 0 || !didDrawBackgroundImage
+      backgroundImageUri.length === 0
     );
     this.backgroundContext2D.restore();
   }
@@ -3716,6 +3717,7 @@ export struct CanvasBoard {
       `${this.flattenedCommittedStrokeCount}`,
       `${this.templateType}`,
       this.paperBackgroundColor,
+      this.resolvePageBackgroundImageUri(),
       `${Math.round(transform.pageWidth * 100)}`,
       `${Math.round(transform.pageHeight * 100)}`,
       `${Math.round(transform.viewportWidth)}`,
