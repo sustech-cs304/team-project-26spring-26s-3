@@ -1,4 +1,5 @@
 import common from '@ohos.app.ability.common';
+import { PageCanvasContent } from '../../../domain/entities/CanvasElement';
 import { Notebook } from '../../../domain/entities/Notebook';
 import { NotebookFolder } from '../../../domain/entities/NotebookFolder';
 import { NotebookPage } from '../../../domain/entities/NotebookPage';
@@ -12,6 +13,7 @@ import { MoveNotebookToFolder } from '../../../domain/usecases/MoveNotebookToFol
 import { RenameNotebook } from '../../../domain/usecases/RenameNotebook';
 import { SortNotebookList } from '../../../domain/usecases/SortNotebookList';
 import { NotebookRepository, NotebookSortType } from '../../../domain/repositories/NotebookRepository';
+import { EditorRepositoryImpl } from '../../../data/repositories/EditorRepositoryImpl';
 import { NotebookRepositoryImpl } from '../../../data/repositories/NotebookRepositoryImpl';
 
 export class NotebookListViewModel {
@@ -24,11 +26,13 @@ export class NotebookListViewModel {
   private readonly moveNotebookToFolderUseCase: MoveNotebookToFolder;
   private readonly renameNotebookUseCase: RenameNotebook;
   private readonly sortNotebookListUseCase: SortNotebookList;
+  private readonly editorRepository: EditorRepositoryImpl;
   private notebookList: Notebook[] = [];
   private folderList: NotebookFolder[] = [];
 
   constructor(context: common.Context, notebookRepository?: NotebookRepository) {
     this.notebookRepository = notebookRepository ?? new NotebookRepositoryImpl(context);
+    this.editorRepository = new EditorRepositoryImpl(context);
     this.createNotebookUseCase = new CreateNotebook(this.notebookRepository);
     this.createNotebookFolderUseCase = new CreateNotebookFolder(this.notebookRepository);
     this.deleteNotebookUseCase = new DeleteNotebook(this.notebookRepository);
@@ -160,6 +164,28 @@ export class NotebookListViewModel {
     });
   }
 
+  async loadNotebookSearchContent(notebookId: string): Promise<string> {
+    const pageList: NotebookPage[] = await this.notebookRepository.getNotebookPages(notebookId);
+    const contentSegments: string[] = [];
+
+    for (const page of pageList) {
+      try {
+        const pageContent: PageCanvasContent = await this.editorRepository.getPageContent(page.id);
+        for (const element of pageContent.elements) {
+          if (element.type !== 'text') {
+            continue;
+          }
+          this.appendSearchText(contentSegments, element.content);
+          this.appendSearchText(contentSegments, element.recognition?.rawText);
+          this.appendSearchText(contentSegments, element.recognition?.latex);
+        }
+      } catch (_error) {
+      }
+    }
+
+    return contentSegments.join(' ');
+  }
+
   async restoreNotebook(notebookId: string): Promise<boolean> {
     const hasRestored: boolean = await this.notebookRepository.restoreNotebook(notebookId);
     this.notebookList = await this.getNotebookListUseCase.execute();
@@ -206,6 +232,17 @@ export class NotebookListViewModel {
       });
     }
     return clonedNotebookList;
+  }
+
+  private appendSearchText(contentSegments: string[], value?: string): void {
+    if (typeof value !== 'string') {
+      return;
+    }
+
+    const text: string = value.trim();
+    if (text.length > 0) {
+      contentSegments.push(text);
+    }
   }
 
   private cloneFolderList(folderList: NotebookFolder[]): NotebookFolder[] {

@@ -405,8 +405,7 @@ struct EditorPage {
           .backgroundColor($r('app.color.surface_background'))
           .fontColor($r('app.color.primary_text'))
           .onClick(() => {
-            this.closeTransientDropdowns();
-            AppRouter.back();
+            void this.returnToPreviousPage();
           })
 
         Blank()
@@ -2053,6 +2052,13 @@ struct EditorPage {
 
     this.lastSyncedNotebookEditedPageId = pageId;
     void this.ensureViewModel().updateNotebookLastEditedPage(this.notebookId, pageId);
+  }
+
+  private async returnToPreviousPage(): Promise<void> {
+    this.closeTransientDropdowns();
+    this.syncNotebookLastEditedPage(this.activePageId);
+    await this.flushActiveDrawingSession();
+    AppRouter.back();
   }
 
   private async createNotebookPage(): Promise<void> {

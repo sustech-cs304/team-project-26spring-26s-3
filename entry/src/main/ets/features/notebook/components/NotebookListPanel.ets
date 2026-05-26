@@ -35,12 +35,6 @@ enum SidebarSection {
   RECYCLE = 'recycle'
 }
 
-enum AllNotesFilter {
-  ALL = 'all',
-  NOTEBOOK = 'notebook',
-  FOLDER = 'folder'
-}
-
 enum AllNotesTimeRange {
   ALL = 'all',
   TODAY = 'today',
@@ -52,6 +46,27 @@ enum AllNotesSortFilterType {
   TAG = 'tag',
   CREATED_AT = 'created_at',
   UPDATED_AT = 'updated_at'
+}
+
+enum TagChipDisplayMode {
+  COMPACT = 'compact',
+  ROOMY = 'roomy'
+}
+
+enum TagDialogMode {
+  MENU = 'menu',
+  ADD = 'add',
+  EDIT_PICK = 'edit_pick',
+  EDIT_FORM = 'edit_form',
+  DELETE_PICK = 'delete_pick',
+  CONFIRM = 'confirm'
+}
+
+enum PendingTagOperation {
+  NONE = 'none',
+  ADD = 'add',
+  EDIT = 'edit',
+  DELETE = 'delete'
 }
 
 class ActionMenuAnchor {
@@ -75,11 +90,17 @@ class MenuPosition {
   y: Length = 0;
 }
 
+class WorkspaceToolMenuAnchor {
+  left: number = 0;
+  top: number = 0;
+  width: number = 0;
+  height: number = 0;
+}
+
 @Component
 export struct NotebookListPanel {
-  @Prop @Watch('onCreateNotebookSignalChanged') createNotebookSignal: number = 0;
-  @Prop @Watch('onRefreshNotebookSignalChanged') refreshNotebookSignal: number = 0;
-  @Prop @Watch('onTopSortTypeChanged') topSortType: NotebookSortType = NotebookSortType.UPDATED_DESC;
+  @Prop @Watch('onReloadNotebookSignalChanged') reloadNotebookSignal: number = 0;
+  @Prop @Watch('onSearchTextChanged') searchText: string = '';
   @Prop isSidebarCollapsed: boolean = false;
   private readonly actionMenuWidth: number = 236;
   private readonly actionMenuHeight: number = 300;
@@ -87,6 +108,9 @@ export struct NotebookListPanel {
   private readonly folderActionMenuWidth: number = 188;
   private readonly folderActionMenuHeight: number = 154;
   private readonly folderActionMenuGap: number = 8;
+  private readonly sortMenuWidth: number = 130;
+  private readonly sortMenuHeight: number = 114;
+  private readonly workspaceToolButtonSize: number = 36;
   private readonly defaultWorkspaceWidth: number = 960;
   private readonly defaultPanelWidth: number = 1200;
   private readonly defaultPanelHeight: number = 800;
@@ -100,6 +124,13 @@ export struct NotebookListPanel {
   private readonly oneWeekMs: number = 7 * 24 * 60 * 60 * 1000;
   private readonly oneMonthMs: number = 30 * 24 * 60 * 60 * 1000;
   private readonly oneYearMs: number = 365 * 24 * 60 * 60 * 1000;
+  private readonly maxNotebookTagCount: number = 4;
+  private readonly compactTagChineseLimit: number = 2;
+  private readonly compactTagAsciiLimit: number = 4;
+  private readonly roomyTagChineseLimit: number = 4;
+  private readonly roomyTagAsciiLimit: number = 8;
+  private readonly recentNotebookCardHeight: number = 304;
+  private readonly recentCoverSlotMaxSize: number = 192;
 
   @State private notebookList: Notebook[] = [];
   @State private notebookListRenderVersion: number = 0;
@@ -112,7 +143,9 @@ export struct NotebookListPanel {
   @State private selectedFolderInSidebar: string = '';
   @State private activeActionMenuNotebookId: string = '';
   @State private activeFolderActionMenuFolderId: string = '';
-  @State private allNotesFilter: AllNotesFilter = AllNotesFilter.ALL;
+  @State private useLargeNotebookCards: boolean = true;
+  @State private isTopSortDropdownVisible: boolean = false;
+  @State private topSortMenuAnchor: WorkspaceToolMenuAnchor = new WorkspaceToolMenuAnchor();
   @State private allNotesSortFilterType: AllNotesSortFilterType = AllNotesSortFilterType.UPDATED_AT;
   @State private allNotesCreatedTimeRange: AllNotesTimeRange = AllNotesTimeRange.ALL;
   @State private allNotesUpdatedTimeRange: AllNotesTimeRange = AllNotesTimeRange.ALL;
@@ -127,6 +160,8 @@ export struct NotebookListPanel {
   @State private workspaceScrollOffsetY: number = 0;
   @State private actionMenuAnchors: ActionMenuAnchor[] = [];
   @State private folderActionMenuAnchors: FolderActionMenuAnchor[] = [];
+  @State private isCreateActionMenuVisible: boolean = false;
+  @State private createActionMenuAnchor: ActionMenuAnchor = new ActionMenuAnchor();
 
   @State private isInputDialogVisible: boolean = false;
   @State private isRenameMode: boolean = false;
@@ -177,9 +212,15 @@ export struct NotebookListPanel {
 
   @State private isTagDialogVisible: boolean = false;
   @State private isUpdatingTags: boolean = false;
-  @State private tagDraftText: string = '';
   @State private tagTargetNotebookId: string = '';
   @State private tagTargetNotebookTitle: string = '';
+  @State private tagDialogMode: TagDialogMode = TagDialogMode.MENU;
+  @State private tagDraftText: string = '';
+  @State private tagSelectedText: string = '';
+  @State private tagDialogMessage: string = '';
+  @State private pendingTagOperation: PendingTagOperation = PendingTagOperation.NONE;
+  @State private pendingTagOldText: string = '';
+  @State private pendingTagNewText: string = '';
 
   @State private isExportDialogVisible: boolean = false;
   @State private isPickingExportPath: boolean = false;
@@ -199,9 +240,14 @@ export struct NotebookListPanel {
   private pageThumbnailStore?: PageThumbnailStore;
   private hasLoadedInitialNotebookList: boolean = false;
   @State private notebookCoverRenderTick: number = 0;
+  @State private searchContentRenderVersion: number = 0;
+  @State private isSearchContentLoading: boolean = false;
   private readonly notebookCoverPageMap: Map<string, NotebookPage> = new Map<string, NotebookPage>();
   private readonly notebookCoverCanvasMap: Map<string, NotebookPageCanvas> = new Map<string, NotebookPageCanvas>();
   private readonly notebookCoverLoadingIds: Set<string> = new Set<string>();
+  private readonly notebookSearchContentMap: Map<string, string> = new Map<string, string>();
+  private readonly notebookSearchContentUpdatedAtMap: Map<string, number> = new Map<string, number>();
+  private readonly notebookSearchContentLoadingIds: Set<string> = new Set<string>();
 
   aboutToAppear(): void {
     if (!this.hasLoadedInitialNotebookList) {
@@ -212,26 +258,25 @@ export struct NotebookListPanel {
     void this.refreshNotebookCollection();
   }
 
-  private onCreateNotebookSignalChanged(): void {
-    this.openCreateDialog();
-  }
-
-  private onRefreshNotebookSignalChanged(): void {
+  private onReloadNotebookSignalChanged(): void {
     if (!this.hasLoadedInitialNotebookList || this.isLoading) {
       return;
     }
-    void this.importNotebookFromTopbar();
+
+    void this.refreshNotebookCollection();
   }
 
-  private onTopSortTypeChanged(): void {
-    if (!this.hasLoadedInitialNotebookList || this.isLoading) {
+  private onSearchTextChanged(): void {
+    if (!this.hasSearchQuery()) {
+      this.isSearchContentLoading = false;
       return;
     }
-    this.selectSection(SidebarSection.ALL);
-    if (this.currentSortType === this.topSortType) {
-      return;
-    }
-    void this.applyCurrentSortType(this.topSortType);
+
+    this.closeActionMenu();
+    this.closeFolderActionMenu();
+    this.closeCreateActionMenu();
+    this.closeTopSortDropdown();
+    void this.ensureSearchContentForActiveNotebooks();
   }
 
   private ensureViewModel(): NotebookListViewModel {
@@ -288,12 +333,7 @@ export struct NotebookListPanel {
       const viewModel: NotebookListViewModel = this.ensureViewModel();
       this.currentSortType = await viewModel.loadSortType();
       this.applyFolderList(await viewModel.loadFolderList());
-      if (this.currentSortType === this.topSortType) {
-        this.applyNotebookList(await viewModel.loadNotebookList());
-      } else {
-        this.currentSortType = this.topSortType;
-        this.applyNotebookList(await viewModel.changeSortType(this.topSortType));
-      }
+      this.applyNotebookList(await viewModel.loadNotebookList());
     } catch (_error) {
       this.applyFolderList([]);
       this.applyNotebookList([]);
@@ -307,8 +347,12 @@ export struct NotebookListPanel {
   private applyNotebookList(notebookList: Notebook[]): void {
     this.notebookList = notebookList;
     this.notebookListRenderVersion += 1;
+    this.retainNotebookSearchContentCache(notebookList);
     this.retainNotebookCoverCache(notebookList);
     this.preloadNotebookCoverSnapshots(notebookList);
+    if (this.hasSearchQuery()) {
+      void this.ensureSearchContentForActiveNotebooks();
+    }
   }
 
   private applyFolderList(folderList: NotebookFolder[]): void {
@@ -426,6 +470,12 @@ export struct NotebookListPanel {
     this.isTagDialogVisible = false;
     this.isUpdatingTags = false;
     this.tagDraftText = '';
+    this.tagSelectedText = '';
+    this.tagDialogMode = TagDialogMode.MENU;
+    this.tagDialogMessage = '';
+    this.pendingTagOperation = PendingTagOperation.NONE;
+    this.pendingTagOldText = '';
+    this.pendingTagNewText = '';
     this.tagTargetNotebookId = '';
     this.tagTargetNotebookTitle = '';
   }
@@ -453,6 +503,8 @@ export struct NotebookListPanel {
   private closePassiveDialogs(): void {
     this.closeActionMenu();
     this.closeFolderActionMenu();
+    this.closeCreateActionMenu();
+    this.closeTopSortDropdown();
 
     if (!this.isDeletingNotebook) {
       this.dismissDeleteDialog();
@@ -760,7 +812,13 @@ export struct NotebookListPanel {
     this.dismissMoveDialog();
     this.tagTargetNotebookId = notebook.id;
     this.tagTargetNotebookTitle = notebook.title;
-    this.tagDraftText = this.tagsToDraftText(notebook.tags);
+    this.tagDialogMode = TagDialogMode.MENU;
+    this.tagDraftText = '';
+    this.tagSelectedText = '';
+    this.tagDialogMessage = '';
+    this.pendingTagOperation = PendingTagOperation.NONE;
+    this.pendingTagOldText = '';
+    this.pendingTagNewText = '';
     this.isTagDialogVisible = true;
   }
 
@@ -773,14 +831,24 @@ export struct NotebookListPanel {
   }
 
   private async confirmTagDialog(): Promise<void> {
-    if (this.isUpdatingTags || this.tagTargetNotebookId.length === 0) {
+    if (this.isUpdatingTags || this.tagTargetNotebookId.length === 0 ||
+      this.pendingTagOperation === PendingTagOperation.NONE) {
       return;
+    }
+
+    const currentTags: string[] = this.getTagTargetNotebookTags();
+    let nextTags: string[] = currentTags;
+    if (this.pendingTagOperation === PendingTagOperation.ADD) {
+      nextTags = currentTags.concat([this.pendingTagNewText]);
+    } else if (this.pendingTagOperation === PendingTagOperation.EDIT) {
+      nextTags = this.buildEditedTagList(currentTags, this.pendingTagOldText, this.pendingTagNewText);
+    } else if (this.pendingTagOperation === PendingTagOperation.DELETE) {
+      nextTags = this.buildDeletedTagList(currentTags, this.pendingTagOldText);
     }
 
     this.isUpdatingTags = true;
     try {
-      const tags: string[] = this.parseTagDraft(this.tagDraftText);
-      await this.ensureViewModel().updateNotebookTags(this.tagTargetNotebookId, tags);
+      await this.ensureViewModel().updateNotebookTags(this.tagTargetNotebookId, nextTags);
       await this.refreshNotebookCollection();
       this.dismissTagDialog();
     } catch (_error) {
@@ -906,12 +974,12 @@ export struct NotebookListPanel {
     this.draftExportPath = '';
   }
 
-  private tagsToDraftText(rawTags?: string[]): string {
-    if (!Array.isArray(rawTags) || rawTags.length === 0) {
-      return '';
+  private normalizeTagList(rawTags?: string[]): string[] {
+    const tags: string[] = [];
+    if (!Array.isArray(rawTags)) {
+      return tags;
     }
 
-    const tags: string[] = [];
     for (const rawTag of rawTags) {
       if (typeof rawTag !== 'string') {
         continue;
@@ -923,23 +991,482 @@ export struct NotebookListPanel {
       tags.push(normalizedTag);
     }
 
-    return tags.join(', ');
-  }
-
-  private parseTagDraft(rawDraft: string): string[] {
-    const parts: string[] = rawDraft.split(',');
-    const tags: string[] = [];
-    for (const part of parts) {
-      const normalizedTag: string = part.trim();
-      if (normalizedTag.length === 0 || tags.includes(normalizedTag)) {
-        continue;
-      }
-      tags.push(normalizedTag);
-    }
     return tags;
   }
 
+  private getNotebookDisplayTags(notebook: Notebook, limit: number = this.maxNotebookTagCount): string[] {
+    const tags: string[] = this.normalizeTagList(notebook.tags);
+    return tags.slice(0, Math.max(0, limit));
+  }
+
+  private getTagTargetNotebook(): Notebook | undefined {
+    return this.getNotebookById(this.tagTargetNotebookId);
+  }
+
+  private getTagTargetNotebookTags(): string[] {
+    const notebook: Notebook | undefined = this.getTagTargetNotebook();
+    return notebook === undefined ? [] : this.normalizeTagList(notebook.tags);
+  }
+
+  private normalizeSingleTag(rawTag: string): string {
+    return rawTag.trim();
+  }
+
+  private containsTagSeparator(tag: string): boolean {
+    return tag.includes(',') || tag.includes('，');
+  }
+
+  private isAsciiText(value: string): boolean {
+    for (let index: number = 0; index < value.length; index += 1) {
+      if (value.charCodeAt(index) > 127) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private getTagChipContentLimit(tag: string, mode: TagChipDisplayMode): number {
+    if (mode === TagChipDisplayMode.ROOMY) {
+      return this.isAsciiText(tag) ? this.roomyTagAsciiLimit : this.roomyTagChineseLimit;
+    }
+    return this.isAsciiText(tag) ? this.compactTagAsciiLimit : this.compactTagChineseLimit;
+  }
+
+  private formatTagChipText(tag: string, mode: TagChipDisplayMode = TagChipDisplayMode.COMPACT): string {
+    const normalizedTag: string = tag.trim();
+    const limit: number = this.getTagChipContentLimit(normalizedTag, mode);
+    if (normalizedTag.length <= limit) {
+      return normalizedTag;
+    }
+    return `${normalizedTag.slice(0, limit)}…`;
+  }
+
+  private buildEditedTagList(tags: string[], oldTag: string, newTag: string): string[] {
+    const result: string[] = [];
+    for (const tag of tags) {
+      const nextTag: string = tag === oldTag ? newTag : tag;
+      if (nextTag.length > 0 && !result.includes(nextTag)) {
+        result.push(nextTag);
+      }
+    }
+    return result;
+  }
+
+  private buildDeletedTagList(tags: string[], deletedTag: string): string[] {
+    const result: string[] = [];
+    for (const tag of tags) {
+      if (tag !== deletedTag && !result.includes(tag)) {
+        result.push(tag);
+      }
+    }
+    return result;
+  }
+
+  private showTagMenu(): void {
+    this.tagDialogMode = TagDialogMode.MENU;
+    this.tagDraftText = '';
+    this.tagSelectedText = '';
+    this.tagDialogMessage = '';
+    this.pendingTagOperation = PendingTagOperation.NONE;
+    this.pendingTagOldText = '';
+    this.pendingTagNewText = '';
+  }
+
+  private startAddTag(): void {
+    const currentTags: string[] = this.getTagTargetNotebookTags();
+    if (currentTags.length >= this.maxNotebookTagCount) {
+      this.tagDialogMessage = `最多只能添加 ${this.maxNotebookTagCount} 个标签，请先编辑或删除已有标签。`;
+      return;
+    }
+
+    this.tagDraftText = '';
+    this.tagSelectedText = '';
+    this.tagDialogMessage = '';
+    this.pendingTagOperation = PendingTagOperation.NONE;
+    this.tagDialogMode = TagDialogMode.ADD;
+  }
+
+  private startEditTagPick(): void {
+    const currentTags: string[] = this.getTagTargetNotebookTags();
+    if (currentTags.length === 0) {
+      this.tagDialogMessage = '当前笔记本还没有标签可编辑。';
+      return;
+    }
+
+    this.tagDraftText = '';
+    this.tagSelectedText = '';
+    this.tagDialogMessage = '';
+    this.pendingTagOperation = PendingTagOperation.NONE;
+    this.tagDialogMode = TagDialogMode.EDIT_PICK;
+  }
+
+  private startDeleteTagPick(): void {
+    const currentTags: string[] = this.getTagTargetNotebookTags();
+    if (currentTags.length === 0) {
+      this.tagDialogMessage = '当前笔记本还没有标签可删除。';
+      return;
+    }
+
+    this.tagDraftText = '';
+    this.tagSelectedText = '';
+    this.tagDialogMessage = '';
+    this.pendingTagOperation = PendingTagOperation.NONE;
+    this.tagDialogMode = TagDialogMode.DELETE_PICK;
+  }
+
+  private selectTagForEdit(tag: string): void {
+    this.tagSelectedText = tag;
+    this.tagDraftText = tag;
+    this.tagDialogMessage = '';
+    this.tagDialogMode = TagDialogMode.EDIT_FORM;
+  }
+
+  private selectTagForDelete(tag: string): void {
+    this.tagSelectedText = tag;
+    this.tagDialogMessage = '';
+    this.pendingTagOperation = PendingTagOperation.DELETE;
+    this.pendingTagOldText = tag;
+    this.pendingTagNewText = '';
+    this.tagDialogMode = TagDialogMode.CONFIRM;
+  }
+
+  private prepareAddTagConfirm(): void {
+    const newTag: string = this.normalizeSingleTag(this.tagDraftText);
+    const currentTags: string[] = this.getTagTargetNotebookTags();
+    if (currentTags.length >= this.maxNotebookTagCount) {
+      this.tagDialogMessage = `最多只能添加 ${this.maxNotebookTagCount} 个标签，请先编辑或删除已有标签。`;
+      return;
+    }
+    if (newTag.length === 0) {
+      this.tagDialogMessage = '请输入标签名称。';
+      return;
+    }
+    if (this.containsTagSeparator(newTag)) {
+      this.tagDialogMessage = '一次只能新增一个标签，请不要用逗号分隔。';
+      return;
+    }
+    if (currentTags.includes(newTag)) {
+      this.tagDialogMessage = '这个标签已经存在。';
+      return;
+    }
+
+    this.tagDialogMessage = '';
+    this.pendingTagOperation = PendingTagOperation.ADD;
+    this.pendingTagOldText = '';
+    this.pendingTagNewText = newTag;
+    this.tagDialogMode = TagDialogMode.CONFIRM;
+  }
+
+  private prepareEditTagConfirm(): void {
+    const oldTag: string = this.tagSelectedText;
+    const newTag: string = this.normalizeSingleTag(this.tagDraftText);
+    const currentTags: string[] = this.getTagTargetNotebookTags();
+    if (oldTag.length === 0 || !currentTags.includes(oldTag)) {
+      this.tagDialogMessage = '请选择要编辑的标签。';
+      return;
+    }
+    if (newTag.length === 0) {
+      this.tagDialogMessage = '请输入新的标签名称。';
+      return;
+    }
+    if (this.containsTagSeparator(newTag)) {
+      this.tagDialogMessage = '一次只能编辑一个标签，请不要用逗号分隔。';
+      return;
+    }
+    if (newTag !== oldTag && currentTags.includes(newTag)) {
+      this.tagDialogMessage = '这个标签已经存在。';
+      return;
+    }
+
+    this.tagDialogMessage = '';
+    this.pendingTagOperation = PendingTagOperation.EDIT;
+    this.pendingTagOldText = oldTag;
+    this.pendingTagNewText = newTag;
+    this.tagDialogMode = TagDialogMode.CONFIRM;
+  }
+
+  private getPendingTagConfirmTitle(): string {
+    if (this.pendingTagOperation === PendingTagOperation.ADD) {
+      return '确认新增标签？';
+    }
+    if (this.pendingTagOperation === PendingTagOperation.EDIT) {
+      return '确认编辑标签？';
+    }
+    if (this.pendingTagOperation === PendingTagOperation.DELETE) {
+      return '确认删除标签？';
+    }
+    return '确认操作？';
+  }
+
+  private getPendingTagConfirmDescription(): string {
+    if (this.pendingTagOperation === PendingTagOperation.ADD) {
+      return `将新增标签“${this.pendingTagNewText}”。`;
+    }
+    if (this.pendingTagOperation === PendingTagOperation.EDIT) {
+      return `将“${this.pendingTagOldText}”改为“${this.pendingTagNewText}”。`;
+    }
+    if (this.pendingTagOperation === PendingTagOperation.DELETE) {
+      return `将删除标签“${this.pendingTagOldText}”。`;
+    }
+    return '';
+  }
+
+  private getPendingTagConfirmButtonText(): string {
+    if (this.pendingTagOperation === PendingTagOperation.DELETE) {
+      return this.isUpdatingTags ? '删除中...' : '确认删除';
+    }
+    return this.isUpdatingTags ? '保存中...' : '确认';
+  }
+
+  private getPendingTagConfirmButtonColor(): ResourceColor {
+    return this.pendingTagOperation === PendingTagOperation.DELETE ? $r('app.color.danger_text') :
+      $r('app.color.primary_text');
+  }
+
+  private returnFromTagConfirm(): void {
+    if (this.pendingTagOperation === PendingTagOperation.ADD) {
+      this.tagDialogMode = TagDialogMode.ADD;
+    } else if (this.pendingTagOperation === PendingTagOperation.EDIT) {
+      this.tagDialogMode = TagDialogMode.EDIT_FORM;
+    } else if (this.pendingTagOperation === PendingTagOperation.DELETE) {
+      this.tagDialogMode = TagDialogMode.DELETE_PICK;
+    } else {
+      this.tagDialogMode = TagDialogMode.MENU;
+    }
+
+    this.pendingTagOperation = PendingTagOperation.NONE;
+    this.pendingTagOldText = '';
+    this.pendingTagNewText = '';
+    this.tagDialogMessage = '';
+  }
+
+  @Builder
+  private buildTagDialogMessage(): void {
+    if (this.tagDialogMessage.length > 0) {
+      Text(this.tagDialogMessage)
+        .width('100%')
+        .fontSize($r('app.float.caption_text_size'))
+        .fontColor($r('app.color.danger_text'))
+    }
+  }
+
+  @Builder
+  private buildTagDialogCurrentTags(): void {
+    Column({ space: 8 }) {
+      Text('当前标签')
+        .fontSize($r('app.float.caption_text_size'))
+        .fontColor($r('app.color.secondary_text'))
+
+      if (this.getTagTargetNotebookTags().length > 0) {
+        Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start, alignItems: ItemAlign.Start }) {
+          ForEach(this.getTagTargetNotebookTags(), (tag: string) => {
+            Text(tag)
+              .fontSize(12)
+              .fontColor('#556080')
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .padding({ left: 9, right: 9, top: 4, bottom: 4 })
+              .margin({ right: 6, bottom: 6 })
+              .backgroundColor('#EEF2FF')
+              .borderRadius(8)
+          }, (tag: string): string => `tag-current-${tag}`)
+        }
+        .width('100%')
+      } else {
+        Text('还没有标签')
+          .fontSize($r('app.float.caption_text_size'))
+          .fontColor($r('app.color.secondary_text'))
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private buildTagPickList(isDeleteMode: boolean): void {
+    Column({ space: 10 }) {
+      Text(isDeleteMode ? '选择要删除的标签' : '选择要编辑的标签')
+        .fontSize($r('app.float.body_text_size'))
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.primary_text'))
+
+      ForEach(this.getTagTargetNotebookTags(), (tag: string) => {
+        Button(tag)
+          .width('100%')
+          .height(40)
+          .backgroundColor(isDeleteMode ? $r('app.color.danger_surface') : '#F4F6FB')
+          .fontColor(isDeleteMode ? $r('app.color.danger_text') : $r('app.color.primary_text'))
+          .borderRadius(10)
+          .onClick(() => {
+            if (isDeleteMode) {
+              this.selectTagForDelete(tag);
+            } else {
+              this.selectTagForEdit(tag);
+            }
+          })
+      }, (tag: string): string => `tag-pick-${isDeleteMode ? 'delete' : 'edit'}-${tag}`)
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private buildTagDialogFooter(primaryText: string, primaryAction: () => void, backAction?: () => void,
+    primaryColor?: ResourceColor): void {
+    Row({ space: 12 }) {
+      Button(backAction === undefined ? '取消' : '返回')
+        .layoutWeight(1)
+        .height($r('app.float.button_height'))
+        .backgroundColor($r('app.color.app_background'))
+        .fontColor($r('app.color.primary_text'))
+        .enabled(!this.isUpdatingTags)
+        .onClick(() => {
+          const handler = backAction;
+          if (handler === undefined) {
+            this.closeTagDialog();
+          } else {
+            handler();
+          }
+        })
+
+      Button(primaryText)
+        .layoutWeight(1)
+        .height($r('app.float.button_height'))
+        .backgroundColor(primaryColor === undefined ? $r('app.color.primary_text') : primaryColor)
+        .fontColor($r('app.color.inverse_text'))
+        .enabled(!this.isUpdatingTags)
+        .onClick(() => {
+          primaryAction();
+        })
+    }
+    .width('100%')
+  }
+
+  @Builder
+  private buildTagDialogBody(): void {
+    if (this.tagDialogMode === TagDialogMode.MENU) {
+      this.buildTagDialogCurrentTags()
+
+      Row({ space: 10 }) {
+        Button('新增标签')
+          .layoutWeight(1)
+          .height($r('app.float.button_height'))
+          .backgroundColor('#EEF2FF')
+          .fontColor('#2E6BFF')
+          .onClick(() => {
+            this.startAddTag();
+          })
+
+        Button('编辑标签')
+          .layoutWeight(1)
+          .height($r('app.float.button_height'))
+          .backgroundColor('#F4F6FB')
+          .fontColor($r('app.color.primary_text'))
+          .onClick(() => {
+            this.startEditTagPick();
+          })
+
+        Button('删除标签')
+          .layoutWeight(1)
+          .height($r('app.float.button_height'))
+          .backgroundColor($r('app.color.danger_surface'))
+          .fontColor($r('app.color.danger_text'))
+          .onClick(() => {
+            this.startDeleteTagPick();
+          })
+      }
+      .width('100%')
+
+      this.buildTagDialogMessage()
+
+      Button('关闭')
+        .width('100%')
+        .height($r('app.float.button_height'))
+        .backgroundColor($r('app.color.app_background'))
+        .fontColor($r('app.color.primary_text'))
+        .onClick(() => {
+          this.closeTagDialog();
+        })
+    } else if (this.tagDialogMode === TagDialogMode.ADD) {
+      TextInput({ text: this.tagDraftText, placeholder: '输入一个新标签' })
+        .width('100%')
+        .onChange((value: string) => {
+          this.tagDraftText = value;
+        })
+
+      this.buildTagDialogMessage()
+
+      this.buildTagDialogFooter('下一步', (): void => {
+        this.prepareAddTagConfirm();
+      }, (): void => {
+        this.showTagMenu();
+      })
+    } else if (this.tagDialogMode === TagDialogMode.EDIT_PICK) {
+      this.buildTagPickList(false)
+      this.buildTagDialogMessage()
+
+      Button('返回')
+        .width('100%')
+        .height($r('app.float.button_height'))
+        .backgroundColor($r('app.color.app_background'))
+        .fontColor($r('app.color.primary_text'))
+        .onClick(() => {
+          this.showTagMenu();
+        })
+    } else if (this.tagDialogMode === TagDialogMode.EDIT_FORM) {
+      Text(`正在编辑：${this.tagSelectedText}`)
+        .fontSize($r('app.float.caption_text_size'))
+        .fontColor($r('app.color.secondary_text'))
+
+      TextInput({ text: this.tagDraftText, placeholder: '输入新的标签名称' })
+        .width('100%')
+        .onChange((value: string) => {
+          this.tagDraftText = value;
+        })
+
+      this.buildTagDialogMessage()
+
+      this.buildTagDialogFooter('下一步', (): void => {
+        this.prepareEditTagConfirm();
+      }, (): void => {
+        this.startEditTagPick();
+      })
+    } else if (this.tagDialogMode === TagDialogMode.DELETE_PICK) {
+      this.buildTagPickList(true)
+      this.buildTagDialogMessage()
+
+      Button('返回')
+        .width('100%')
+        .height($r('app.float.button_height'))
+        .backgroundColor($r('app.color.app_background'))
+        .fontColor($r('app.color.primary_text'))
+        .onClick(() => {
+          this.showTagMenu();
+        })
+    } else if (this.tagDialogMode === TagDialogMode.CONFIRM) {
+      Column({ space: 8 }) {
+        Text(this.getPendingTagConfirmTitle())
+          .fontSize($r('app.float.body_text_size'))
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.primary_text'))
+
+        Text(this.getPendingTagConfirmDescription())
+          .fontSize($r('app.float.caption_text_size'))
+          .fontColor($r('app.color.secondary_text'))
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+
+      this.buildTagDialogFooter(this.getPendingTagConfirmButtonText(), (): void => {
+        this.confirmTagDialog();
+      }, (): void => {
+        this.returnFromTagConfirm();
+      }, this.getPendingTagConfirmButtonColor())
+    }
+  }
+
   private onSortTypeSelected(sortType: NotebookSortType): void {
+    this.closeTopSortDropdown();
     if (this.currentSortType === sortType || this.isLoading) {
       return;
     }
@@ -1084,6 +1611,10 @@ export struct NotebookListPanel {
     this.closeActionMenu();
     const notebook: Notebook | undefined = this.getNotebookById(notebookId);
     const lastEditedPageId: string = notebook === undefined ? '' : this.getNotebookLastEditedPageId(notebook);
+    const openedAt: number = Date.now();
+    if (notebook !== undefined) {
+      this.applyNotebookList(this.buildNotebookListWithTouchedLastOpened(notebookId, openedAt));
+    }
 
     try {
       await this.ensureViewModel().touchNotebookLastOpened(notebookId);
@@ -1098,6 +1629,33 @@ export struct NotebookListPanel {
       params.pageId = lastEditedPageId;
     }
     AppRouter.openEditor(params);
+  }
+
+  private buildNotebookListWithTouchedLastOpened(notebookId: string, openedAt: number): Notebook[] {
+    const nextNotebookList: Notebook[] = [];
+    for (const item of this.notebookList) {
+      if (item.id === notebookId) {
+        nextNotebookList.push({
+          id: item.id,
+          title: item.title,
+          folderId: item.folderId,
+          createdAt: item.createdAt,
+          updatedAt: openedAt,
+          coverColor: item.coverColor,
+          coverImageUri: item.coverImageUri,
+          pageCount: item.pageCount,
+          isFavorite: item.isFavorite === true,
+          tags: Array.isArray(item.tags) ? item.tags.slice() : [],
+          isDeleted: item.isDeleted === true,
+          deletedAt: typeof item.deletedAt === 'number' ? item.deletedAt : 0,
+          lastOpenedAt: openedAt,
+          lastEditedPageId: this.getNotebookLastEditedPageId(item)
+        });
+      } else {
+        nextNotebookList.push(item);
+      }
+    }
+    return nextNotebookList;
   }
 
   private formatTimestamp(timestamp: number): string {
@@ -1167,6 +1725,29 @@ export struct NotebookListPanel {
     return activeNotebookList;
   }
 
+  private compareNotebookByCurrentSort(left: Notebook, right: Notebook): number {
+    if (this.currentSortType === NotebookSortType.CREATED_DESC) {
+      const createdDiff: number = right.createdAt - left.createdAt;
+      return createdDiff !== 0 ? createdDiff : left.title.localeCompare(right.title);
+    }
+
+    if (this.currentSortType === NotebookSortType.TITLE_ASC) {
+      const titleDiff: number = left.title.localeCompare(right.title);
+      return titleDiff !== 0 ? titleDiff : right.updatedAt - left.updatedAt;
+    }
+
+    const updatedDiff: number = right.updatedAt - left.updatedAt;
+    return updatedDiff !== 0 ? updatedDiff : left.title.localeCompare(right.title);
+  }
+
+  private sortNotebookListByCurrentSort(notebookList: Notebook[]): Notebook[] {
+    const sortedNotebookList: Notebook[] = notebookList.slice();
+    sortedNotebookList.sort((left: Notebook, right: Notebook): number => {
+      return this.compareNotebookByCurrentSort(left, right);
+    });
+    return sortedNotebookList;
+  }
+
   private getDeletedNotebookList(): Notebook[] {
     const deletedNotebookList: Notebook[] = [];
     for (const notebook of this.notebookList) {
@@ -1189,15 +1770,18 @@ export struct NotebookListPanel {
         favoriteNotebookList.push(notebook);
       }
     }
-    return favoriteNotebookList;
+    return this.sortNotebookListByCurrentSort(favoriteNotebookList);
   }
 
-  private getRecentOpenedNotebookList(): Notebook[] {
+  private getRecentOpenedNotebookList(shouldApplyCurrentSort: boolean = false): Notebook[] {
     const recentNotebookList: Notebook[] = [];
     for (const notebook of this.getActiveNotebookList()) {
       if (typeof notebook.lastOpenedAt === 'number' && notebook.lastOpenedAt > 0) {
         recentNotebookList.push(notebook);
       }
+    }
+    if (shouldApplyCurrentSort) {
+      return this.sortNotebookListByCurrentSort(recentNotebookList);
     }
     recentNotebookList.sort((left: Notebook, right: Notebook): number => {
       const leftLastOpenedAt: number = typeof left.lastOpenedAt === 'number' ? left.lastOpenedAt : 0;
@@ -1232,7 +1816,7 @@ export struct NotebookListPanel {
         tagNotebookList.push(notebook);
       }
     }
-    return tagNotebookList;
+    return this.sortNotebookListByCurrentSort(tagNotebookList);
   }
 
   private getFolderNotebookList(folderId: string): Notebook[] {
@@ -1243,7 +1827,7 @@ export struct NotebookListPanel {
       }
     }
 
-    return folderNotebookList;
+    return this.sortNotebookListByCurrentSort(folderNotebookList);
   }
 
   private getUngroupedNotebookList(): Notebook[] {
@@ -1254,7 +1838,197 @@ export struct NotebookListPanel {
       }
     }
 
-    return ungroupedNotebookList;
+    return this.sortNotebookListByCurrentSort(ungroupedNotebookList);
+  }
+
+  private normalizeSearchQuery(value: string): string {
+    return value.trim().replace(/\s+/g, ' ').toLowerCase();
+  }
+
+  private hasSearchQuery(): boolean {
+    return this.normalizeSearchQuery(this.searchText).length > 0;
+  }
+
+  private matchesSearchText(value: string | undefined, query: string): boolean {
+    if (typeof value !== 'string' || value.length === 0) {
+      return false;
+    }
+
+    return value.toLowerCase().includes(query);
+  }
+
+  private getNotebookSearchContent(notebookId: string): string {
+    const content: string | undefined = this.notebookSearchContentMap.get(notebookId);
+    return content === undefined ? '' : content;
+  }
+
+  private shouldKeepNotebookBySearch(notebook: Notebook, query: string): boolean {
+    if (query.length === 0) {
+      return true;
+    }
+
+    if (this.matchesSearchText(notebook.title, query)) {
+      return true;
+    }
+
+    const tags: string[] = Array.isArray(notebook.tags) ? notebook.tags : [];
+    for (const tag of tags) {
+      if (this.matchesSearchText(tag, query)) {
+        return true;
+      }
+    }
+
+    const folder: NotebookFolder | undefined = this.getFolderById(notebook.folderId);
+    if (folder !== undefined && this.matchesSearchText(folder.title, query)) {
+      return true;
+    }
+
+    return this.matchesSearchText(this.getNotebookSearchContent(notebook.id), query);
+  }
+
+  private shouldKeepFolderBySearch(folder: NotebookFolder, query: string): boolean {
+    if (query.length === 0) {
+      return true;
+    }
+
+    if (this.matchesSearchText(folder.title, query)) {
+      return true;
+    }
+
+    for (const notebook of this.getFolderNotebookList(folder.id)) {
+      if (this.shouldKeepNotebookBySearch(notebook, query)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private getSearchMatchedNotebookList(): Notebook[] {
+    const query: string = this.normalizeSearchQuery(this.searchText);
+    const result: Notebook[] = [];
+    const contentRenderVersion: number = this.searchContentRenderVersion;
+    if (contentRenderVersion < 0) {
+      return result;
+    }
+
+    for (const notebook of this.getActiveNotebookList()) {
+      if (this.shouldKeepNotebookBySearch(notebook, query)) {
+        result.push(notebook);
+      }
+    }
+    return this.sortNotebookListByCurrentSort(result);
+  }
+
+  private getSearchMatchedFolderList(): NotebookFolder[] {
+    const query: string = this.normalizeSearchQuery(this.searchText);
+    const result: NotebookFolder[] = [];
+    const contentRenderVersion: number = this.searchContentRenderVersion;
+    if (contentRenderVersion < 0) {
+      return result;
+    }
+
+    for (const folder of this.getSortedFolderListForAllNotes()) {
+      if (this.shouldKeepFolderBySearch(folder, query)) {
+        result.push(folder);
+      }
+    }
+    return result;
+  }
+
+  private getSearchMatchedNotebookCountInFolder(folderId: string): number {
+    const query: string = this.normalizeSearchQuery(this.searchText);
+    if (query.length === 0) {
+      return this.getFolderNotebookList(folderId).length;
+    }
+
+    const folder: NotebookFolder | undefined = this.getFolderById(folderId);
+    if (folder !== undefined && this.matchesSearchText(folder.title, query)) {
+      return this.getFolderNotebookList(folderId).length;
+    }
+
+    let count: number = 0;
+    for (const notebook of this.getFolderNotebookList(folderId)) {
+      if (this.shouldKeepNotebookBySearch(notebook, query)) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  private retainNotebookSearchContentCache(notebookList: Notebook[]): void {
+    const retainedNotebookIds: Set<string> = new Set<string>();
+    for (const notebook of notebookList) {
+      retainedNotebookIds.add(notebook.id);
+    }
+
+    const cachedNotebookIds: string[] = Array.from(this.notebookSearchContentMap.keys());
+    for (const notebookId of cachedNotebookIds) {
+      if (!retainedNotebookIds.has(notebookId)) {
+        this.notebookSearchContentMap.delete(notebookId);
+        this.notebookSearchContentUpdatedAtMap.delete(notebookId);
+      }
+    }
+  }
+
+  private shouldLoadNotebookSearchContent(notebook: Notebook): boolean {
+    if (this.isNotebookDeleted(notebook) || this.notebookSearchContentLoadingIds.has(notebook.id)) {
+      return false;
+    }
+
+    const cachedUpdatedAt: number | undefined = this.notebookSearchContentUpdatedAtMap.get(notebook.id);
+    return cachedUpdatedAt === undefined || cachedUpdatedAt < notebook.updatedAt;
+  }
+
+  private async ensureSearchContentForActiveNotebooks(): Promise<void> {
+    if (!this.hasSearchQuery()) {
+      return;
+    }
+
+    if (this.isSearchContentLoading) {
+      return;
+    }
+
+    const notebooksToLoad: Notebook[] = [];
+    for (const notebook of this.getActiveNotebookList()) {
+      if (this.shouldLoadNotebookSearchContent(notebook)) {
+        notebooksToLoad.push(notebook);
+      }
+    }
+
+    if (notebooksToLoad.length === 0) {
+      return;
+    }
+
+    this.isSearchContentLoading = true;
+    try {
+      for (const notebook of notebooksToLoad) {
+        await this.loadNotebookSearchContent(notebook);
+      }
+    } finally {
+      this.isSearchContentLoading = this.notebookSearchContentLoadingIds.size > 0;
+      this.searchContentRenderVersion += 1;
+    }
+  }
+
+  private async loadNotebookSearchContent(notebook: Notebook): Promise<void> {
+    if (this.notebookSearchContentLoadingIds.has(notebook.id)) {
+      return;
+    }
+
+    this.notebookSearchContentLoadingIds.add(notebook.id);
+    try {
+      const content: string = await this.ensureViewModel().loadNotebookSearchContent(notebook.id);
+      this.notebookSearchContentMap.set(notebook.id, content);
+      this.notebookSearchContentUpdatedAtMap.set(notebook.id, notebook.updatedAt);
+      this.searchContentRenderVersion += 1;
+    } catch (_error) {
+      this.notebookSearchContentMap.set(notebook.id, '');
+      this.notebookSearchContentUpdatedAtMap.set(notebook.id, notebook.updatedAt);
+      this.searchContentRenderVersion += 1;
+    } finally {
+      this.notebookSearchContentLoadingIds.delete(notebook.id);
+    }
   }
 
   private getCurrentDayStartTimestamp(): number {
@@ -1309,6 +2083,16 @@ export struct NotebookListPanel {
         result.push(notebook);
       }
     }
+    return this.sortNotebookListByCurrentSort(result);
+  }
+
+  private filterNotebookListByWorkspaceFilter(notebookList: Notebook[]): Notebook[] {
+    const result: Notebook[] = [];
+    for (const notebook of notebookList) {
+      if (this.shouldKeepNotebookByAllNotesFilter(notebook)) {
+        result.push(notebook);
+      }
+    }
     return result;
   }
 
@@ -1325,18 +2109,23 @@ export struct NotebookListPanel {
   }
 
   private hasAllNotesSectionContent(): boolean {
-    const filteredNotebookList: Notebook[] = this.getFilteredActiveNotebookList();
-    const sortedFolderList: NotebookFolder[] = this.getSortedFolderListForAllNotes();
-    if (this.allNotesFilter === AllNotesFilter.NOTEBOOK) {
-      return filteredNotebookList.length > 0;
-    }
-    if (this.allNotesFilter === AllNotesFilter.FOLDER) {
-      return sortedFolderList.length > 0;
-    }
-    return sortedFolderList.length > 0 || filteredNotebookList.length > 0;
+    return this.getFilteredActiveNotebookList().length > 0;
   }
 
   private getSidebarCount(section: SidebarSection): number {
+    if (this.hasSearchQuery()) {
+      if (section === SidebarSection.FOLDERS) {
+        return this.getSearchMatchedFolderList().length;
+      }
+      if (section === SidebarSection.TAGS) {
+        return this.getAllTagList().length;
+      }
+      if (section === SidebarSection.RECYCLE) {
+        return 0;
+      }
+      return this.getSearchMatchedNotebookList().length;
+    }
+
     if (section === SidebarSection.ALL) {
       return this.getActiveNotebookList().length;
     }
@@ -1361,6 +2150,14 @@ export struct NotebookListPanel {
 
   private closeFolderActionMenu(): void {
     this.activeFolderActionMenuFolderId = '';
+  }
+
+  private closeCreateActionMenu(): void {
+    this.isCreateActionMenuVisible = false;
+  }
+
+  private closeTopSortDropdown(): void {
+    this.isTopSortDropdownVisible = false;
   }
 
   private getNotebookById(notebookId: string): Notebook | undefined {
@@ -1468,8 +2265,16 @@ export struct NotebookListPanel {
     return this.isPanelPortrait() ? '100%' : '50%';
   }
 
+  private getNotebookDisplayCardWidth(): Length {
+    return this.useLargeNotebookCards ? this.getRecentCardWidth() : this.getNotebookListItemWidth();
+  }
+
   private getNotebookGridJustifyContent(): FlexAlign {
     return FlexAlign.Start;
+  }
+
+  private getNotebookDisplayGridJustifyContent(): FlexAlign {
+    return this.useLargeNotebookCards ? this.getRecentGridJustifyContent() : this.getNotebookGridJustifyContent();
   }
 
   private getFolderGridJustifyContent(): FlexAlign {
@@ -1833,6 +2638,56 @@ export struct NotebookListPanel {
     return position;
   }
 
+  private getCreateActionMenuPosition(): Position {
+    const position: MenuPosition = new MenuPosition();
+    const anchor: ActionMenuAnchor = this.createActionMenuAnchor;
+    if (!this.isCreateActionMenuVisible || this.workspaceAreaWidth <= 0 || this.workspaceAreaHeight <= 0) {
+      return position;
+    }
+
+    let menuLeft: number = anchor.left + anchor.width - this.folderActionMenuWidth;
+    if (menuLeft < 0) {
+      menuLeft = 0;
+    }
+    if (menuLeft + this.folderActionMenuWidth > this.workspaceAreaWidth) {
+      menuLeft = Math.max(this.workspaceAreaWidth - this.folderActionMenuWidth - 8, 0);
+    }
+
+    let menuTop: number = anchor.top - this.workspaceScrollOffsetY + anchor.height + this.folderActionMenuGap;
+    if (menuTop + this.folderActionMenuHeight > this.workspaceAreaHeight) {
+      menuTop = Math.max(anchor.top - this.workspaceScrollOffsetY - this.folderActionMenuHeight - this.folderActionMenuGap, 0);
+    }
+
+    position.x = menuLeft;
+    position.y = menuTop;
+    return position;
+  }
+
+  private getTopSortMenuPosition(): Position {
+    const position: MenuPosition = new MenuPosition();
+    const anchor: WorkspaceToolMenuAnchor = this.topSortMenuAnchor;
+    if (!this.isTopSortDropdownVisible || this.workspaceAreaWidth <= 0 || this.workspaceAreaHeight <= 0) {
+      return position;
+    }
+
+    let menuLeft: number = anchor.left + anchor.width - this.sortMenuWidth;
+    if (menuLeft < 0) {
+      menuLeft = 0;
+    }
+    if (menuLeft + this.sortMenuWidth > this.workspaceAreaWidth) {
+      menuLeft = Math.max(this.workspaceAreaWidth - this.sortMenuWidth - 8, 0);
+    }
+
+    let menuTop: number = anchor.top - this.workspaceScrollOffsetY + anchor.height + this.folderActionMenuGap;
+    if (menuTop + this.sortMenuHeight > this.workspaceAreaHeight) {
+      menuTop = Math.max(anchor.top - this.workspaceScrollOffsetY - this.sortMenuHeight - this.folderActionMenuGap, 0);
+    }
+
+    position.x = menuLeft;
+    position.y = menuTop;
+    return position;
+  }
+
   private toggleActionMenu(notebookId: string): void {
     if (this.activeActionMenuNotebookId === notebookId) {
       this.closeActionMenu();
@@ -1840,6 +2695,8 @@ export struct NotebookListPanel {
     }
 
     this.closeFolderActionMenu();
+    this.closeCreateActionMenu();
+    this.closeTopSortDropdown();
     this.activeActionMenuNotebookId = notebookId;
   }
 
@@ -1850,7 +2707,61 @@ export struct NotebookListPanel {
     }
 
     this.closeActionMenu();
+    this.closeCreateActionMenu();
+    this.closeTopSortDropdown();
     this.activeFolderActionMenuFolderId = folderId;
+  }
+
+  private updateCreateActionMenuAnchor(area: Area): void {
+    this.createActionMenuAnchor.notebookId = '__create__';
+    this.createActionMenuAnchor.left = this.resolveLengthValue(area.globalPosition.x) - this.workspaceAreaLeft;
+    this.createActionMenuAnchor.top = this.resolveLengthValue(area.globalPosition.y) - this.workspaceAreaTop + this.workspaceScrollOffsetY;
+    this.createActionMenuAnchor.width = this.resolveLengthValue(area.width);
+    this.createActionMenuAnchor.height = this.resolveLengthValue(area.height);
+  }
+
+  private updateTopSortMenuAnchor(area: Area): void {
+    this.topSortMenuAnchor.left = this.resolveLengthValue(area.globalPosition.x) - this.workspaceAreaLeft;
+    this.topSortMenuAnchor.top = this.resolveLengthValue(area.globalPosition.y) - this.workspaceAreaTop + this.workspaceScrollOffsetY;
+    this.topSortMenuAnchor.width = this.resolveLengthValue(area.width);
+    this.topSortMenuAnchor.height = this.resolveLengthValue(area.height);
+  }
+
+  private toggleTopSortDropdown(): void {
+    if (this.isTopSortDropdownVisible) {
+      this.closeTopSortDropdown();
+      return;
+    }
+    this.closeActionMenu();
+    this.closeFolderActionMenu();
+    this.closeCreateActionMenu();
+    this.isTopSortDropdownVisible = true;
+  }
+
+  private toggleCreateActionMenu(): void {
+    if (this.isCreateActionMenuVisible) {
+      this.closeCreateActionMenu();
+      return;
+    }
+    this.closeActionMenu();
+    this.closeFolderActionMenu();
+    this.closeTopSortDropdown();
+    this.isCreateActionMenuVisible = true;
+  }
+
+  private openCreateDialogFromCreateMenu(): void {
+    this.closeCreateActionMenu();
+    this.openCreateDialog();
+  }
+
+  private importNotebookFromCreateMenu(): void {
+    this.closeCreateActionMenu();
+    void this.importNotebookFromTopbar();
+  }
+
+  private openFolderDialogFromCreateMenu(): void {
+    this.closeCreateActionMenu();
+    this.openFolderDialog();
   }
 
   private openRenameDialogFromActionMenu(): void {
@@ -1989,6 +2900,8 @@ export struct NotebookListPanel {
   private selectSection(section: SidebarSection): void {
     this.closeActionMenu();
     this.closeFolderActionMenu();
+    this.closeCreateActionMenu();
+    this.closeTopSortDropdown();
     if (section !== SidebarSection.ALL) {
       this.isAllNotesSortFilterPanelVisible = false;
     }
@@ -2154,7 +3067,8 @@ export struct NotebookListPanel {
         .fontColor(this.currentSection === SidebarSection.FOLDERS && this.selectedFolderInSidebar === folder.id ?
           '#2E6BFF' : $r('app.color.primary_text'))
 
-      Text(this.getFolderNotebookList(folder.id).length.toString())
+      Text((this.hasSearchQuery() ? this.getSearchMatchedNotebookCountInFolder(folder.id) :
+        this.getFolderNotebookList(folder.id).length).toString())
         .fontSize($r('app.float.caption_text_size'))
         .fontColor($r('app.color.secondary_text'))
     }
@@ -2165,6 +3079,10 @@ export struct NotebookListPanel {
     .backgroundColor(this.currentSection === SidebarSection.FOLDERS && this.selectedFolderInSidebar === folder.id ?
       '#332E6BFF' : '#00000000')
     .onClick(() => {
+      this.closeActionMenu();
+      this.closeFolderActionMenu();
+      this.closeCreateActionMenu();
+      this.closeTopSortDropdown();
       this.currentSection = SidebarSection.FOLDERS;
       this.selectedFolderInSidebar = folder.id;
     })
@@ -2190,82 +3108,314 @@ export struct NotebookListPanel {
     .backgroundColor(this.currentSection === SidebarSection.TAGS && this.selectedTag === tag ? '#332E6BFF' :
       '#00000000')
     .onClick(() => {
+      this.closeActionMenu();
+      this.closeFolderActionMenu();
+      this.closeCreateActionMenu();
+      this.closeTopSortDropdown();
       this.currentSection = SidebarSection.TAGS;
       this.selectedTag = tag;
     })
   }
 
   @Builder
-  private buildNotebookItem(notebook: Notebook): void {
-    Row({ space: 8 }) {
-      Row({ space: 10 }) {
-        Stack() {
-          this.buildNotebookCoverPreview(notebook)
+  private buildTagChip(tag: string, mode: TagChipDisplayMode = TagChipDisplayMode.COMPACT): void {
+    Text(this.formatTagChipText(tag, mode))
+      .fontSize(11)
+      .fontColor('#556080')
+      .maxLines(1)
+      .padding({ left: 7, right: 7, top: 2, bottom: 2 })
+      .backgroundColor('#EEF2FF')
+      .borderRadius(7)
+  }
+
+  @Builder
+  private buildTagChipRow(notebook: Notebook, mode: TagChipDisplayMode = TagChipDisplayMode.COMPACT): void {
+    Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start, alignItems: ItemAlign.Start }) {
+      ForEach(this.getNotebookDisplayTags(notebook), (tag: string) => {
+        Row() {
+          this.buildTagChip(tag, mode)
         }
-          .width('17%')
-          .aspectRatio(this.getNotebookCoverAspectRatio(notebook))
-          .borderRadius(8)
-          .clip(true)
-          .margin({ top: 2, bottom: 2 })
+        .margin({ right: 5, bottom: 4 })
+      }, (tag: string): string => `${notebook.id}-${tag}`)
+    }
+    .width('100%')
+    .clip(true)
+  }
 
-        Column({ space: 6 }) {
-          Row({ space: 6 }) {
-            Text(notebook.title)
-              .fontSize($r('app.float.body_text_size'))
-              .fontWeight(FontWeight.Medium)
-              .fontColor($r('app.color.primary_text'))
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
+  @Builder
+  private buildFilterIcon(): void {
+    Column({ space: 4 }) {
+      Column() {}
+        .width(16)
+        .height(2)
+        .backgroundColor('#667085')
+        .borderRadius(1)
+      Column() {}
+        .width(11)
+        .height(2)
+        .backgroundColor('#667085')
+        .borderRadius(1)
+      Column() {}
+        .width(6)
+        .height(2)
+        .backgroundColor('#667085')
+        .borderRadius(1)
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+  }
 
-            if (Array.isArray(notebook.tags) && notebook.tags.length > 0) {
-              Row({ space: 6 }) {
-                ForEach(notebook.tags as string[], (tag: string) => {
-                  Text(tag)
-                    .fontSize(11)
-                    .fontColor('#556080')
-                    .padding({ left: 7, right: 7, top: 2, bottom: 2 })
-                    .backgroundColor('#EEF2FF')
-                    .borderRadius(7)
-                }, (tag: string): string => `${notebook.id}-${tag}`)
-              }
-            }
-          }
-          .width('100%')
-
-          Text(this.formatTimestamp(notebook.updatedAt))
-            .fontSize($r('app.float.caption_text_size'))
-            .fontColor($r('app.color.secondary_text'))
-        }
-        .layoutWeight(1)
-        .alignItems(HorizontalAlign.Start)
+  @Builder
+  private buildViewModeIcon(): void {
+    if (this.useLargeNotebookCards) {
+      Row({ space: 3 }) {
+        Column() {}
+          .width(7)
+          .height(14)
+          .borderRadius(2)
+          .border({ width: 2, color: '#667085' })
+        Column() {}
+          .width(7)
+          .height(14)
+          .borderRadius(2)
+          .border({ width: 2, color: '#667085' })
       }
-      .layoutWeight(1)
+      .width('100%')
+      .height('100%')
+      .justifyContent(FlexAlign.Center)
+      .alignItems(VerticalAlign.Center)
+    } else {
+      Column({ space: 4 }) {
+        Row({ space: 4 }) {
+          Column() {}
+            .width(5)
+            .height(5)
+            .borderRadius(1)
+            .backgroundColor('#667085')
+          Column() {}
+            .width(15)
+            .height(2)
+            .borderRadius(1)
+            .backgroundColor('#667085')
+        }
+        .alignItems(VerticalAlign.Center)
+
+        Row({ space: 4 }) {
+          Column() {}
+            .width(5)
+            .height(5)
+            .borderRadius(1)
+            .backgroundColor('#667085')
+          Column() {}
+            .width(15)
+            .height(2)
+            .borderRadius(1)
+            .backgroundColor('#667085')
+        }
+        .alignItems(VerticalAlign.Center)
+      }
+      .width('100%')
+      .height('100%')
+      .justifyContent(FlexAlign.Center)
+      .alignItems(HorizontalAlign.Center)
+    }
+  }
+
+  @Builder
+  private buildSortIcon(): void {
+    Row({ space: 3 }) {
+      Column({ space: 0 }) {
+        Text('↑')
+          .fontSize(13)
+          .fontColor('#667085')
+          .fontWeight(FontWeight.Medium)
+        Text('↓')
+          .fontSize(13)
+          .fontColor('#667085')
+          .fontWeight(FontWeight.Medium)
+          .margin({ top: -4 })
+      }
+      .alignItems(HorizontalAlign.Center)
+
+      Column({ space: 3 }) {
+        Column() {}
+          .width(10)
+          .height(2)
+          .backgroundColor('#667085')
+          .borderRadius(1)
+        Column() {}
+          .width(7)
+          .height(2)
+          .backgroundColor('#667085')
+          .borderRadius(1)
+        Column() {}
+          .width(4)
+          .height(2)
+          .backgroundColor('#667085')
+          .borderRadius(1)
+      }
+      .justifyContent(FlexAlign.Center)
+      .alignItems(HorizontalAlign.Center)
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .alignItems(VerticalAlign.Center)
+  }
+
+  @Builder
+  private buildWorkspaceToolButton(toolType: string): void {
+    Button() {
+      if (toolType === 'filter') {
+        this.buildFilterIcon()
+      } else if (toolType === 'view') {
+        this.buildViewModeIcon()
+      } else {
+        this.buildSortIcon()
+      }
+    }
+      .width(this.workspaceToolButtonSize)
+      .height(this.workspaceToolButtonSize)
+      .padding(0)
+      .backgroundColor(toolType === 'filter' && this.isAllNotesSortFilterPanelVisible ? '#E8EEFF' : '#F4F6FB')
+      .borderRadius(8)
+      .border({ width: 1, color: '#DDE4F0' })
+      .stateEffect(true)
+      .onAreaChange((_oldValue: Area, newValue: Area) => {
+        if (toolType === 'sort') {
+          this.updateTopSortMenuAnchor(newValue);
+        }
+      })
+      .onTouch((event?: TouchEvent) => {
+        if (event !== undefined && toolType === 'sort') {
+          if (event.type === TouchType.Down) {
+            this.updateTopSortMenuAnchor(event.target.area);
+          }
+          event.stopPropagation();
+        }
+      })
+      .onClick(() => {
+        if (toolType === 'filter') {
+          this.closeTopSortDropdown();
+          this.isAllNotesSortFilterPanelVisible = !this.isAllNotesSortFilterPanelVisible;
+        } else if (toolType === 'view') {
+          this.closeTopSortDropdown();
+          this.useLargeNotebookCards = !this.useLargeNotebookCards;
+        } else {
+          this.toggleTopSortDropdown();
+        }
+      })
+  }
+
+  @Builder
+  private buildWorkspaceToolButtons(): void {
+    Row({ space: 8 }) {
+      this.buildWorkspaceToolButton('filter')
+      this.buildWorkspaceToolButton('view')
+      this.buildWorkspaceToolButton('sort')
+    }
+    .alignItems(VerticalAlign.Center)
+  }
+
+  @Builder
+  private buildWorkspaceHeader(title: string, showTools: boolean = true): void {
+    Row() {
+      Text(title)
+        .layoutWeight(1)
+        .fontSize($r('app.float.section_title_size'))
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.primary_text'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+      if (showTools) {
+        this.buildWorkspaceToolButtons()
+      }
+    }
+    .width('100%')
+    .alignItems(VerticalAlign.Center)
+  }
+
+  @Builder
+  private buildSortOption(label: string, sortType: NotebookSortType): void {
+    Button(label)
+      .width('100%')
+      .height(34)
+      .fontSize(13)
+      .fontColor(this.currentSortType === sortType ? '#3D63FF' : '#344054')
+      .backgroundColor(this.currentSortType === sortType ? '#EAF0FF' : '#FFFFFF')
+      .borderRadius(8)
+      .onClick(() => {
+        this.onSortTypeSelected(sortType);
+      })
+  }
+
+  @Builder
+  private buildNotebookItem(notebook: Notebook): void {
+    Row({ space: 18 }) {
+      Stack() {
+        this.buildNotebookCoverPreview(notebook)
+      }
+      .width(76)
+      .height(98)
+      .borderRadius(4)
+      .clip(true)
+      .backgroundColor('#00FFFFFF')
       .onClick(() => {
         void this.openNotebook(notebook.id);
       })
 
-      Column({ space: 10 }) {
-        Button('★')
+      Column({ space: 8 }) {
+        Text(`${notebook.title} (${NotebookEntity.normalizePageCount(notebook.pageCount)})`)
+          .fontSize(21)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.primary_text'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
-          .aspectRatio(1)
-          .constraintSize({ maxWidth: 52 })
+
+        Text(this.formatTimestamp(notebook.updatedAt))
+          .fontSize(15)
+          .fontColor($r('app.color.secondary_text'))
+
+        if (this.getNotebookDisplayTags(notebook).length > 0) {
+          this.buildTagChipRow(notebook, TagChipDisplayMode.COMPACT)
+        }
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+      .onClick(() => {
+        void this.openNotebook(notebook.id);
+      })
+
+      Row({ space: 14 }) {
+        Button() {
+          Text(this.isNotebookFavorite(notebook.id) ? '★' : '☆')
+            .fontColor(this.isNotebookFavorite(notebook.id) ? '#F59E0B' : '#4B5563')
+            .fontSize(33)
+            .textAlign(TextAlign.Center)
+            .width('100%')
+        }
+          .width(52)
+          .height(52)
+          .padding(0)
           .backgroundColor('#00000000')
-          .fontColor(this.isNotebookFavorite(notebook.id) ? '#F59E0B' : '#4B5563')
-          .fontSize(22)
           .borderRadius(0)
           .stateEffect(false)
           .onClick(() => {
             void this.toggleNotebookFavorite(notebook.id);
           })
 
-        Button('⋯')
-          .width('100%')
-          .aspectRatio(1)
-          .constraintSize({ maxWidth: 52 })
+        Button('⋮')
+          .width(48)
+          .height(52)
           .backgroundColor('#00000000')
-          .fontColor('#4B5563')
-          .fontSize(22)
+          .fontColor('#111827')
+          .fontSize(34)
           .borderRadius(0)
+          .padding(0)
           .onAreaChange((_oldValue: Area, newValue: Area) => {
             this.updateActionMenuAnchor(notebook.id, newValue);
           })
@@ -2281,14 +3431,15 @@ export struct NotebookListPanel {
             this.toggleActionMenu(notebook.id);
           })
       }
-      .width('13%')
-      .constraintSize({ minWidth: 38, maxWidth: 52 })
+      .width(120)
+      .alignItems(VerticalAlign.Center)
     }
     .width('100%')
     .alignItems(VerticalAlign.Center)
-    .padding({ left: 10, right: 10, top: 8, bottom: 8 })
+    .height(136)
+    .padding({ left: 24, right: 20, top: 16, bottom: 16 })
     .backgroundColor($r('app.color.surface_background'))
-    .borderRadius(12)
+    .borderRadius(24)
     .border({
       width: 1,
       color: $r('app.color.card_border')
@@ -2317,7 +3468,7 @@ export struct NotebookListPanel {
         Image(this.toDisplayImageUri(notebook.coverImageUri))
           .width('100%')
           .height('100%')
-          .objectFit(ImageFit.Cover)
+          .objectFit(ImageFit.Contain)
       } else if (this.hasNotebookCoverSnapshot(notebook)) {
         PageThumbnailCanvas({
           snapshot: this.buildNotebookCoverSnapshot(notebook),
@@ -2350,11 +3501,29 @@ export struct NotebookListPanel {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#E8EEF6')
+    .backgroundColor('#00FFFFFF')
     .onAppear(() => {
       this.requestNotebookCoverSnapshot(notebook.id);
     })
   }
+
+  @Builder
+  private buildRecentCoverSlot(notebook: Notebook): void {
+    Stack({ alignContent: Alignment.Center }) {
+      Stack() {
+        this.buildNotebookCoverPreview(notebook)
+      }
+      .width('100%')
+      .height('100%')
+      .borderRadius(10)
+      .clip(true)
+    }
+    .width('100%')
+    .constraintSize({ maxWidth: this.recentCoverSlotMaxSize })
+    .aspectRatio(1)
+    .backgroundColor('#00FFFFFF')
+  }
+
   @Builder
   private buildRecycleItem(notebook: Notebook): void {
     Column({ space: 10 }) {
@@ -2399,50 +3568,32 @@ export struct NotebookListPanel {
   }
 
   @Builder
-  private buildNotebookListSection(title: string, notebookList: Notebook[], onViewAll?: () => void): void {
+  private buildNotebookListSection(title: string, notebookList: Notebook[], showTools: boolean = true): void {
     Column({ space: 12 }) {
-      Row() {
-        Text(title)
-          .layoutWeight(1)
-          .fontSize($r('app.float.section_title_size'))
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.primary_text'))
-
-        if (onViewAll !== undefined) {
-          Button() {
-            Row({ space: 4 }) {
-              Text('全部')
-                .fontSize($r('app.float.caption_text_size'))
-                .fontColor('#2E6BFF')
-              Text('›')
-                .fontSize(16)
-                .fontColor('#2E6BFF')
-            }
-          }
-            .height(30)
-            .padding({ left: 8, right: 8 })
-            .backgroundColor('#00000000')
-            .onClick(() => {
-              const viewAllHandler = onViewAll;
-              if (viewAllHandler !== undefined) {
-                viewAllHandler();
-              }
-            })
-        }
+      this.buildWorkspaceHeader(title, showTools)
+      if (showTools) {
+        this.buildAllNotesSortFilterPanel()
       }
-      .width('100%')
 
-      if (notebookList.length === 0) {
+      if (this.filterNotebookListByWorkspaceFilter(notebookList).length === 0) {
         Text('暂无数据')
           .fontSize($r('app.float.caption_text_size'))
           .fontColor($r('app.color.secondary_text'))
       } else {
-        Flex({ wrap: FlexWrap.Wrap, justifyContent: this.getNotebookGridJustifyContent(), alignItems: ItemAlign.Start }) {
-          ForEach(notebookList, (notebook: Notebook) => {
+        Flex({
+          wrap: FlexWrap.Wrap,
+          justifyContent: this.getNotebookDisplayGridJustifyContent(),
+          alignItems: ItemAlign.Start
+        }) {
+          ForEach(this.filterNotebookListByWorkspaceFilter(notebookList), (notebook: Notebook) => {
             Column() {
-              this.buildNotebookItem(notebook)
+              if (this.useLargeNotebookCards) {
+                this.buildLargeNotebookCard(notebook)
+              } else {
+                this.buildNotebookItem(notebook)
+              }
             }
-            .width(this.getNotebookListItemWidth())
+            .width(this.getNotebookDisplayCardWidth())
             .padding({ left: this.gridCardHorizontalInset, right: this.gridCardHorizontalInset })
             .margin({ bottom: 12 })
           }, (notebook: Notebook): string => `${this.notebookListRenderVersion}-${notebook.id}`)
@@ -2455,81 +3606,322 @@ export struct NotebookListPanel {
   }
 
   @Builder
-  private buildRecentNotebookCard(notebook: Notebook): void {
-    Column({ space: 8 }) {
-      Column({ space: 8 }) {
-        Button('⋯')
-          .width(26)
-          .height(26)
-          .backgroundColor('#99FFFFFF')
-          .fontColor('#344054')
-          .fontSize(18)
-          .borderRadius(13)
-          .padding(0)
-          .alignSelf(ItemAlign.End)
-          .onAreaChange((_oldValue: Area, newValue: Area) => {
-            this.updateActionMenuAnchor(notebook.id, newValue);
-          })
-          .onTouch((event?: TouchEvent) => {
-            if (event !== undefined) {
-              if (event.type === TouchType.Down) {
-                this.updateActionMenuAnchor(notebook.id, event.target.area);
-              }
-              event.stopPropagation();
-            }
-          })
-          .onClick(() => {
-            this.toggleActionMenu(notebook.id);
-          })
-
-        Stack() {
-          this.buildNotebookCoverPreview(notebook)
+  private buildFolderGrid(folderList: NotebookFolder[], keyPrefix: string): void {
+    Flex({ wrap: FlexWrap.Wrap, justifyContent: this.getFolderGridJustifyContent(), alignItems: ItemAlign.Start }) {
+      ForEach(folderList, (folder: NotebookFolder) => {
+        Column() {
+          this.buildAllNotesFolderCard(folder)
         }
-        .width('100%')
-        .aspectRatio(this.getNotebookCoverAspectRatio(notebook))
-        .borderRadius(10)
-        .clip(true)
-        .backgroundColor('#E8EEF6')
-      }
-      .width('100%')
-
-      Text(notebook.title)
-        .fontSize($r('app.float.caption_text_size'))
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.primary_text'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-
-      Text(this.formatTimestamp(notebook.updatedAt))
-        .fontSize(11)
-        .fontColor($r('app.color.secondary_text'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-
-      Text(`${NotebookEntity.normalizePageCount(notebook.pageCount)} 页`)
-        .fontSize(11)
-        .fontColor($r('app.color.secondary_text'))
-
-      if (Array.isArray(notebook.tags) && notebook.tags.length > 0) {
-        Text(`标签 ${notebook.tags.join(' / ')}`)
-          .fontSize(11)
-          .fontColor('#556080')
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-      } else {
-        Text('标签 -')
-          .fontSize(11)
-          .fontColor('#98A2B3')
-      }
+        .width(this.getFolderCardWidth())
+        .padding({ left: this.gridCardHorizontalInset, right: this.gridCardHorizontalInset })
+        .margin({ bottom: 12 })
+      }, (folder: NotebookFolder): string => `${keyPrefix}-${this.folderListRenderVersion}-${folder.id}`)
     }
     .width('100%')
+  }
+
+  @Builder
+  private buildNotebookGrid(notebookList: Notebook[], keyPrefix: string): void {
+    Flex({
+      wrap: FlexWrap.Wrap,
+      justifyContent: this.getNotebookDisplayGridJustifyContent(),
+      alignItems: ItemAlign.Start
+    }) {
+      ForEach(notebookList, (notebook: Notebook) => {
+        Column() {
+          if (this.useLargeNotebookCards) {
+            this.buildLargeNotebookCard(notebook)
+          } else {
+            this.buildNotebookItem(notebook)
+          }
+        }
+        .width(this.getNotebookDisplayCardWidth())
+        .padding({ left: this.gridCardHorizontalInset, right: this.gridCardHorizontalInset })
+        .margin({ bottom: 12 })
+      }, (notebook: Notebook): string => `${keyPrefix}-${this.notebookListRenderVersion}-${this.searchContentRenderVersion}-${notebook.id}`)
+    }
+    .width('100%')
+  }
+
+  @Builder
+  private buildAllNotebookCards(notebookList: Notebook[], keyPrefix: string, includeCreateCard: boolean): void {
+    Flex({
+      wrap: FlexWrap.Wrap,
+      justifyContent: this.getNotebookDisplayGridJustifyContent(),
+      alignItems: ItemAlign.Start
+    }) {
+      if (includeCreateCard) {
+        Column() {
+          this.buildCreateNotebookCard()
+        }
+        .width(this.getNotebookDisplayCardWidth())
+        .padding({ left: this.gridCardHorizontalInset, right: this.gridCardHorizontalInset })
+        .margin({ bottom: 12 })
+      }
+
+      ForEach(notebookList, (notebook: Notebook) => {
+        Column() {
+          if (this.useLargeNotebookCards) {
+            this.buildLargeNotebookCard(notebook)
+          } else {
+            this.buildNotebookItem(notebook)
+          }
+        }
+        .width(this.getNotebookDisplayCardWidth())
+        .padding({ left: this.gridCardHorizontalInset, right: this.gridCardHorizontalInset })
+        .margin({ bottom: 12 })
+      }, (notebook: Notebook): string => `${keyPrefix}-${this.notebookListRenderVersion}-${notebook.id}`)
+    }
+    .width('100%')
+  }
+
+  @Builder
+  private buildRecentNotebookCard(notebook: Notebook): void {
+    Column({ space: 8 }) {
+      Stack() {
+        Row() {
+          this.buildRecentCoverSlot(notebook)
+        }
+        .width('100%')
+        .justifyContent(FlexAlign.Center)
+      }
+      .width('100%')
+      .onAreaChange((_oldValue: Area, newValue: Area) => {
+        this.updateActionMenuAnchor(notebook.id, newValue);
+      })
+      .onTouch((event?: TouchEvent) => {
+        if (event !== undefined) {
+          if (event.type === TouchType.Down) {
+            this.updateActionMenuAnchor(notebook.id, event.target.area);
+          }
+          event.stopPropagation();
+        }
+      })
+      .onClick(() => {
+        this.toggleActionMenu(notebook.id);
+      })
+
+      Column({ space: 8 }) {
+        Text(notebook.title)
+          .fontSize($r('app.float.caption_text_size'))
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.primary_text'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+        Text(this.formatTimestamp(notebook.updatedAt))
+          .fontSize(11)
+          .fontColor($r('app.color.secondary_text'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+        Row({ space: 6 }) {
+          Text(`${NotebookEntity.normalizePageCount(notebook.pageCount)} 页`)
+            .fontSize(11)
+            .fontColor($r('app.color.secondary_text'))
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Center)
+
+        if (this.getNotebookDisplayTags(notebook).length > 0) {
+          this.buildTagChipRow(notebook, TagChipDisplayMode.ROOMY)
+        }
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      .onClick(() => {
+        void this.openNotebook(notebook.id);
+      })
+    }
+    .width('100%')
+    .height(this.recentNotebookCardHeight)
     .padding(10)
     .backgroundColor($r('app.color.surface_background'))
     .borderRadius(12)
     .border({ width: 1, color: $r('app.color.card_border') })
-    .onClick(() => {
-      void this.openNotebook(notebook.id);
+  }
+
+  @Builder
+  private buildLargeNotebookCard(notebook: Notebook): void {
+    Column({ space: 8 }) {
+      Stack() {
+        Row() {
+          this.buildRecentCoverSlot(notebook)
+        }
+        .width('100%')
+        .justifyContent(FlexAlign.Center)
+      }
+      .width('100%')
+      .onAreaChange((_oldValue: Area, newValue: Area) => {
+        this.updateActionMenuAnchor(notebook.id, newValue);
+      })
+      .onTouch((event?: TouchEvent) => {
+        if (event !== undefined) {
+          if (event.type === TouchType.Down) {
+            this.updateActionMenuAnchor(notebook.id, event.target.area);
+          }
+          event.stopPropagation();
+        }
+      })
+      .onClick(() => {
+        this.toggleActionMenu(notebook.id);
+      })
+
+      Column({ space: 8 }) {
+        Text(notebook.title)
+          .fontSize($r('app.float.caption_text_size'))
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.primary_text'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+        Text(this.formatTimestamp(notebook.updatedAt))
+          .fontSize(11)
+          .fontColor($r('app.color.secondary_text'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+        Row({ space: 6 }) {
+          Text(`${NotebookEntity.normalizePageCount(notebook.pageCount)} 页`)
+            .fontSize(11)
+            .fontColor($r('app.color.secondary_text'))
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Center)
+
+        if (this.getNotebookDisplayTags(notebook).length > 0) {
+          this.buildTagChipRow(notebook, TagChipDisplayMode.ROOMY)
+        }
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      .onClick(() => {
+        void this.openNotebook(notebook.id);
+      })
+    }
+    .width('100%')
+    .height(this.recentNotebookCardHeight)
+    .padding(10)
+    .backgroundColor($r('app.color.surface_background'))
+    .borderRadius(12)
+    .border({ width: 1, color: $r('app.color.card_border') })
+  }
+
+  @Builder
+  private buildCreateNotebookListItem(): void {
+    Row({ space: 18 }) {
+      Column() {
+        Text('+')
+          .fontSize(36)
+          .fontColor('#2E6BFF')
+          .fontWeight(FontWeight.Medium)
+      }
+      .width(76)
+      .height(98)
+      .justifyContent(FlexAlign.Center)
+      .alignItems(HorizontalAlign.Center)
+      .borderRadius(4)
+      .backgroundColor('#EEF2FF')
+
+      Column({ space: 8 }) {
+        Text('新建')
+          .fontSize(21)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.primary_text'))
+          .maxLines(1)
+
+        Text('普通笔记 / 导入文件 / 文件夹')
+          .fontSize(15)
+          .fontColor($r('app.color.secondary_text'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+    }
+    .width('100%')
+    .height(136)
+    .padding({ left: 24, right: 20, top: 16, bottom: 16 })
+    .alignItems(VerticalAlign.Center)
+    .backgroundColor($r('app.color.surface_background'))
+    .borderRadius(24)
+    .border({ width: 1, color: $r('app.color.card_border') })
+    .onAreaChange((_oldValue: Area, newValue: Area) => {
+      this.updateCreateActionMenuAnchor(newValue);
     })
+    .onTouch((event?: TouchEvent) => {
+      if (event !== undefined) {
+        if (event.type === TouchType.Down) {
+          this.updateCreateActionMenuAnchor(event.target.area);
+        }
+        event.stopPropagation();
+      }
+    })
+    .onClick(() => {
+      this.toggleCreateActionMenu();
+    })
+  }
+
+  @Builder
+  private buildCreateLargeNotebookCard(): void {
+    Column({ space: 10 }) {
+      Column() {
+        Text('+')
+          .fontSize(44)
+          .fontColor('#2E6BFF')
+          .fontWeight(FontWeight.Medium)
+      }
+      .width('100%')
+      .constraintSize({ maxWidth: this.recentCoverSlotMaxSize })
+      .aspectRatio(1)
+      .justifyContent(FlexAlign.Center)
+      .alignItems(HorizontalAlign.Center)
+      .backgroundColor('#EEF2FF')
+      .borderRadius(10)
+
+      Text('新建')
+        .fontSize($r('app.float.caption_text_size'))
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.primary_text'))
+
+      Text('普通笔记 / 导入 / 文件夹')
+        .fontSize(11)
+        .fontColor($r('app.color.secondary_text'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+    }
+    .width('100%')
+    .height(this.recentNotebookCardHeight)
+    .padding(10)
+    .alignItems(HorizontalAlign.Center)
+    .backgroundColor($r('app.color.surface_background'))
+    .borderRadius(12)
+    .border({ width: 1, color: $r('app.color.card_border') })
+    .onAreaChange((_oldValue: Area, newValue: Area) => {
+      this.updateCreateActionMenuAnchor(newValue);
+    })
+    .onTouch((event?: TouchEvent) => {
+      if (event !== undefined) {
+        if (event.type === TouchType.Down) {
+          this.updateCreateActionMenuAnchor(event.target.area);
+        }
+        event.stopPropagation();
+      }
+    })
+    .onClick(() => {
+      this.toggleCreateActionMenu();
+    })
+  }
+
+  @Builder
+  private buildCreateNotebookCard(): void {
+    if (this.useLargeNotebookCards) {
+      this.buildCreateLargeNotebookCard()
+    } else {
+      this.buildCreateNotebookListItem()
+    }
   }
 
   private toDisplayImageUri(uri: string): string {
@@ -2595,102 +3987,7 @@ export struct NotebookListPanel {
 
   @Builder
   private buildAllNotesFilterHeader(): void {
-    Row() {
-      Text('全部笔记')
-        .layoutWeight(1)
-        .fontSize($r('app.float.section_title_size'))
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.primary_text'))
-
-      Row({ space: 8 }) {
-        Row() {
-          Button('全部')
-            .layoutWeight(1)
-            .height(30)
-            .type(ButtonType.Normal)
-            .backgroundColor(this.allNotesFilter === AllNotesFilter.ALL ? '#E8EEFF' : '#F7F8FC')
-            .fontColor(this.allNotesFilter === AllNotesFilter.ALL ? '#2E6BFF' : '#475467')
-            .fontSize($r('app.float.caption_text_size'))
-            .borderRadius(0)
-            .onClick(() => {
-              this.allNotesFilter = AllNotesFilter.ALL;
-            })
-
-          Column() {}
-            .width(1)
-            .height(18)
-            .backgroundColor('#DDE4F0')
-
-          Button('笔记本')
-            .layoutWeight(1)
-            .height(30)
-            .type(ButtonType.Normal)
-            .backgroundColor(this.allNotesFilter === AllNotesFilter.NOTEBOOK ? '#E8EEFF' : '#F7F8FC')
-            .fontColor(this.allNotesFilter === AllNotesFilter.NOTEBOOK ? '#2E6BFF' : '#475467')
-            .fontSize($r('app.float.caption_text_size'))
-            .borderRadius(0)
-            .onClick(() => {
-              this.allNotesFilter = AllNotesFilter.NOTEBOOK;
-            })
-
-          Column() {}
-            .width(1)
-            .height(18)
-            .backgroundColor('#DDE4F0')
-
-          Button('文件夹')
-            .layoutWeight(1)
-            .height(30)
-            .type(ButtonType.Normal)
-            .backgroundColor(this.allNotesFilter === AllNotesFilter.FOLDER ? '#E8EEFF' : '#F7F8FC')
-            .fontColor(this.allNotesFilter === AllNotesFilter.FOLDER ? '#2E6BFF' : '#475467')
-            .fontSize($r('app.float.caption_text_size'))
-            .borderRadius(0)
-            .onClick(() => {
-              this.allNotesFilter = AllNotesFilter.FOLDER;
-            })
-        }
-        .width(270)
-        .height(30)
-        .alignItems(VerticalAlign.Center)
-        .borderRadius(4)
-        .border({ width: 1, color: '#DDE4F0' })
-        .backgroundColor('#F7F8FC')
-
-        Button() {
-          Column({ space: 2 }) {
-            Column() {}
-              .width(14)
-              .height(2)
-              .backgroundColor('#667085')
-              .borderRadius(1)
-            Column() {}
-              .width(10)
-              .height(2)
-              .backgroundColor('#667085')
-              .borderRadius(1)
-            Column() {}
-              .width(6)
-              .height(2)
-              .backgroundColor('#667085')
-              .borderRadius(1)
-          }
-          .width('100%')
-          .height('100%')
-          .justifyContent(FlexAlign.Center)
-          .alignItems(HorizontalAlign.Center)
-        }
-          .height(30)
-          .width(36)
-          .backgroundColor('#F4F6FB')
-          .borderRadius(4)
-          .border({ width: 1, color: '#DDE4F0' })
-          .onClick(() => {
-            this.isAllNotesSortFilterPanelVisible = !this.isAllNotesSortFilterPanelVisible;
-          })
-      }
-    }
-    .width('100%')
+    this.buildWorkspaceHeader('全部笔记')
   }
 
   @Builder
@@ -2868,7 +4165,8 @@ export struct NotebookListPanel {
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
 
-          Text(`${this.getFolderNotebookList(folder.id).length} 个笔记本`)
+          Text(`${this.hasSearchQuery() ? this.getSearchMatchedNotebookCountInFolder(folder.id) :
+            this.getFolderNotebookList(folder.id).length} 个笔记本`)
             .fontSize($r('app.float.caption_text_size'))
             .fontColor($r('app.color.secondary_text'))
         }
@@ -2926,84 +4224,46 @@ export struct NotebookListPanel {
   }
 
   @Builder
-  private buildAllNotesSection(): void {
-    Column({ space: 12 }) {
-      this.buildAllNotesFilterHeader()
+  private buildSearchWorkspace(): void {
+    Column({ space: 16 }) {
+      this.buildWorkspaceHeader(`搜索：${this.searchText.trim()}`)
       this.buildAllNotesSortFilterPanel()
 
-      if (!this.hasAllNotesSectionContent()) {
-        Text('暂无数据')
+      Text(this.isSearchContentLoading ? '正在搜索笔记内容...' :
+        `${this.getSearchMatchedNotebookList().length} 个笔记本，${this.getSearchMatchedFolderList().length} 个文件夹`)
+        .fontSize($r('app.float.caption_text_size'))
+        .fontColor($r('app.color.secondary_text'))
+
+      if (this.filterNotebookListByWorkspaceFilter(this.getSearchMatchedNotebookList()).length === 0 &&
+        this.getSearchMatchedFolderList().length === 0) {
+        Text(this.isSearchContentLoading ? '正在读取笔记内容...' : '没有找到匹配结果')
           .fontSize($r('app.float.caption_text_size'))
           .fontColor($r('app.color.secondary_text'))
       } else {
-        if (this.allNotesFilter === AllNotesFilter.FOLDER) {
-          Flex({ wrap: FlexWrap.Wrap, justifyContent: this.getFolderGridJustifyContent(), alignItems: ItemAlign.Start }) {
-            ForEach(this.getSortedFolderListForAllNotes(), (folder: NotebookFolder) => {
-              Column() {
-                this.buildAllNotesFolderCard(folder)
-              }
-              .width(this.getFolderCardWidth())
-              .padding({ left: this.gridCardHorizontalInset, right: this.gridCardHorizontalInset })
-              .margin({ bottom: 12 })
-            }, (folder: NotebookFolder): string => `all-notes-folder-${this.folderListRenderVersion}-${folder.id}`)
+        if (this.getSearchMatchedFolderList().length > 0) {
+          Column({ space: 10 }) {
+            Text('文件夹')
+              .fontSize($r('app.float.body_text_size'))
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.primary_text'))
+
+            this.buildFolderGrid(this.getSearchMatchedFolderList(), 'search-folder')
           }
           .width('100%')
-        } else if (this.allNotesFilter === AllNotesFilter.NOTEBOOK) {
-          Flex({ wrap: FlexWrap.Wrap, justifyContent: this.getNotebookGridJustifyContent(), alignItems: ItemAlign.Start }) {
-            ForEach(this.getFilteredActiveNotebookList(), (notebook: Notebook) => {
-              Column() {
-                this.buildNotebookItem(notebook)
-              }
-              .width(this.getNotebookListItemWidth())
-              .padding({ left: this.gridCardHorizontalInset, right: this.gridCardHorizontalInset })
-              .margin({ bottom: 12 })
-            }, (notebook: Notebook): string => `all-notes-notebook-${this.notebookListRenderVersion}-${notebook.id}`)
+          .alignItems(HorizontalAlign.Start)
+        }
+
+        if (this.filterNotebookListByWorkspaceFilter(this.getSearchMatchedNotebookList()).length > 0) {
+          Column({ space: 10 }) {
+            Text('笔记本')
+              .fontSize($r('app.float.body_text_size'))
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.primary_text'))
+
+            this.buildNotebookGrid(this.filterNotebookListByWorkspaceFilter(this.getSearchMatchedNotebookList()), 'search-notebook')
           }
           .width('100%')
-        } else {
-          if (this.getSortedFolderListForAllNotes().length > 0) {
-            Column({ space: 10 }) {
-              Text('文件夹')
-                .fontSize($r('app.float.body_text_size'))
-                .fontWeight(FontWeight.Medium)
-                .fontColor($r('app.color.primary_text'))
-
-              Flex({ wrap: FlexWrap.Wrap, justifyContent: this.getFolderGridJustifyContent(), alignItems: ItemAlign.Start }) {
-                ForEach(this.getSortedFolderListForAllNotes(), (folder: NotebookFolder) => {
-                  Column() {
-                    this.buildAllNotesFolderCard(folder)
-                  }
-                  .width(this.getFolderCardWidth())
-                  .padding({ left: this.gridCardHorizontalInset, right: this.gridCardHorizontalInset })
-                  .margin({ bottom: 12 })
-                }, (folder: NotebookFolder): string => `all-notes-mixed-folder-${this.folderListRenderVersion}-${folder.id}`)
-              }
-              .width('100%')
-            }
-            .width('100%')
-          }
-
-          if (this.getFilteredActiveNotebookList().length > 0) {
-            Column({ space: 10 }) {
-              Text('笔记本')
-                .fontSize($r('app.float.body_text_size'))
-                .fontWeight(FontWeight.Medium)
-                .fontColor($r('app.color.primary_text'))
-
-              Flex({ wrap: FlexWrap.Wrap, justifyContent: this.getNotebookGridJustifyContent(), alignItems: ItemAlign.Start }) {
-                ForEach(this.getFilteredActiveNotebookList(), (notebook: Notebook) => {
-                  Column() {
-                    this.buildNotebookItem(notebook)
-                  }
-                  .width(this.getNotebookListItemWidth())
-                  .padding({ left: this.gridCardHorizontalInset, right: this.gridCardHorizontalInset })
-                  .margin({ bottom: 12 })
-                }, (notebook: Notebook): string => `all-notes-mixed-notebook-${this.notebookListRenderVersion}-${notebook.id}`)
-              }
-              .width('100%')
-            }
-            .width('100%')
-          }
+          .alignItems(HorizontalAlign.Start)
         }
       }
     }
@@ -3012,25 +4272,25 @@ export struct NotebookListPanel {
   }
 
   @Builder
+  private buildAllNotesSection(): void {
+    Column({ space: 12 }) {
+      this.buildAllNotesFilterHeader()
+      this.buildAllNotesSortFilterPanel()
+
+      this.buildAllNotebookCards(this.getFilteredActiveNotebookList(), 'all-notes-notebook', true)
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
   private buildFolderWorkspace(): void {
     Column({ space: 12 }) {
-      Row({ space: 10 }) {
-        Text('文件夹')
-          .fontSize($r('app.float.section_title_size'))
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.primary_text'))
-
-        Button('新建文件夹')
-          .height(36)
-          .backgroundColor('#EEF2FF')
-          .fontColor('#2E6BFF')
-          .onClick(() => {
-            this.openFolderDialog();
-          })
-      }
+      this.buildWorkspaceHeader('文件夹')
+      this.buildAllNotesSortFilterPanel()
 
       if (this.selectedFolderInSidebar.length > 0) {
-        this.buildNotebookListSection('该文件夹中的笔记', this.getFolderNotebookList(this.selectedFolderInSidebar))
+        this.buildNotebookListSection('该文件夹中的笔记', this.getFolderNotebookList(this.selectedFolderInSidebar), false)
       } else {
         if (this.folderList.length === 0) {
           Text('暂无文件夹')
@@ -3038,7 +4298,7 @@ export struct NotebookListPanel {
             .fontColor($r('app.color.secondary_text'))
         } else {
           Flex({ wrap: FlexWrap.Wrap, justifyContent: this.getFolderGridJustifyContent(), alignItems: ItemAlign.Start }) {
-            ForEach(this.folderList, (folder: NotebookFolder) => {
+            ForEach(this.getSortedFolderListForAllNotes(), (folder: NotebookFolder) => {
               Column() {
                 this.buildAllNotesFolderCard(folder)
               }
@@ -3058,10 +4318,8 @@ export struct NotebookListPanel {
   @Builder
   private buildTagWorkspace(): void {
     Column({ space: 12 }) {
-      Text('标签')
-        .fontSize($r('app.float.section_title_size'))
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.primary_text'))
+      this.buildWorkspaceHeader('标签')
+      this.buildAllNotesSortFilterPanel()
 
       if (this.getAllTagList().length > 0) {
         Row({ space: 8 }) {
@@ -3091,13 +4349,13 @@ export struct NotebookListPanel {
       }
 
       if (this.selectedTag.length > 0) {
-        this.buildNotebookListSection(`标签：${this.selectedTag}`, this.getTagNotebookList(this.selectedTag))
+        this.buildNotebookListSection(`标签：${this.selectedTag}`, this.getTagNotebookList(this.selectedTag), false)
       } else {
         if (this.getAllTagList().length === 0) {
           // no-op: empty hint rendered above
         } else {
           ForEach(this.getAllTagList(), (tag: string) => {
-            this.buildNotebookListSection(tag, this.getTagNotebookList(tag))
+            this.buildNotebookListSection(tag, this.getTagNotebookList(tag), false)
           }, (tag: string): string => tag)
         }
       }
@@ -3109,10 +4367,7 @@ export struct NotebookListPanel {
   @Builder
   private buildRecycleWorkspace(): void {
     Column({ space: 12 }) {
-      Text('回收站')
-        .fontSize($r('app.float.section_title_size'))
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.primary_text'))
+      this.buildWorkspaceHeader('回收站', false)
 
       if (this.getDeletedNotebookList().length === 0) {
         Text('回收站为空')
@@ -3166,7 +4421,7 @@ export struct NotebookListPanel {
           .fontColor($r('app.color.secondary_text'))
       } else {
         Flex({ wrap: FlexWrap.Wrap, justifyContent: this.getFolderGridJustifyContent(), alignItems: ItemAlign.Start }) {
-          ForEach(this.folderList, (folder: NotebookFolder) => {
+          ForEach(this.getSortedFolderListForAllNotes(), (folder: NotebookFolder) => {
             Column() {
               this.buildAllNotesFolderCard(folder)
             }
@@ -3185,8 +4440,6 @@ export struct NotebookListPanel {
   @Builder
   private buildAllWorkspace(): void {
     Column({ space: 20 }) {
-      this.buildRecentSection()
-      this.buildFolderOverviewSection()
       this.buildAllNotesSection()
     }
     .width('100%')
@@ -3195,10 +4448,12 @@ export struct NotebookListPanel {
 
   @Builder
   private buildWorkspace(): void {
-    if (this.currentSection === SidebarSection.ALL) {
+    if (this.hasSearchQuery()) {
+      this.buildSearchWorkspace()
+    } else if (this.currentSection === SidebarSection.ALL) {
       this.buildAllWorkspace()
     } else if (this.currentSection === SidebarSection.RECENT) {
-      this.buildNotebookListSection('最近打开', this.getRecentOpenedNotebookList())
+      this.buildNotebookListSection('最近使用', this.getRecentOpenedNotebookList(true))
     } else if (this.currentSection === SidebarSection.FAVORITES) {
       this.buildNotebookListSection('收藏夹', this.getFavoriteNotebookList())
     } else if (this.currentSection === SidebarSection.FOLDERS) {
@@ -3360,6 +4615,89 @@ export struct NotebookListPanel {
         }
       })
     }
+
+    if (this.isCreateActionMenuVisible) {
+      Column({ space: 0 }) {
+        Button('新建普通笔记')
+          .width('100%')
+          .height(42)
+          .backgroundColor('#00FFFFFF')
+          .fontColor($r('app.color.primary_text'))
+          .borderRadius(8)
+          .onClick(() => {
+            this.openCreateDialogFromCreateMenu();
+          })
+
+        Button('导入文件')
+          .width('100%')
+          .height(42)
+          .backgroundColor('#00FFFFFF')
+          .fontColor($r('app.color.primary_text'))
+          .borderRadius(8)
+          .onClick(() => {
+            this.importNotebookFromCreateMenu();
+          })
+
+        Divider()
+          .strokeWidth(1)
+          .color('#E6EAF2')
+          .margin({ top: 4, bottom: 4 })
+
+        Button('新建文件夹')
+          .width('100%')
+          .height(42)
+          .backgroundColor('#00FFFFFF')
+          .fontColor($r('app.color.primary_text'))
+          .borderRadius(8)
+          .onClick(() => {
+            this.openFolderDialogFromCreateMenu();
+          })
+      }
+      .width(this.folderActionMenuWidth)
+      .padding(10)
+      .backgroundColor('#D9FFFFFF')
+      .borderRadius(16)
+      .border({ width: 1, color: '#D8DEE9' })
+      .shadow({
+        radius: 14,
+        color: '#2A000000',
+        offsetX: 0,
+        offsetY: 6
+      })
+      .position(this.getCreateActionMenuPosition())
+      .zIndex(20)
+      .onTouch((event?: TouchEvent) => {
+        if (event !== undefined) {
+          event.stopPropagation();
+        }
+      })
+    }
+
+    if (this.isTopSortDropdownVisible) {
+      Column({ space: 4 }) {
+        this.buildSortOption('首字母', NotebookSortType.TITLE_ASC)
+        this.buildSortOption('最新更新', NotebookSortType.UPDATED_DESC)
+        this.buildSortOption('最近创建', NotebookSortType.CREATED_DESC)
+      }
+      .width(this.sortMenuWidth)
+      .padding(6)
+      .backgroundColor('#FFFFFF')
+      .borderRadius(10)
+      .border({ width: 1, color: '#D8DEE9' })
+      .shadow({
+        radius: 12,
+        color: '#22000000',
+        offsetX: 0,
+        offsetY: 6
+      })
+      .position(this.getTopSortMenuPosition())
+      .zIndex(20)
+      .onTouch((event?: TouchEvent) => {
+        if (event !== undefined) {
+          event.stopPropagation();
+        }
+      })
+    }
   }
 
   build() {
@@ -3368,7 +4706,7 @@ export struct NotebookListPanel {
         if (!this.isSidebarCollapsed) {
           Column({ space: 8 }) {
             this.buildSidebarItem(SidebarSection.ALL, '全部笔记')
-            this.buildSidebarItem(SidebarSection.RECENT, '最近打开')
+            this.buildSidebarItem(SidebarSection.RECENT, '最近使用')
             this.buildSidebarItem(SidebarSection.FAVORITES, '收藏夹')
 
             Divider()
@@ -3458,6 +4796,12 @@ export struct NotebookListPanel {
             }
             if (this.activeFolderActionMenuFolderId.length > 0) {
               this.closeFolderActionMenu();
+            }
+            if (this.isCreateActionMenuVisible) {
+              this.closeCreateActionMenu();
+            }
+            if (this.isTopSortDropdownVisible) {
+              this.closeTopSortDropdown();
             }
           })
         }
@@ -4004,32 +5348,7 @@ export struct NotebookListPanel {
               .fontSize($r('app.float.caption_text_size'))
               .fontColor($r('app.color.secondary_text'))
 
-            TextInput({ text: this.tagDraftText, placeholder: '多个标签用逗号分隔，例如：数学, 课堂' })
-              .width('100%')
-              .onChange((value: string) => {
-                this.tagDraftText = value;
-              })
-
-            Row({ space: 12 }) {
-              Button('取消')
-                .layoutWeight(1)
-                .height($r('app.float.button_height'))
-                .backgroundColor($r('app.color.app_background'))
-                .fontColor($r('app.color.primary_text'))
-                .onClick(() => {
-                  this.closeTagDialog();
-                })
-
-              Button(this.isUpdatingTags ? '保存中...' : '保存')
-                .layoutWeight(1)
-                .height($r('app.float.button_height'))
-                .backgroundColor($r('app.color.primary_text'))
-                .fontColor($r('app.color.inverse_text'))
-                .onClick(() => {
-                  this.confirmTagDialog();
-                })
-            }
-            .width('100%')
+            this.buildTagDialogBody()
           }
           .width('100%')
           .constraintSize({ maxWidth: 560 })
