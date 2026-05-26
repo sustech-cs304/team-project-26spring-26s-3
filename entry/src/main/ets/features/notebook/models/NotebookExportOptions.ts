@@ -1,7 +1,14 @@
 export type NotebookExportFormat = 'pdf' | 'png' | 'jpg' | 'webp';
+export type NotebookExportScope = 'all' | 'current' | 'range';
 
 export interface NotebookExportFormatOption {
   format: NotebookExportFormat;
+  label: string;
+  caption: string;
+}
+
+export interface NotebookExportScopeOption {
+  scope: NotebookExportScope;
   label: string;
   caption: string;
 }
@@ -13,6 +20,12 @@ export const NOTEBOOK_EXPORT_FORMAT_OPTIONS: NotebookExportFormatOption[] = [
   { format: 'webp', label: 'WEBP', caption: '压缩图片' }
 ];
 
+export const NOTEBOOK_EXPORT_SCOPE_OPTIONS: NotebookExportScopeOption[] = [
+  { scope: 'current', label: '当前页', caption: '只导出正在编辑的页面' },
+  { scope: 'range', label: '指定范围', caption: '按页码选择导出范围' },
+  { scope: 'all', label: '全部页面', caption: '导出整个笔记本' }
+];
+
 const NOTEBOOK_EXPORT_EXTENSIONS: string[] = ['.pdf', '.png', '.jpg', '.jpeg', '.webp'];
 
 export function normalizeNotebookExportFormat(format: string): NotebookExportFormat {
@@ -20,6 +33,13 @@ export function normalizeNotebookExportFormat(format: string): NotebookExportFor
     return format;
   }
   return 'pdf';
+}
+
+export function normalizeNotebookExportScope(scope: string): NotebookExportScope {
+  if (scope === 'range') {
+    return 'range';
+  }
+  return scope === 'current' ? 'current' : 'all';
 }
 
 export function stripNotebookExportExtension(fileName: string): string {
