@@ -240,6 +240,7 @@ export class NotebookImportService {
   private async ensureNotebookCreated(title: string, coverImageUri: string): Promise<Notebook> {
     const notebookList: Notebook[] = await this.readNotebookList();
     const currentTime: number = TimeUtil.now();
+    const notebookTitle: string = NotebookEntity.createUniqueTitle(title, this.collectNotebookTitleList(notebookList));
     const usedCoverColorList: string[] = [];
     for (const existingNotebook of notebookList) {
       const normalizedColor: string = NotebookEntity.normalizeCoverColor(existingNotebook.coverColor);
@@ -258,7 +259,7 @@ export class NotebookImportService {
 
     const notebook: Notebook = {
       id: IdUtil.createNotebookId(),
-      title: NotebookEntity.normalizeTitle(title),
+      title: notebookTitle,
       folderId: '',
       createdAt: currentTime,
       updatedAt: currentTime,
@@ -1205,10 +1206,27 @@ export class NotebookImportService {
         return [];
       }
       const result: Notebook[] = [];
+      const usedTitleList: string[] = [];
       for (const item of parsed) {
         const notebook = this.parseNotebook(item);
         if (notebook !== null) {
-          result.push(notebook);
+          const uniqueTitle: string = NotebookEntity.createUniqueTitle(notebook.title, usedTitleList);
+          result.push({
+            id: notebook.id,
+            title: uniqueTitle,
+            folderId: notebook.folderId,
+            createdAt: notebook.createdAt,
+            updatedAt: notebook.updatedAt,
+            coverColor: NotebookEntity.normalizeCoverColor(notebook.coverColor),
+            coverImageUri: NotebookEntity.normalizeCoverImageUri(notebook.coverImageUri),
+            pageCount: NotebookEntity.normalizePageCount(notebook.pageCount),
+            isFavorite: notebook.isFavorite === true,
+            tags: Array.isArray(notebook.tags) ? notebook.tags.slice() : [],
+            isDeleted: notebook.isDeleted === true,
+            deletedAt: typeof notebook.deletedAt === 'number' ? notebook.deletedAt : 0,
+            lastOpenedAt: typeof notebook.lastOpenedAt === 'number' ? notebook.lastOpenedAt : 0
+          });
+          usedTitleList.push(uniqueTitle);
         }
       }
       return result;
@@ -1275,6 +1293,14 @@ export class NotebookImportService {
       }
     }
     return result;
+  }
+
+  private collectNotebookTitleList(notebookList: Notebook[]): string[] {
+    const titleList: string[] = [];
+    for (const notebook of notebookList) {
+      titleList.push(notebook.title);
+    }
+    return titleList;
   }
 
   private asMap(value: unknown): RawMap | null {

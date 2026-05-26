@@ -47,6 +47,35 @@ export class NotebookEntity {
     return NotebookEntity.DEFAULT_TITLE;
   }
 
+  static createUniqueTitle(title: string, existingTitles: string[]): string {
+    const baseTitle: string = NotebookEntity.normalizeTitle(title);
+    const existingTitleKeyList: string[] = [];
+    for (const existingTitle of existingTitles) {
+      const existingTitleKey: string = NotebookEntity.normalizeTitleKey(existingTitle);
+      if (!existingTitleKeyList.includes(existingTitleKey)) {
+        existingTitleKeyList.push(existingTitleKey);
+      }
+    }
+
+    if (!existingTitleKeyList.includes(NotebookEntity.normalizeTitleKey(baseTitle))) {
+      return baseTitle;
+    }
+
+    const suffixLimit: number = existingTitleKeyList.length + 2;
+    for (let suffix: number = 2; suffix <= suffixLimit; suffix += 1) {
+      const candidateTitle: string = `${baseTitle} (${suffix})`;
+      if (!existingTitleKeyList.includes(NotebookEntity.normalizeTitleKey(candidateTitle))) {
+        return candidateTitle;
+      }
+    }
+
+    return `${baseTitle} (${suffixLimit + 1})`;
+  }
+
+  static normalizeTitleKey(title: string): string {
+    return NotebookEntity.normalizeTitle(title).replace(/\s+/g, ' ').toLowerCase();
+  }
+
   static normalizeFolderId(folderId?: string): string {
     if (typeof folderId === 'string') {
       return folderId.trim();

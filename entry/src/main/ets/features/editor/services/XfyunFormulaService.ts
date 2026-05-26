@@ -3,19 +3,47 @@ import http from '@ohos.net.http';
 import { XfyunFormulaConfig } from './XfyunFormulaConfig';
 
 interface FormulaApiResponse {
-  code?: number;
+  code?: number | string;
   message?: string;
+  desc?: string;
   sid?: string;
-  data?: {
-    region?: FormulaRegion[];
-  };
+  data?: FormulaApiData | string;
+  result?: unknown;
 }
 
-interface FormulaRegion {
+interface FormulaApiData extends FormulaTextCarrier {
+  region?: unknown;
+  regions?: unknown;
+}
+
+interface FormulaRegion extends FormulaTextCarrier {
   type?: string;
-  recog?: {
-    content?: string;
-  };
+  recog?: unknown;
+}
+
+interface FormulaTextCarrier {
+  content?: string;
+  text?: string;
+  latex?: string;
+  value?: string;
+  formula?: string;
+  result?: unknown;
+  data?: unknown;
+  recog?: unknown;
+  region?: unknown;
+  regions?: unknown;
+  element?: unknown;
+  elements?: unknown;
+  list?: unknown;
+  lines?: unknown;
+  words?: unknown;
+  children?: unknown;
+  items?: unknown;
+}
+
+interface FormulaContentEntry {
+  content: string;
+  formulaLike: boolean;
 }
 
 export interface FormulaRecognitionResult {
@@ -79,29 +107,32 @@ export class XfyunFormulaService {
       }
 
       const payload = JSON.parse(rawResult) as FormulaApiResponse;
-      if ((payload.code ?? -1) !== 0) {
-        throw new Error(payload.message ?? `Formula service error code=${payload.code ?? -1}`);
+      const responseCode = this.normalizeResponseCode(payload.code);
+      if (responseCode !== 0) {
+        throw new Error(payload.message ?? payload.desc ?? `Formula service error code=${payload.code ?? -1}`);
       }
 
-      const regions = payload.data?.region ?? [];
+      const contentEntries = this.collectFormulaContentEntries(payload);
       const textParts: string[] = [];
       const latexParts: string[] = [];
-      for (const region of regions) {
-        if (region.type !== 'text') {
-          continue;
-        }
-        const content = `${region.recog?.content ?? ''}`.trim();
+      for (const entry of contentEntries) {
+        const content = entry.content.trim();
         if (content.length === 0) {
           continue;
         }
         textParts.push(content);
-        latexParts.push(...this.extractLatex(content));
+        const extractedLatex = this.extractLatex(content);
+        if (extractedLatex.length > 0) {
+          latexParts.push(...extractedLatex);
+        } else if (entry.formulaLike || this.looksLikeLatex(content)) {
+          latexParts.push(this.stripLatexMarkers(content));
+        }
       }
 
       const text = textParts.join('\n').trim();
-      const latex = latexParts.join('\n').trim();
+      const latex = this.dedupeTextParts(latexParts).join('\n').trim();
       if (text.length === 0 && latex.length === 0) {
-        throw new Error('Formula service returned an empty recognition result.');
+        throw new Error(`Formula service returned an empty recognition result. sid=${payload.sid ?? ''} ${this.describeFormulaPayload(rawResult)}`);
       }
 
       return {
@@ -140,6 +171,174 @@ export class XfyunFormulaService {
     return new Date().toUTCString();
   }
 
+  private normalizeResponseCode(code: number | string | undefined): number {
+    if (typeof code === 'number' && Number.isFinite(code)) {
+      return code;
+    }
+
+    if (typeof code === 'string') {
+      const parsed = Number.parseInt(code.trim(), 10);
+      return Number.isFinite(parsed) ? parsed : -1;
+    }
+
+    return -1;
+  }
+
+  private collectFormulaContentEntries(payload: FormulaApiResponse): FormulaContentEntry[] {
+    const entries: FormulaContentEntry[] = [];
+    this.collectFormulaContentFromUnknown(entries, payload.result, false, 0);
+    this.collectFormulaContentFromUnknown(entries, payload.data, true, 0);
+
+    return entries;
+  }
+
+  private collectFormulaRegions(data: FormulaApiData): FormulaRegion[] {
+    if (Array.isArray(data.region)) {
+      return data.region as FormulaRegion[];
+    }
+
+    if (Array.isArray(data.regions)) {
+      return data.regions as FormulaRegion[];
+    }
+
+    return [];
+  }
+
+  private collectFormulaContentFromValue(
+    entries: FormulaContentEntry[],
+    value: unknown,
+    formulaLike: boolean
+  ): void {
+    if (typeof value === 'string') {
+      this.addFormulaContentEntry(entries, value, formulaLike);
+      return;
+    }
+
+    if (value && typeof value === 'object') {
+      this.collectFormulaContentFromCarrier(entries, value as FormulaTextCarrier, formulaLike);
+    }
+  }
+
+  private collectFormulaContentFromUnknown(
+    entries: FormulaContentEntry[],
+    value: unknown,
+    formulaLike: boolean,
+    depth: number
+  ): void {
+    if (depth > 12) {
+      return;
+    }
+
+    if (typeof value === 'string') {
+      const text = value.trim();
+      if (this.looksLikeJson(text)) {
+        try {
+          this.collectFormulaContentFromUnknown(entries, JSON.parse(text) as Object, formulaLike, depth + 1);
+          return;
+        } catch (_parseError) {
+        }
+      }
+      this.addFormulaContentEntry(entries, text, formulaLike || this.looksLikeLatex(text));
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        this.collectFormulaContentFromUnknown(entries, item, formulaLike, depth + 1);
+      }
+      return;
+    }
+
+    if (!value || typeof value !== 'object') {
+      return;
+    }
+
+    const carrier = value as FormulaTextCarrier;
+    const localFormulaLike = formulaLike || this.isFormulaRegionType((value as FormulaRegion).type);
+    this.collectFormulaContentFromCarrier(entries, carrier, localFormulaLike);
+    this.collectFormulaContentFromUnknown(entries, carrier.data, localFormulaLike, depth + 1);
+    this.collectFormulaContentFromUnknown(entries, carrier.result, localFormulaLike, depth + 1);
+    this.collectFormulaContentFromUnknown(entries, carrier.region, localFormulaLike, depth + 1);
+    this.collectFormulaContentFromUnknown(entries, carrier.regions, localFormulaLike, depth + 1);
+    this.collectFormulaContentFromUnknown(entries, carrier.recog, localFormulaLike, depth + 1);
+    this.collectFormulaContentFromUnknown(entries, carrier.element, localFormulaLike, depth + 1);
+    this.collectFormulaContentFromUnknown(entries, carrier.elements, localFormulaLike, depth + 1);
+    this.collectFormulaContentFromUnknown(entries, carrier.list, localFormulaLike, depth + 1);
+    this.collectFormulaContentFromUnknown(entries, carrier.lines, localFormulaLike, depth + 1);
+    this.collectFormulaContentFromUnknown(entries, carrier.words, localFormulaLike, depth + 1);
+    this.collectFormulaContentFromUnknown(entries, carrier.children, localFormulaLike, depth + 1);
+    this.collectFormulaContentFromUnknown(entries, carrier.items, localFormulaLike, depth + 1);
+  }
+
+  private collectFormulaContentFromCarrier(
+    entries: FormulaContentEntry[],
+    carrier: FormulaTextCarrier,
+    formulaLike: boolean
+  ): void {
+    this.addFormulaContentEntry(entries, carrier.content, formulaLike);
+    this.addFormulaContentEntry(entries, carrier.text, formulaLike);
+    this.addFormulaContentEntry(entries, carrier.latex, true);
+    this.addFormulaContentEntry(entries, carrier.value, formulaLike);
+    this.addFormulaContentEntry(entries, carrier.formula, true);
+    this.collectFormulaContentFromValue(entries, carrier.result, formulaLike);
+  }
+
+  private addFormulaContentEntry(entries: FormulaContentEntry[], value: string | undefined, formulaLike: boolean): void {
+    if (typeof value !== 'string') {
+      return;
+    }
+
+    const content = value.trim();
+    if (content.length === 0) {
+      return;
+    }
+
+    for (let index = 0; index < entries.length; index += 1) {
+      if (entries[index].content === content) {
+        entries[index].formulaLike = entries[index].formulaLike || formulaLike;
+        return;
+      }
+    }
+
+    entries.push({
+      content,
+      formulaLike
+    });
+  }
+
+  private isFormulaRegionType(type: string | undefined): boolean {
+    if (typeof type !== 'string') {
+      return false;
+    }
+
+    const normalized = type.toLowerCase();
+    return normalized.indexOf('formula') >= 0 ||
+      normalized.indexOf('math') >= 0 ||
+      normalized.indexOf('latex') >= 0 ||
+      normalized.indexOf('equation') >= 0;
+  }
+
+  private looksLikeLatex(content: string): boolean {
+    return content.indexOf('\\') >= 0 ||
+      content.indexOf('^') >= 0 ||
+      content.indexOf('_') >= 0 ||
+      content.indexOf('{') >= 0 ||
+      content.indexOf('}') >= 0 ||
+      content.indexOf('=') >= 0 ||
+      content.indexOf('+') >= 0 ||
+      content.indexOf('/') >= 0 ||
+      content.indexOf('√') >= 0;
+  }
+
+  private looksLikeJson(text: string): boolean {
+    if (text.length === 0) {
+      return false;
+    }
+
+    const first = text.substring(0, 1);
+    return first === '{' || first === '[';
+  }
+
   private extractLatex(content: string): string[] {
     const matches = content.match(/ifly-latex-begin([\s\S]*?)ifly-latex-end/g);
     if (matches === null) {
@@ -157,6 +356,99 @@ export class XfyunFormulaService {
       }
     }
     return latexList;
+  }
+
+  private stripLatexMarkers(content: string): string {
+    return content
+      .replace(/ifly-latex-begin/g, '')
+      .replace(/ifly-latex-end/g, '')
+      .trim();
+  }
+
+  private dedupeTextParts(parts: string[]): string[] {
+    const result: string[] = [];
+    for (const part of parts) {
+      const normalized = part.trim();
+      if (normalized.length > 0 && !result.includes(normalized)) {
+        result.push(normalized);
+      }
+    }
+    return result;
+  }
+
+  private describeFormulaPayload(rawResult: string): string {
+    const trimmed = rawResult.trim();
+    if (!this.looksLikeJson(trimmed)) {
+      return `rawPreview=${this.compactPreview(trimmed, 600)}`;
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed) as Object;
+      return `schema=${this.describeFormulaPayloadShape(parsed)} rawPreview=${this.compactPreview(trimmed, 800)}`;
+    } catch (_parseError) {
+      return `rawPreview=${this.compactPreview(trimmed, 600)}`;
+    }
+  }
+
+  private describeFormulaPayloadShape(value: unknown): string {
+    if (!value || typeof value !== 'object') {
+      return typeof value;
+    }
+
+    const record = value as Record<string, Object>;
+    const parts: string[] = [`root=${Object.keys(record).join('|')}`];
+    const data = (value as FormulaApiResponse).data;
+    if (typeof data === 'string') {
+      parts.push(`data=string(${data.length})`);
+      return parts.join(' ');
+    }
+
+    if (data && typeof data === 'object') {
+      const dataRecord = data as Record<string, Object>;
+      parts.push(`data=${Object.keys(dataRecord).join('|')}`);
+      this.appendFormulaCollectionShape(parts, (data as FormulaApiData).region, 'region');
+      this.appendFormulaCollectionShape(parts, (data as FormulaApiData).regions, 'regions');
+    }
+
+    this.appendFormulaCollectionShape(parts, (value as FormulaTextCarrier).region, 'rootRegion');
+    this.appendFormulaCollectionShape(parts, (value as FormulaTextCarrier).regions, 'rootRegions');
+    return parts.join(' ');
+  }
+
+  private appendFormulaCollectionShape(parts: string[], value: unknown, label: string): void {
+    if (Array.isArray(value)) {
+      parts.push(`${label}=${value.length}`);
+      if (value.length > 0 && value[0] && typeof value[0] === 'object') {
+        const first = value[0] as FormulaRegion;
+        parts.push(`${label}0=${Object.keys(first as Record<string, Object>).join('|')}`);
+        if (typeof first.type === 'string') {
+          parts.push(`${label}0Type=${first.type}`);
+        }
+        if (first.recog && typeof first.recog === 'object') {
+          parts.push(`${label}0Recog=${Object.keys(first.recog as Record<string, Object>).join('|')}`);
+        } else if (typeof first.recog === 'string') {
+          parts.push(`${label}0Recog=string(${first.recog.length})`);
+        }
+      }
+      return;
+    }
+
+    if (value && typeof value === 'object') {
+      parts.push(`${label}=object(${Object.keys(value as Record<string, Object>).join('|')})`);
+    }
+  }
+
+  private compactPreview(text: string, maxLength: number): string {
+    const compact = text.replace(/\s+/g, ' ');
+    if (compact.length <= maxLength) {
+      return compact;
+    }
+
+    return `${compact.substring(0, maxLength)}...`;
+  }
+
+  private base64Char(alphabet: string, index: number): string {
+    return alphabet.substring(index, index + 1);
   }
 
   private sha256(text: string): Uint8Array {
@@ -342,10 +634,10 @@ export class XfyunFormulaService {
       const byte2 = index + 1 < bytes.length ? bytes[index + 1] : 0;
       const byte3 = index + 2 < bytes.length ? bytes[index + 2] : 0;
       const triplet = (byte1 << 16) | (byte2 << 8) | byte3;
-      output += alphabet[(triplet >>> 18) & 0x3f];
-      output += alphabet[(triplet >>> 12) & 0x3f];
-      output += index + 1 < bytes.length ? alphabet[(triplet >>> 6) & 0x3f] : '=';
-      output += index + 2 < bytes.length ? alphabet[triplet & 0x3f] : '=';
+      output += this.base64Char(alphabet, (triplet >>> 18) & 0x3f);
+      output += this.base64Char(alphabet, (triplet >>> 12) & 0x3f);
+      output += index + 1 < bytes.length ? this.base64Char(alphabet, (triplet >>> 6) & 0x3f) : '=';
+      output += index + 2 < bytes.length ? this.base64Char(alphabet, triplet & 0x3f) : '=';
     }
     return output;
   }
