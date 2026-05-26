@@ -70,7 +70,8 @@ export class NotebookEditorViewModel {
       tags: Array.isArray(this.notebook.tags) ? this.notebook.tags.slice() : [],
       isDeleted: this.notebook.isDeleted,
       deletedAt: this.notebook.deletedAt,
-      lastOpenedAt: this.notebook.lastOpenedAt
+      lastOpenedAt: this.notebook.lastOpenedAt,
+      lastEditedPageId: this.notebook.lastEditedPageId
     };
   }
 

@@ -179,33 +179,6 @@ struct DrawingEditorPage {
   }
 
   @Builder
-  private buildDebugPanel(): void {
-    Column({ space: 6 }) {
-      Text('Debug Output')
-        .fontSize(13)
-        .fontWeight(FontWeight.Medium)
-        .fontColor('#111827')
-
-      Scroll() {
-        Text(this.getDebugSummary())
-          .width('100%')
-          .fontSize(10)
-          .fontColor('#334155')
-          .lineHeight(14)
-          .textAlign(TextAlign.Start)
-      }
-      .width('100%')
-      .height(96)
-    }
-    .width('100%')
-    .alignItems(HorizontalAlign.Start)
-    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-    .backgroundColor('#F8FAFC')
-    .borderRadius(12)
-    .border({ width: 1, color: '#CBD5E1' })
-  }
-
-  @Builder
   private buildLoadingState(): void {
     Column({ space: 12 }) {
       Text('Loading drawing workspace...')

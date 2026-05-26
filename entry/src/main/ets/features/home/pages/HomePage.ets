@@ -20,6 +20,7 @@ struct HomePage {
   @State private refreshNotebookSignal: number = 0;
   @State private selectedTopSortType: NotebookSortType = NotebookSortType.UPDATED_DESC;
   @State private isTopSortDropdownVisible: boolean = false;
+  @State private isNotebookSidebarCollapsed: boolean = false;
   @State private topSortMenuAnchor: TopSortMenuAnchor = new TopSortMenuAnchor();
   @State private rootGlobalLeft: number = 0;
   @State private rootGlobalTop: number = 0;
@@ -73,25 +74,34 @@ struct HomePage {
     Stack({ alignContent: Alignment.TopStart }) {
       Column() {
         Row({ space: 16 }) {
-          Row({ space: 10 }) {
-            Row() {
-              Text('H')
-                .fontSize(18)
-                .fontWeight(FontWeight.Bold)
-                .fontColor($r('app.color.inverse_text'))
-            }
-            .width(36)
-            .height(36)
-            .justifyContent(FlexAlign.Center)
-            .alignItems(VerticalAlign.Center)
-            .backgroundColor('#3D63FF')
-            .borderRadius(10)
+          Button() {
+            Row({ space: 10 }) {
+              Row() {
+                Text('H')
+                  .fontSize(18)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor($r('app.color.inverse_text'))
+              }
+              .width(36)
+              .height(36)
+              .justifyContent(FlexAlign.Center)
+              .alignItems(VerticalAlign.Center)
+              .backgroundColor('#3D63FF')
+              .borderRadius(10)
 
-            Text('HOSN')
-              .fontSize(24)
-              .fontWeight(FontWeight.Bold)
-              .fontColor('#0F172A')
+              Text('HOSN')
+                .fontSize(24)
+                .fontWeight(FontWeight.Bold)
+                .fontColor('#0F172A')
+            }
           }
+          .height(44)
+          .padding({ left: 2, right: 8, top: 2, bottom: 2 })
+          .backgroundColor('#00000000')
+          .borderRadius(12)
+          .onClick(() => {
+            this.isNotebookSidebarCollapsed = !this.isNotebookSidebarCollapsed;
+          })
 
           Row({ space: 8 }) {
             Text('Search notes, tags or content...')
@@ -171,7 +181,8 @@ struct HomePage {
           NotebookListPanel({
             createNotebookSignal: this.createNotebookSignal,
             refreshNotebookSignal: this.refreshNotebookSignal,
-            topSortType: this.selectedTopSortType
+            topSortType: this.selectedTopSortType,
+            isSidebarCollapsed: this.isNotebookSidebarCollapsed
           })
         }
         .width('100%')

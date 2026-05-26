@@ -1,6 +1,8 @@
 import common from '@ohos.app.ability.common';
 import { Notebook } from '../../../domain/entities/Notebook';
 import { NotebookFolder } from '../../../domain/entities/NotebookFolder';
+import { NotebookPage } from '../../../domain/entities/NotebookPage';
+import { NotebookPageCanvas } from '../../../domain/entities/NotebookPageCanvas';
 import { CreateNotebook } from '../../../domain/usecases/CreateNotebook';
 import { CreateNotebookFolder } from '../../../domain/usecases/CreateNotebookFolder';
 import { DeleteNotebook } from '../../../domain/usecases/DeleteNotebook';
@@ -147,6 +149,17 @@ export class NotebookListViewModel {
     return notebook;
   }
 
+  async loadNotebookPages(notebookId: string): Promise<NotebookPage[]> {
+    return this.notebookRepository.getNotebookPages(notebookId);
+  }
+
+  async loadNotebookPageCanvas(notebookId: string, pageId: string): Promise<NotebookPageCanvas | null> {
+    return this.notebookRepository.getNotebookPageCanvas({
+      notebookId: notebookId,
+      pageId: pageId
+    });
+  }
+
   async restoreNotebook(notebookId: string): Promise<boolean> {
     const hasRestored: boolean = await this.notebookRepository.restoreNotebook(notebookId);
     this.notebookList = await this.getNotebookListUseCase.execute();
@@ -188,7 +201,8 @@ export class NotebookListViewModel {
         tags: Array.isArray(notebook.tags) ? notebook.tags.slice() : [],
         isDeleted: notebook.isDeleted === true,
         deletedAt: typeof notebook.deletedAt === 'number' ? notebook.deletedAt : 0,
-        lastOpenedAt: typeof notebook.lastOpenedAt === 'number' ? notebook.lastOpenedAt : 0
+        lastOpenedAt: typeof notebook.lastOpenedAt === 'number' ? notebook.lastOpenedAt : 0,
+        lastEditedPageId: typeof notebook.lastEditedPageId === 'string' ? notebook.lastEditedPageId : ''
       });
     }
     return clonedNotebookList;

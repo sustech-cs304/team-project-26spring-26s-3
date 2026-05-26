@@ -54,6 +54,11 @@ export interface UpdateNotebookCoverRequest {
   coverColor?: string;
 }
 
+export interface UpdateNotebookLastEditedPageRequest {
+  notebookId: string;
+  pageId: string;
+}
+
 export interface CreateNotebookPageRequest {
   notebookId: string;
 }
@@ -101,6 +106,7 @@ export interface NotebookRepository {
   toggleNotebookFavorite(request: ToggleNotebookFavoriteRequest): Promise<Notebook | null>;
   updateNotebookTags(request: UpdateNotebookTagsRequest): Promise<Notebook | null>;
   updateNotebookCover(request: UpdateNotebookCoverRequest): Promise<Notebook | null>;
+  updateNotebookLastEditedPage(request: UpdateNotebookLastEditedPageRequest): Promise<Notebook | null>;
   touchNotebookLastOpened(notebookId: string): Promise<Notebook | null>;
   restoreNotebook(notebookId: string): Promise<boolean>;
   purgeNotebook(notebookId: string): Promise<boolean>;
