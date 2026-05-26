@@ -537,25 +537,48 @@ export struct CanvasBoard {
       return false;
     }
 
-    if (this.backgroundPixelMapFailedUri === backgroundImageUri) {
-      return false;
-    }
-
-    if (this.backgroundPixelMapUri !== backgroundImageUri || this.backgroundPixelMap === null) {
+    if ((this.backgroundPixelMapUri !== backgroundImageUri || this.backgroundPixelMap === null) &&
+      this.backgroundPixelMapFailedUri !== backgroundImageUri) {
       void this.ensureBackgroundPixelMapLoaded(backgroundImageUri);
     }
 
     const pixelMap: image.PixelMap | null = this.backgroundPixelMap;
-    if (pixelMap === null || this.backgroundPixelMapUri !== backgroundImageUri) {
-      return false;
+    if (pixelMap !== null && this.backgroundPixelMapUri === backgroundImageUri) {
+      try {
+        context.drawImage(pixelMap, 0, 0, pageWidth, pageHeight);
+        return true;
+      } catch (_drawError) {
+      }
     }
 
-    try {
-      context.drawImage(pixelMap, 0, 0, pageWidth, pageHeight);
-      return true;
-    } catch (_drawError) {
-      return false;
+    return this.drawBackgroundImageBitmapOnContext(context, backgroundImageUri, pageWidth, pageHeight);
+  }
+
+  private drawBackgroundImageBitmapOnContext(
+    context: CanvasDrawContext,
+    backgroundImageUri: string,
+    pageWidth: number,
+    pageHeight: number
+  ): boolean {
+    const candidates: string[] = this.buildImageSourceCandidates(backgroundImageUri);
+    for (const candidate of candidates) {
+      let imageBitmap: ImageBitmap | undefined = undefined;
+      try {
+        imageBitmap = new ImageBitmap(candidate);
+        context.drawImage(imageBitmap, 0, 0, pageWidth, pageHeight);
+        return true;
+      } catch (_error) {
+      } finally {
+        if (imageBitmap !== undefined) {
+          try {
+            imageBitmap.close();
+          } catch (_closeError) {
+          }
+        }
+      }
     }
+
+    return false;
   }
 
   private async ensureBackgroundPixelMapLoaded(uri: string): Promise<void> {
@@ -592,6 +615,7 @@ export struct CanvasBoard {
     if (this.backgroundPixelMapLoadingUri === uri) {
       this.backgroundPixelMapLoadingUri = '';
     }
+    this.redrawBackgroundLayer();
     this.redrawCommittedLayer();
     this.redrawOverlayLayer();
   }
@@ -636,6 +660,10 @@ export struct CanvasBoard {
   private buildImageSourceCandidates(path: string): string[] {
     const candidates: string[] = [];
     this.appendImageSourceCandidate(candidates, path);
+    const decodedPath: string = this.decodeUriSegment(path);
+    if (decodedPath !== path) {
+      this.appendImageSourceCandidate(candidates, decodedPath);
+    }
 
     if (path.startsWith('file://')) {
       const rawLocalPath: string = path.substring('file://'.length);
@@ -643,8 +671,23 @@ export struct CanvasBoard {
       if (!rawLocalPath.startsWith('/')) {
         this.appendImageSourceCandidate(candidates, `/${rawLocalPath}`);
       }
+      const decodedLocalPath: string = this.decodeUriSegment(rawLocalPath);
+      if (decodedLocalPath !== rawLocalPath) {
+        this.appendImageSourceCandidate(candidates, decodedLocalPath);
+        if (!decodedLocalPath.startsWith('/')) {
+          this.appendImageSourceCandidate(candidates, `/${decodedLocalPath}`);
+        }
+      }
     } else if (!path.startsWith('http://') && !path.startsWith('https://')) {
       this.appendImageSourceCandidate(candidates, `file://${path}`);
+    }
+
+    if (decodedPath.startsWith('file://')) {
+      const decodedSchemePath: string = decodedPath.substring('file://'.length);
+      this.appendImageSourceCandidate(candidates, decodedSchemePath);
+      if (!decodedSchemePath.startsWith('/')) {
+        this.appendImageSourceCandidate(candidates, `/${decodedSchemePath}`);
+      }
     }
 
     return candidates;
@@ -656,6 +699,14 @@ export struct CanvasBoard {
     }
     if (!candidates.includes(candidate)) {
       candidates.push(candidate);
+    }
+  }
+
+  private decodeUriSegment(text: string): string {
+    try {
+      return decodeURIComponent(text);
+    } catch (_error) {
+      return text;
     }
   }
 
@@ -2022,6 +2073,12 @@ export struct CanvasBoard {
     }
 
     const redrawStartedAt = Date.now();
+    const size = this.getCanvasSize(this.committedContext2D);
+    const transform = this.getPageViewportTransform(size);
+    this.syncElementLayerTransform(transform);
+    const visibleRegion = this.getVisiblePageRegion(transform);
+    this.redrawBackgroundLayer(size, transform, visibleRegion);
+
     const viewModel = this.getRenderingViewModel();
     if (viewModel === null && !this.shouldAutoLoadCurrentSession()) {
       EditorPerformanceTrace.record(
@@ -2043,12 +2100,6 @@ export struct CanvasBoard {
     if (shouldRebuildRenderCache || !this.isRenderedStrokeCacheReusable(strokes)) {
       this.rebuildRenderedStrokeCache(strokes);
     }
-
-    const size = this.getCanvasSize(this.committedContext2D);
-    const transform = this.getPageViewportTransform(size);
-    this.syncElementLayerTransform(transform);
-    const visibleRegion = this.getVisiblePageRegion(transform);
-    this.redrawBackgroundLayer(size, transform, visibleRegion);
 
     if (useBufferedRendering &&
       this.redrawCommittedBaseLayerWithBuffer(size, transform, visibleRegion, strokes, flattenedStrokeCount,
@@ -3718,6 +3769,9 @@ export struct CanvasBoard {
       `${this.templateType}`,
       this.paperBackgroundColor,
       this.resolvePageBackgroundImageUri(),
+      this.backgroundPixelMapUri,
+      this.backgroundPixelMapLoadingUri,
+      this.backgroundPixelMapFailedUri,
       `${Math.round(transform.pageWidth * 100)}`,
       `${Math.round(transform.pageHeight * 100)}`,
       `${Math.round(transform.viewportWidth)}`,
@@ -4696,6 +4750,10 @@ export struct CanvasBoard {
     this.recentCommittedContext2D.restore();
   }
 
+  private shouldFillTemplateBackground(didDrawBackgroundImage: boolean): boolean {
+    return this.resolvePageBackgroundImageUri().length === 0 || !didDrawBackgroundImage;
+  }
+
   private toPixelAlignedViewportRegion(region: BoundingBox, transform: PageViewportTransform): BoundingBox | null {
     const viewportRegion = this.toViewportBoundingBox(region, transform);
     if (viewportRegion === null) {
@@ -5080,6 +5138,11 @@ export struct CanvasBoard {
 
   private onCanvasStyleChanged(): void {
     this.clearViewportRedrawTimers();
+    if (this.backgroundPixelMapUri !== this.resolvePageBackgroundImageUri()) {
+      this.releaseBackgroundPixelMap();
+    }
+    this.lastHighQualityViewportRenderKey = '';
+    this.redrawBackgroundLayer();
     this.redrawCommittedLayer();
     this.redrawOverlayLayer();
   }

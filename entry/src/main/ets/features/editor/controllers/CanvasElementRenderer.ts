@@ -163,6 +163,10 @@ export class CanvasElementRenderer {
   private static buildImageSourceCandidates(path: string): string[] {
     const candidates: string[] = [];
     CanvasElementRenderer.appendImageSourceCandidate(candidates, path);
+    const decodedPath: string = CanvasElementRenderer.decodeUriSegment(path);
+    if (decodedPath !== path) {
+      CanvasElementRenderer.appendImageSourceCandidate(candidates, decodedPath);
+    }
 
     if (path.startsWith('file://')) {
       const rawLocalPath: string = path.substring('file://'.length);
@@ -170,8 +174,23 @@ export class CanvasElementRenderer {
       if (!rawLocalPath.startsWith('/')) {
         CanvasElementRenderer.appendImageSourceCandidate(candidates, `/${rawLocalPath}`);
       }
+      const decodedLocalPath: string = CanvasElementRenderer.decodeUriSegment(rawLocalPath);
+      if (decodedLocalPath !== rawLocalPath) {
+        CanvasElementRenderer.appendImageSourceCandidate(candidates, decodedLocalPath);
+        if (!decodedLocalPath.startsWith('/')) {
+          CanvasElementRenderer.appendImageSourceCandidate(candidates, `/${decodedLocalPath}`);
+        }
+      }
     } else if (!path.startsWith('http://') && !path.startsWith('https://')) {
       CanvasElementRenderer.appendImageSourceCandidate(candidates, `file://${path}`);
+    }
+
+    if (decodedPath.startsWith('file://')) {
+      const decodedSchemePath: string = decodedPath.substring('file://'.length);
+      CanvasElementRenderer.appendImageSourceCandidate(candidates, decodedSchemePath);
+      if (!decodedSchemePath.startsWith('/')) {
+        CanvasElementRenderer.appendImageSourceCandidate(candidates, `/${decodedSchemePath}`);
+      }
     }
 
     return candidates;
@@ -183,6 +202,14 @@ export class CanvasElementRenderer {
     }
     if (!candidates.includes(candidate)) {
       candidates.push(candidate);
+    }
+  }
+
+  private static decodeUriSegment(text: string): string {
+    try {
+      return decodeURIComponent(text);
+    } catch (_error) {
+      return text;
     }
   }
 
