@@ -12,6 +12,7 @@ export interface Notebook {
   isDeleted?: boolean;
   deletedAt?: number;
   lastOpenedAt?: number;
+  lastEditedPageId?: string;
 }
 
 export interface NotebookSummary {
@@ -100,6 +101,13 @@ export class NotebookEntity {
       return '';
     }
     return uri.trim();
+  }
+
+  static normalizeLastEditedPageId(pageId?: string): string {
+    if (typeof pageId !== 'string') {
+      return '';
+    }
+    return pageId.trim();
   }
 
   static normalizePageCount(pageCount?: number): number {

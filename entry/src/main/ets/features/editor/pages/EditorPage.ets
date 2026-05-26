@@ -230,12 +230,14 @@ struct EditorPage {
   private thumbnailStore?: PageThumbnailStore;
   private drawingViewModel: DrawingEditorViewModel | null = null;
   private currentDrawingPageId: string = '';
+  private lastSyncedNotebookEditedPageId: string = '';
 
   aboutToAppear(): void {
     void this.loadEditorState();
   }
 
   aboutToDisappear(): void {
+    this.syncNotebookLastEditedPage(this.activePageId);
     this.clearScheduledThumbnailRender();
     this.clearScheduledActivePageCanvasLoad();
     void this.flushActiveDrawingSession();
@@ -573,9 +575,6 @@ struct EditorPage {
         }
       }
 
-      if (!this.isPagePreviewCollapsed) {
-        this.buildEditorDebugPanel()
-      }
     }
     .width(this.isPagePreviewCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH)
     .height('100%')
@@ -589,41 +588,6 @@ struct EditorPage {
     .onClick(() => {
       this.closeToolDropdown();
       this.closeShapeDropdown();
-    })
-  }
-
-  @Builder
-  private buildEditorDebugPanel(): void {
-    Column({ space: 6 }) {
-      Text('Debug Output')
-        .width('100%')
-        .fontSize(12)
-        .fontWeight(FontWeight.Medium)
-        .fontColor('#111827')
-
-      Scroll() {
-        Text(this.getEditorDebugSummary())
-          .width('100%')
-          .fontSize(9)
-          .lineHeight(13)
-          .fontColor('#334155')
-          .textAlign(TextAlign.Start)
-      }
-      .width('100%')
-      .height(96)
-    }
-    .width('100%')
-    .padding({
-      left: 10,
-      right: 10,
-      top: 9,
-      bottom: 9
-    })
-    .backgroundColor('#F8FAFC')
-    .borderRadius(16)
-    .border({
-      width: 1,
-      color: '#CBD5E1'
     })
   }
 
@@ -1994,6 +1958,7 @@ struct EditorPage {
       this.notebookPageList = await this.ensureViewModel().loadNotebookPages(notebookId);
       this.retainThumbnailPages();
       this.syncActivePageId(typeof routeParams.pageId === 'string' ? routeParams.pageId : '');
+      this.syncNotebookLastEditedPage(this.activePageId);
       await this.loadNotebookPageCanvasMetadata();
       this.queueDocumentViewportRestore(this.activePageId);
       await this.loadActivePageCanvas();
@@ -2039,6 +2004,7 @@ struct EditorPage {
     this.documentViewportGestureStartWorkspaceX = 0;
     this.documentViewportGestureStartWorkspaceY = 0;
     this.pendingDocumentViewportPageId = '';
+    this.lastSyncedNotebookEditedPageId = '';
     this.endDocumentPanGesture(false);
     this.resetDeletePageDialogState();
     this.resetDrawingState('');
@@ -2057,6 +2023,7 @@ struct EditorPage {
           this.activePageId = preferredPageId;
           this.focusedPageId = preferredPageId;
           this.retainEditableDocumentPage(preferredPageId);
+          this.syncNotebookLastEditedPage(preferredPageId);
           return;
         }
       }
@@ -2068,6 +2035,7 @@ struct EditorPage {
           this.focusedPageId = this.activePageId;
         }
         this.retainEditableDocumentPage(this.activePageId);
+        this.syncNotebookLastEditedPage(this.activePageId);
         return;
       }
     }
@@ -2075,6 +2043,16 @@ struct EditorPage {
     this.activePageId = this.notebookPageList[0].id;
     this.focusedPageId = this.activePageId;
     this.retainEditableDocumentPage(this.activePageId);
+    this.syncNotebookLastEditedPage(this.activePageId);
+  }
+
+  private syncNotebookLastEditedPage(pageId: string): void {
+    if (this.notebookId.length === 0 || pageId.length === 0 || pageId === this.lastSyncedNotebookEditedPageId) {
+      return;
+    }
+
+    this.lastSyncedNotebookEditedPageId = pageId;
+    void this.ensureViewModel().updateNotebookLastEditedPage(this.notebookId, pageId);
   }
 
   private async createNotebookPage(): Promise<void> {
@@ -2103,6 +2081,7 @@ struct EditorPage {
         this.activePageId = notebookPage.id;
         this.focusedPageId = notebookPage.id;
         this.retainEditableDocumentPage(notebookPage.id);
+        this.syncNotebookLastEditedPage(notebookPage.id);
         this.requestDocumentViewportForPage(notebookPage.id);
       }
 
@@ -2127,6 +2106,7 @@ struct EditorPage {
     this.activePageId = page.id;
     this.focusedPageId = page.id;
     this.retainEditableDocumentPage(page.id);
+    this.syncNotebookLastEditedPage(page.id);
     this.requestDocumentViewportForPage(page.id);
     this.closePageActionMenu();
     await this.loadActivePageCanvas();
@@ -2148,6 +2128,7 @@ struct EditorPage {
       this.activePageId = pageId;
       this.focusedPageId = pageId;
       this.retainEditableDocumentPage(pageId);
+      this.syncNotebookLastEditedPage(pageId);
       this.activePageCanvas = this.getCachedPageCanvas(pageId);
       this.pendingDocumentViewportPageId = '';
       this.closePageActionMenu();
@@ -2248,6 +2229,7 @@ struct EditorPage {
     this.activePageId = this.notebookPageList[targetPageIndex].id;
     this.focusedPageId = this.activePageId;
     this.retainEditableDocumentPage(this.activePageId);
+    this.syncNotebookLastEditedPage(this.activePageId);
   }
 
   private async loadActivePageCanvas(): Promise<void> {

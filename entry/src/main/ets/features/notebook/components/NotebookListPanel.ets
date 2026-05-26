@@ -4,7 +4,15 @@ import { AppRouter, RouterParams } from '../../../app/AppRouter';
 import { ImageAssetDataSource, ImportedImageAsset } from '../../../data/sources/local/ImageAssetDataSource';
 import { Notebook, NotebookEntity } from '../../../domain/entities/Notebook';
 import { NotebookFolder, NotebookFolderEntity } from '../../../domain/entities/NotebookFolder';
+import { NotebookPage, NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
+import { NotebookPageCanvas, NotebookPageCanvasEntity } from '../../../domain/entities/NotebookPageCanvas';
 import { NotebookSortType } from '../../../domain/repositories/NotebookRepository';
+import { PageThumbnailCanvas } from '../../editor/components/PageThumbnailCanvas';
+import {
+  createEmptyPageThumbnailRenderSnapshot,
+  PageThumbnailRenderSnapshot
+} from '../../editor/controllers/PageThumbnailRenderer';
+import { PageThumbnailStore } from '../../editor/viewmodels/PageThumbnailStore';
 import { CreateFolderDialog } from './CreateFolderDialog';
 import { CreateNotebookDialog } from './CreateNotebookDialog';
 import { MoveNotebookDialog } from './MoveNotebookDialog';
@@ -72,12 +80,20 @@ export struct NotebookListPanel {
   @Prop @Watch('onCreateNotebookSignalChanged') createNotebookSignal: number = 0;
   @Prop @Watch('onRefreshNotebookSignalChanged') refreshNotebookSignal: number = 0;
   @Prop @Watch('onTopSortTypeChanged') topSortType: NotebookSortType = NotebookSortType.UPDATED_DESC;
+  @Prop isSidebarCollapsed: boolean = false;
   private readonly actionMenuWidth: number = 236;
   private readonly actionMenuHeight: number = 384;
   private readonly actionMenuGap: number = 8;
   private readonly folderActionMenuWidth: number = 188;
   private readonly folderActionMenuHeight: number = 154;
   private readonly folderActionMenuGap: number = 8;
+  private readonly defaultWorkspaceWidth: number = 960;
+  private readonly defaultPanelWidth: number = 1200;
+  private readonly defaultPanelHeight: number = 800;
+  private readonly landscapeSidebarWidth: number = 230;
+  private readonly portraitSidebarWidth: number = 161.2;
+  private readonly workspacePanelPadding: number = 16;
+  private readonly gridCardHorizontalInset: number = 4;
 
   @State private notebookList: Notebook[] = [];
   @State private notebookListRenderVersion: number = 0;
@@ -100,6 +116,8 @@ export struct NotebookListPanel {
   @State private workspaceAreaTop: number = 0;
   @State private workspaceAreaWidth: number = 0;
   @State private workspaceAreaHeight: number = 0;
+  @State private panelAreaWidth: number = 0;
+  @State private panelAreaHeight: number = 0;
   @State private workspaceScrollOffsetY: number = 0;
   @State private actionMenuAnchors: ActionMenuAnchor[] = [];
   @State private folderActionMenuAnchors: FolderActionMenuAnchor[] = [];
@@ -171,12 +189,20 @@ export struct NotebookListPanel {
   private notebookListViewModel?: NotebookListViewModel;
   private notebookImportService?: NotebookImportService;
   private notebookExportService?: NotebookExportService;
+  private pageThumbnailStore?: PageThumbnailStore;
   private hasLoadedInitialNotebookList: boolean = false;
+  @State private notebookCoverRenderTick: number = 0;
+  private readonly notebookCoverPageMap: Map<string, NotebookPage> = new Map<string, NotebookPage>();
+  private readonly notebookCoverCanvasMap: Map<string, NotebookPageCanvas> = new Map<string, NotebookPageCanvas>();
+  private readonly notebookCoverLoadingIds: Set<string> = new Set<string>();
 
   aboutToAppear(): void {
     if (!this.hasLoadedInitialNotebookList) {
       void this.loadNotebookList();
+      return;
     }
+
+    void this.refreshNotebookCollection();
   }
 
   private onCreateNotebookSignalChanged(): void {
@@ -237,6 +263,18 @@ export struct NotebookListPanel {
     return this.notebookExportService as NotebookExportService;
   }
 
+  private ensurePageThumbnailStore(): PageThumbnailStore {
+    if (this.pageThumbnailStore === undefined) {
+      const hostContext: common.Context | undefined = this.getUIContext().getHostContext() as common.Context | undefined;
+      if (hostContext === undefined) {
+        throw new Error('Host context is unavailable.');
+      }
+      this.pageThumbnailStore = new PageThumbnailStore(hostContext);
+    }
+
+    return this.pageThumbnailStore as PageThumbnailStore;
+  }
+
   private async loadNotebookList(): Promise<void> {
     this.isLoading = true;
     try {
@@ -262,6 +300,8 @@ export struct NotebookListPanel {
   private applyNotebookList(notebookList: Notebook[]): void {
     this.notebookList = notebookList;
     this.notebookListRenderVersion += 1;
+    this.retainNotebookCoverCache(notebookList);
+    this.preloadNotebookCoverSnapshots(notebookList);
   }
 
   private applyFolderList(folderList: NotebookFolder[]): void {
@@ -1012,7 +1052,8 @@ export struct NotebookListPanel {
           tags: Array.isArray(item.tags) ? item.tags.slice() : [],
           isDeleted: item.isDeleted === true,
           deletedAt: typeof item.deletedAt === 'number' ? item.deletedAt : 0,
-          lastOpenedAt: typeof item.lastOpenedAt === 'number' ? item.lastOpenedAt : 0
+          lastOpenedAt: typeof item.lastOpenedAt === 'number' ? item.lastOpenedAt : 0,
+          lastEditedPageId: this.getNotebookLastEditedPageId(item)
         });
       } else {
         nextNotebookList.push(item);
@@ -1029,6 +1070,8 @@ export struct NotebookListPanel {
 
   private async openNotebook(notebookId: string): Promise<void> {
     this.closeActionMenu();
+    const notebook: Notebook | undefined = this.getNotebookById(notebookId);
+    const lastEditedPageId: string = notebook === undefined ? '' : this.getNotebookLastEditedPageId(notebook);
 
     try {
       await this.ensureViewModel().touchNotebookLastOpened(notebookId);
@@ -1039,6 +1082,9 @@ export struct NotebookListPanel {
       notebookId: notebookId,
       source: 'notebook_list'
     };
+    if (lastEditedPageId.length > 0) {
+      params.pageId = lastEditedPageId;
+    }
     AppRouter.openEditor(params);
   }
 
@@ -1323,6 +1369,292 @@ export struct NotebookListPanel {
     this.workspaceAreaTop = top;
     this.workspaceAreaWidth = width;
     this.workspaceAreaHeight = height;
+  }
+
+  private updatePanelArea(area: Area): void {
+    const width: number = this.resolveLengthValue(area.width);
+    const height: number = this.resolveLengthValue(area.height);
+    if (width === this.panelAreaWidth && height === this.panelAreaHeight) {
+      return;
+    }
+
+    this.panelAreaWidth = width;
+    this.panelAreaHeight = height;
+  }
+
+  private getMeasuredWorkspaceWidth(): number {
+    if (this.workspaceAreaWidth > 0) {
+      return this.workspaceAreaWidth;
+    }
+    return this.defaultWorkspaceWidth;
+  }
+
+  private getMeasuredPanelWidth(): number {
+    if (this.panelAreaWidth > 0) {
+      return this.panelAreaWidth;
+    }
+    return this.defaultPanelWidth;
+  }
+
+  private getMeasuredPanelHeight(): number {
+    if (this.panelAreaHeight > 0) {
+      return this.panelAreaHeight;
+    }
+    return this.defaultPanelHeight;
+  }
+
+  private isPanelPortrait(): boolean {
+    return this.getMeasuredPanelHeight() > this.getMeasuredPanelWidth();
+  }
+
+  private getRecentCardWidth(): Length {
+    if (!this.isPanelPortrait()) {
+      return '20%';
+    }
+
+    const collapsedWorkspaceWidth: number = this.getPortraitCollapsedWorkspaceWidth();
+    const targetWidth: number = Math.round(collapsedWorkspaceWidth / 4);
+    return Math.max(targetWidth, 1);
+  }
+
+  private getPortraitCollapsedWorkspaceWidth(): number {
+    const panelWidth: number = this.getMeasuredPanelWidth();
+    return Math.max(1, panelWidth - this.workspacePanelPadding * 2);
+  }
+
+  private getFolderCardWidth(): string {
+    return this.isPanelPortrait() ? '50%' : '33.333%';
+  }
+
+  private getNotebookListItemWidth(): string {
+    return this.isPanelPortrait() ? '100%' : '50%';
+  }
+
+  private getNotebookGridJustifyContent(): FlexAlign {
+    return FlexAlign.Start;
+  }
+
+  private getFolderGridJustifyContent(): FlexAlign {
+    return FlexAlign.Start;
+  }
+
+  private getRecentGridJustifyContent(): FlexAlign {
+    return FlexAlign.Start;
+  }
+
+  private getSidebarWidth(): number {
+    if (this.isSidebarCollapsed) {
+      return 0;
+    }
+    return this.isPanelPortrait() ? this.portraitSidebarWidth : this.landscapeSidebarWidth;
+  }
+
+  private getNotebookCoverAspectRatio(notebook: Notebook): number {
+    const coverCanvas: NotebookPageCanvas | null = this.getNotebookCoverCanvas(notebook.id);
+    const width: number = coverCanvas === null
+      ? NotebookPageCanvasEntity.DEFAULT_WIDTH
+      : NotebookPageCanvasEntity.normalizeDimension(coverCanvas.width, NotebookPageCanvasEntity.DEFAULT_WIDTH);
+    const height: number = coverCanvas === null
+      ? NotebookPageCanvasEntity.DEFAULT_HEIGHT
+      : NotebookPageCanvasEntity.normalizeDimension(coverCanvas.height, NotebookPageCanvasEntity.DEFAULT_HEIGHT);
+    return Math.max(0.1, width / Math.max(1, height));
+  }
+
+  private retainNotebookCoverCache(notebookList: Notebook[]): void {
+    const retainedNotebookIds: Set<string> = new Set<string>();
+    for (const notebook of notebookList) {
+      retainedNotebookIds.add(notebook.id);
+    }
+
+    for (const notebookId of Array.from(this.notebookCoverPageMap.keys())) {
+      if (!retainedNotebookIds.has(notebookId)) {
+        this.notebookCoverPageMap.delete(notebookId);
+      }
+    }
+    for (const notebookId of Array.from(this.notebookCoverCanvasMap.keys())) {
+      if (!retainedNotebookIds.has(notebookId)) {
+        this.notebookCoverCanvasMap.delete(notebookId);
+      }
+    }
+    for (const notebookId of Array.from(this.notebookCoverLoadingIds.keys())) {
+      if (!retainedNotebookIds.has(notebookId)) {
+        this.notebookCoverLoadingIds.delete(notebookId);
+      }
+    }
+  }
+
+  private preloadNotebookCoverSnapshots(notebookList: Notebook[]): void {
+    for (const notebook of notebookList) {
+      if (this.isNotebookDeleted(notebook)) {
+        continue;
+      }
+      void this.ensureNotebookCoverSnapshot(notebook);
+    }
+  }
+
+  private getNotebookLastEditedPageId(notebook: Notebook): string {
+    return NotebookEntity.normalizeLastEditedPageId(notebook.lastEditedPageId);
+  }
+
+  private getNotebookCoverPage(notebookId: string): NotebookPage | null {
+    const page = this.notebookCoverPageMap.get(notebookId);
+    return page === undefined ? null : page;
+  }
+
+  private getNotebookCoverCanvas(notebookId: string): NotebookPageCanvas | null {
+    const canvas = this.notebookCoverCanvasMap.get(notebookId);
+    return canvas === undefined ? null : canvas;
+  }
+
+  private hasNotebookCoverSnapshot(notebook: Notebook): boolean {
+    const renderTick: number = this.notebookCoverRenderTick;
+    return renderTick >= 0 && this.getNotebookCoverPage(notebook.id) !== null &&
+      this.getNotebookCoverCanvas(notebook.id) !== null;
+  }
+
+  private buildNotebookCoverSnapshot(notebook: Notebook): PageThumbnailRenderSnapshot {
+    const coverPage: NotebookPage | null = this.getNotebookCoverPage(notebook.id);
+    const coverCanvas: NotebookPageCanvas | null = this.getNotebookCoverCanvas(notebook.id);
+    if (coverPage === null || coverCanvas === null) {
+      return createEmptyPageThumbnailRenderSnapshot(this.getNotebookLastEditedPageId(notebook));
+    }
+
+    try {
+      return this.ensurePageThumbnailStore().buildSnapshot({
+        pageId: coverPage.id,
+        templateType: this.resolveNotebookPageTemplateType(coverPage.templateType),
+        paperBackgroundColor: NotebookPageCanvasEntity.normalizeBackgroundColor(coverCanvas.backgroundColor),
+        backgroundImageUri: NotebookPageCanvasEntity.normalizeBackgroundImageUri(coverCanvas.backgroundImageUri),
+        canvasWidth: NotebookPageCanvasEntity.normalizeDimension(
+          coverCanvas.width,
+          NotebookPageCanvasEntity.DEFAULT_WIDTH
+        ),
+        canvasHeight: NotebookPageCanvasEntity.normalizeDimension(
+          coverCanvas.height,
+          NotebookPageCanvasEntity.DEFAULT_HEIGHT
+        ),
+        activeSession: null
+      });
+    } catch (_error) {
+      return createEmptyPageThumbnailRenderSnapshot(coverPage.id);
+    }
+  }
+
+  private requestNotebookCoverSnapshot(notebookId: string): void {
+    const notebook: Notebook | undefined = this.getNotebookById(notebookId);
+    if (notebook === undefined) {
+      return;
+    }
+
+    void this.ensureNotebookCoverSnapshot(notebook);
+  }
+
+  private async ensureNotebookCoverSnapshot(notebook: Notebook): Promise<void> {
+    if (notebook.id.length === 0 || this.notebookCoverLoadingIds.has(notebook.id)) {
+      return;
+    }
+
+    const cachedPage: NotebookPage | null = this.getNotebookCoverPage(notebook.id);
+    const cachedCanvas: NotebookPageCanvas | null = this.getNotebookCoverCanvas(notebook.id);
+    const targetLastEditedPageId: string = this.getNotebookLastEditedPageId(notebook);
+    if (cachedPage !== null && cachedCanvas !== null &&
+      (targetLastEditedPageId.length === 0 || cachedPage.id === targetLastEditedPageId)) {
+      try {
+        const hasLoaded = await this.ensurePageThumbnailStore().ensurePageContent(cachedPage.id);
+        if (hasLoaded) {
+          this.notebookCoverRenderTick += 1;
+        }
+      } catch (_error) {
+      }
+      return;
+    }
+
+    this.notebookCoverLoadingIds.add(notebook.id);
+    try {
+      const pageList: NotebookPage[] = await this.ensureViewModel().loadNotebookPages(notebook.id);
+      const coverPage: NotebookPage | null = this.resolveNotebookCoverPage(pageList, targetLastEditedPageId);
+      if (coverPage === null) {
+        this.notebookCoverPageMap.delete(notebook.id);
+        this.notebookCoverCanvasMap.delete(notebook.id);
+        this.notebookCoverRenderTick += 1;
+        return;
+      }
+
+      const coverCanvas: NotebookPageCanvas | null = await this.ensureViewModel().loadNotebookPageCanvas(
+        notebook.id,
+        coverPage.id
+      );
+      if (coverCanvas === null) {
+        this.notebookCoverPageMap.delete(notebook.id);
+        this.notebookCoverCanvasMap.delete(notebook.id);
+        this.notebookCoverRenderTick += 1;
+        return;
+      }
+
+      this.notebookCoverPageMap.set(notebook.id, this.cloneNotebookPage(coverPage));
+      this.notebookCoverCanvasMap.set(notebook.id, this.cloneNotebookPageCanvas(coverCanvas));
+      await this.ensurePageThumbnailStore().ensurePageContent(coverPage.id);
+      this.notebookCoverRenderTick += 1;
+    } catch (_error) {
+    } finally {
+      this.notebookCoverLoadingIds.delete(notebook.id);
+    }
+  }
+
+  private resolveNotebookCoverPage(pageList: NotebookPage[], lastEditedPageId: string): NotebookPage | null {
+    if (pageList.length === 0) {
+      return null;
+    }
+
+    if (lastEditedPageId.length > 0) {
+      for (const page of pageList) {
+        if (page.id === lastEditedPageId) {
+          return page;
+        }
+      }
+    }
+
+    return pageList[0];
+  }
+
+  private cloneNotebookPage(page: NotebookPage): NotebookPage {
+    return {
+      id: page.id,
+      notebookId: page.notebookId,
+      order: page.order,
+      createdAt: page.createdAt,
+      updatedAt: page.updatedAt,
+      templateType: this.resolveNotebookPageTemplateType(page.templateType),
+      sourceFileUri: typeof page.sourceFileUri === 'string' ? page.sourceFileUri : '',
+      sourceFileType: typeof page.sourceFileType === 'string' ? page.sourceFileType : ''
+    };
+  }
+
+  private cloneNotebookPageCanvas(canvas: NotebookPageCanvas): NotebookPageCanvas {
+    return {
+      pageId: canvas.pageId,
+      notebookId: canvas.notebookId,
+      width: NotebookPageCanvasEntity.normalizeDimension(canvas.width, NotebookPageCanvasEntity.DEFAULT_WIDTH),
+      height: NotebookPageCanvasEntity.normalizeDimension(canvas.height, NotebookPageCanvasEntity.DEFAULT_HEIGHT),
+      backgroundColor: NotebookPageCanvasEntity.normalizeBackgroundColor(canvas.backgroundColor),
+      backgroundImageUri: NotebookPageCanvasEntity.normalizeBackgroundImageUri(canvas.backgroundImageUri),
+      createdAt: canvas.createdAt,
+      updatedAt: canvas.updatedAt
+    };
+  }
+
+  private resolveNotebookPageTemplateType(templateType?: NotebookPageTemplateType): NotebookPageTemplateType {
+    switch (templateType) {
+      case NotebookPageTemplateType.LINED:
+        return NotebookPageTemplateType.LINED;
+      case NotebookPageTemplateType.GRID:
+        return NotebookPageTemplateType.GRID;
+      case NotebookPageTemplateType.DOTTED:
+        return NotebookPageTemplateType.DOTTED;
+      case NotebookPageTemplateType.BLANK:
+      default:
+        return NotebookPageTemplateType.BLANK;
+    }
   }
 
   private updateActionMenuAnchor(notebookId: string, area: Area): void {
@@ -1849,11 +2181,13 @@ export struct NotebookListPanel {
   private buildNotebookItem(notebook: Notebook): void {
     Row({ space: 8 }) {
       Row({ space: 10 }) {
-        Column() {}
+        Stack() {
+          this.buildNotebookCoverPreview(notebook)
+        }
           .width('17%')
-          .aspectRatio(1)
+          .aspectRatio(this.getNotebookCoverAspectRatio(notebook))
           .borderRadius(8)
-          .backgroundColor(NotebookEntity.normalizeCoverColor(notebook.coverColor))
+          .clip(true)
           .margin({ top: 2, bottom: 2 })
 
         Column({ space: 6 }) {
@@ -1942,6 +2276,52 @@ export struct NotebookListPanel {
       color: $r('app.color.card_border')
     })
   }
+
+  @Builder
+  private buildNotebookCoverPreview(notebook: Notebook): void {
+    Stack() {
+      if (this.hasNotebookCoverSnapshot(notebook)) {
+        PageThumbnailCanvas({
+          snapshot: this.buildNotebookCoverSnapshot(notebook),
+          renderTick: this.notebookCoverRenderTick,
+          onNeedSnapshot: (pageId: string): void => {
+            this.requestNotebookCoverSnapshot(notebook.id);
+          }
+        })
+          .width('100%')
+          .height('100%')
+      } else if (typeof notebook.coverImageUri === 'string' && notebook.coverImageUri.length > 0) {
+        Image(this.toDisplayImageUri(notebook.coverImageUri))
+          .width('100%')
+          .height('100%')
+          .objectFit(ImageFit.Contain)
+      } else {
+        Column() {
+          Text(notebook.title.length > 10 ? `${notebook.title.slice(0, 10)}...` : notebook.title)
+            .fontSize(10)
+            .fontColor('#FFFFFF')
+            .maxLines(2)
+            .textAlign(TextAlign.Center)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .padding({ left: 4, right: 4 })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .backgroundColor(NotebookEntity.normalizeCoverColor(notebook.coverColor))
+        .onAppear(() => {
+          this.requestNotebookCoverSnapshot(notebook.id);
+        })
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor('#E8EEF6')
+    .onAppear(() => {
+      this.requestNotebookCoverSnapshot(notebook.id);
+    })
+  }
   @Builder
   private buildRecycleItem(notebook: Notebook): void {
     Column({ space: 10 }) {
@@ -2024,12 +2404,13 @@ export struct NotebookListPanel {
           .fontSize($r('app.float.caption_text_size'))
           .fontColor($r('app.color.secondary_text'))
       } else {
-        Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.SpaceBetween, alignItems: ItemAlign.Start }) {
+        Flex({ wrap: FlexWrap.Wrap, justifyContent: this.getNotebookGridJustifyContent(), alignItems: ItemAlign.Start }) {
           ForEach(notebookList, (notebook: Notebook) => {
             Column() {
               this.buildNotebookItem(notebook)
             }
-            .width(this.getUIContext().getHostContext() !== undefined ? '49%' : '100%')
+            .width(this.getNotebookListItemWidth())
+            .padding({ left: this.gridCardHorizontalInset, right: this.gridCardHorizontalInset })
             .margin({ bottom: 12 })
           }, (notebook: Notebook): string => `${this.notebookListRenderVersion}-${notebook.id}`)
         }
@@ -2044,11 +2425,21 @@ export struct NotebookListPanel {
   private buildRecentNotebookCard(notebook: Notebook): void {
     Column({ space: 8 }) {
       Stack() {
-        if (typeof notebook.coverImageUri === 'string' && notebook.coverImageUri.length > 0) {
+        if (this.hasNotebookCoverSnapshot(notebook)) {
+          PageThumbnailCanvas({
+            snapshot: this.buildNotebookCoverSnapshot(notebook),
+            renderTick: this.notebookCoverRenderTick,
+            onNeedSnapshot: (pageId: string): void => {
+              this.requestNotebookCoverSnapshot(notebook.id);
+            }
+          })
+            .width('100%')
+            .height('100%')
+        } else if (typeof notebook.coverImageUri === 'string' && notebook.coverImageUri.length > 0) {
           Image(this.toDisplayImageUri(notebook.coverImageUri))
             .width('100%')
             .height('100%')
-            .objectFit(ImageFit.Cover)
+            .objectFit(ImageFit.Contain)
         } else {
           Column() {
             Text(notebook.title.length > 12 ? `${notebook.title.slice(0, 12)}...` : notebook.title)
@@ -2064,6 +2455,9 @@ export struct NotebookListPanel {
           .justifyContent(FlexAlign.Center)
           .alignItems(HorizontalAlign.Center)
           .backgroundColor(NotebookEntity.normalizeCoverColor(notebook.coverColor))
+          .onAppear(() => {
+            this.requestNotebookCoverSnapshot(notebook.id);
+          })
         }
 
         Button('⋯')
@@ -2091,9 +2485,13 @@ export struct NotebookListPanel {
           })
       }
       .width('100%')
-      .height(116)
+      .aspectRatio(this.getNotebookCoverAspectRatio(notebook))
       .borderRadius(10)
       .clip(true)
+      .backgroundColor('#E8EEF6')
+      .onAppear(() => {
+        this.requestNotebookCoverSnapshot(notebook.id);
+      })
 
       Text(notebook.title)
         .fontSize($r('app.float.caption_text_size'))
@@ -2145,7 +2543,7 @@ export struct NotebookListPanel {
   }
 
   @Builder
-  private buildRecentSectionSixColumns(): void {
+  private buildRecentSection(): void {
     Column({ space: 12 }) {
       Row() {
         Text('最近使用')
@@ -2178,13 +2576,14 @@ export struct NotebookListPanel {
           .fontSize($r('app.float.caption_text_size'))
           .fontColor($r('app.color.secondary_text'))
       } else {
-        Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start, alignItems: ItemAlign.Start }) {
+        Flex({ wrap: FlexWrap.Wrap, justifyContent: this.getRecentGridJustifyContent(), alignItems: ItemAlign.Start }) {
           ForEach(this.getRecentOpenedNotebookList(), (notebook: Notebook) => {
             Column() {
               this.buildRecentNotebookCard(notebook)
             }
-            .width('15.8%')
-            .margin({ right: '0.8%', bottom: 12 })
+            .width(this.getRecentCardWidth())
+            .padding({ left: this.gridCardHorizontalInset, right: this.gridCardHorizontalInset })
+            .margin({ bottom: 12 })
           }, (notebook: Notebook): string => `recent-six-${this.notebookListRenderVersion}-${notebook.id}`)
         }
         .width('100%')
@@ -2535,23 +2934,25 @@ export struct NotebookListPanel {
           .fontColor($r('app.color.secondary_text'))
       } else {
         if (this.allNotesFilter === AllNotesFilter.FOLDER) {
-          Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start, alignItems: ItemAlign.Start }) {
+          Flex({ wrap: FlexWrap.Wrap, justifyContent: this.getFolderGridJustifyContent(), alignItems: ItemAlign.Start }) {
             ForEach(this.getSortedFolderListForAllNotes(), (folder: NotebookFolder) => {
               Column() {
                 this.buildAllNotesFolderCard(folder)
               }
-              .width('23.5%')
-              .margin({ right: '1%', bottom: 12 })
+              .width(this.getFolderCardWidth())
+              .padding({ left: this.gridCardHorizontalInset, right: this.gridCardHorizontalInset })
+              .margin({ bottom: 12 })
             }, (folder: NotebookFolder): string => `all-notes-folder-${this.folderListRenderVersion}-${folder.id}`)
           }
           .width('100%')
         } else if (this.allNotesFilter === AllNotesFilter.NOTEBOOK) {
-          Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.SpaceBetween, alignItems: ItemAlign.Start }) {
+          Flex({ wrap: FlexWrap.Wrap, justifyContent: this.getNotebookGridJustifyContent(), alignItems: ItemAlign.Start }) {
             ForEach(this.getFilteredActiveNotebookList(), (notebook: Notebook) => {
               Column() {
                 this.buildNotebookItem(notebook)
               }
-              .width(this.getUIContext().getHostContext() !== undefined ? '49%' : '100%')
+              .width(this.getNotebookListItemWidth())
+              .padding({ left: this.gridCardHorizontalInset, right: this.gridCardHorizontalInset })
               .margin({ bottom: 12 })
             }, (notebook: Notebook): string => `all-notes-notebook-${this.notebookListRenderVersion}-${notebook.id}`)
           }
@@ -2564,13 +2965,14 @@ export struct NotebookListPanel {
                 .fontWeight(FontWeight.Medium)
                 .fontColor($r('app.color.primary_text'))
 
-              Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start, alignItems: ItemAlign.Start }) {
+              Flex({ wrap: FlexWrap.Wrap, justifyContent: this.getFolderGridJustifyContent(), alignItems: ItemAlign.Start }) {
                 ForEach(this.getSortedFolderListForAllNotes(), (folder: NotebookFolder) => {
                   Column() {
                     this.buildAllNotesFolderCard(folder)
                   }
-                  .width('23.5%')
-                  .margin({ right: '1%', bottom: 12 })
+                  .width(this.getFolderCardWidth())
+                  .padding({ left: this.gridCardHorizontalInset, right: this.gridCardHorizontalInset })
+                  .margin({ bottom: 12 })
                 }, (folder: NotebookFolder): string => `all-notes-mixed-folder-${this.folderListRenderVersion}-${folder.id}`)
               }
               .width('100%')
@@ -2585,12 +2987,13 @@ export struct NotebookListPanel {
                 .fontWeight(FontWeight.Medium)
                 .fontColor($r('app.color.primary_text'))
 
-              Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.SpaceBetween, alignItems: ItemAlign.Start }) {
+              Flex({ wrap: FlexWrap.Wrap, justifyContent: this.getNotebookGridJustifyContent(), alignItems: ItemAlign.Start }) {
                 ForEach(this.getFilteredActiveNotebookList(), (notebook: Notebook) => {
                   Column() {
                     this.buildNotebookItem(notebook)
                   }
-                  .width(this.getUIContext().getHostContext() !== undefined ? '49%' : '100%')
+                  .width(this.getNotebookListItemWidth())
+                  .padding({ left: this.gridCardHorizontalInset, right: this.gridCardHorizontalInset })
                   .margin({ bottom: 12 })
                 }, (notebook: Notebook): string => `all-notes-mixed-notebook-${this.notebookListRenderVersion}-${notebook.id}`)
               }
@@ -2631,13 +3034,14 @@ export struct NotebookListPanel {
             .fontSize($r('app.float.caption_text_size'))
             .fontColor($r('app.color.secondary_text'))
         } else {
-          Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start, alignItems: ItemAlign.Start }) {
+          Flex({ wrap: FlexWrap.Wrap, justifyContent: this.getFolderGridJustifyContent(), alignItems: ItemAlign.Start }) {
             ForEach(this.folderList, (folder: NotebookFolder) => {
               Column() {
                 this.buildAllNotesFolderCard(folder)
               }
-              .width('23.5%')
-              .margin({ right: '1%', bottom: 12 })
+              .width(this.getFolderCardWidth())
+              .padding({ left: this.gridCardHorizontalInset, right: this.gridCardHorizontalInset })
+              .margin({ bottom: 12 })
             }, (folder: NotebookFolder): string => `folder-workspace-card-${this.folderListRenderVersion}-${folder.id}`)
           }
           .width('100%')
@@ -2758,13 +3162,14 @@ export struct NotebookListPanel {
           .fontSize($r('app.float.caption_text_size'))
           .fontColor($r('app.color.secondary_text'))
       } else {
-        Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start, alignItems: ItemAlign.Start }) {
+        Flex({ wrap: FlexWrap.Wrap, justifyContent: this.getFolderGridJustifyContent(), alignItems: ItemAlign.Start }) {
           ForEach(this.folderList, (folder: NotebookFolder) => {
             Column() {
               this.buildAllNotesFolderCard(folder)
             }
-            .width('23.5%')
-            .margin({ right: '1%', bottom: 12 })
+            .width(this.getFolderCardWidth())
+            .padding({ left: this.gridCardHorizontalInset, right: this.gridCardHorizontalInset })
+            .margin({ bottom: 12 })
           }, (folder: NotebookFolder): string => `${this.folderListRenderVersion}-${folder.id}`)
         }
         .width('100%')
@@ -2777,7 +3182,7 @@ export struct NotebookListPanel {
   @Builder
   private buildAllWorkspace(): void {
     Column({ space: 20 }) {
-      this.buildRecentSectionSixColumns()
+      this.buildRecentSection()
       this.buildFolderOverviewSection()
       this.buildAllNotesSection()
     }
@@ -2975,48 +3380,50 @@ export struct NotebookListPanel {
   }
 
   build() {
-    Stack() {
+    Stack({ alignContent: Alignment.TopStart }) {
       Row({ space: 0 }) {
-        Column({ space: 8 }) {
-          this.buildSidebarItem(SidebarSection.ALL, '全部笔记')
-          this.buildSidebarItem(SidebarSection.RECENT, '最近打开')
-          this.buildSidebarItem(SidebarSection.FAVORITES, '收藏夹')
+        if (!this.isSidebarCollapsed) {
+          Column({ space: 8 }) {
+            this.buildSidebarItem(SidebarSection.ALL, '全部笔记')
+            this.buildSidebarItem(SidebarSection.RECENT, '最近打开')
+            this.buildSidebarItem(SidebarSection.FAVORITES, '收藏夹')
 
-          Divider()
-            .strokeWidth(1)
-            .color('#DDE4F0')
-            .margin({ top: 6, bottom: 6 })
+            Divider()
+              .strokeWidth(1)
+              .color('#DDE4F0')
+              .margin({ top: 6, bottom: 6 })
 
-          this.buildSidebarItem(SidebarSection.FOLDERS, '文件夹')
-          if (this.currentSection === SidebarSection.FOLDERS) {
-            Column({ space: 4 }) {
-              ForEach(this.folderList, (folder: NotebookFolder) => {
-                this.buildSidebarFolderItem(folder)
-              }, (folder: NotebookFolder): string => folder.id)
+            this.buildSidebarItem(SidebarSection.FOLDERS, '文件夹')
+            if (this.currentSection === SidebarSection.FOLDERS) {
+              Column({ space: 4 }) {
+                ForEach(this.folderList, (folder: NotebookFolder) => {
+                  this.buildSidebarFolderItem(folder)
+                }, (folder: NotebookFolder): string => folder.id)
+              }
+              .width('100%')
             }
-            .width('100%')
-          }
 
-          this.buildSidebarItem(SidebarSection.TAGS, '标签')
-          if (this.currentSection === SidebarSection.TAGS) {
-            Column({ space: 4 }) {
-              ForEach(this.getAllTagList(), (tag: string) => {
-                this.buildSidebarTagItem(tag)
-              }, (tag: string): string => tag)
+            this.buildSidebarItem(SidebarSection.TAGS, '标签')
+            if (this.currentSection === SidebarSection.TAGS) {
+              Column({ space: 4 }) {
+                ForEach(this.getAllTagList(), (tag: string) => {
+                  this.buildSidebarTagItem(tag)
+                }, (tag: string): string => tag)
+              }
+              .width('100%')
             }
-            .width('100%')
-          }
 
-          this.buildSidebarItem(SidebarSection.RECYCLE, '回收站')
+            this.buildSidebarItem(SidebarSection.RECYCLE, '回收站')
+          }
+          .width(this.getSidebarWidth())
+          .height('100%')
+          .padding(12)
+          .backgroundColor('#F8FAFF')
+          .border({ width: { right: 1 }, color: '#D8DEE9' })
         }
-        .width(230)
-        .height('100%')
-        .padding(12)
-        .backgroundColor('#F8FAFF')
-        .border({ width: { right: 1 }, color: '#D8DEE9' })
 
         Column({ space: 12 }) {
-          Stack() {
+          Stack({ alignContent: Alignment.TopStart }) {
             if (this.isLoading) {
               Column({ space: 12 }) {
                 LoadingProgress()
@@ -3042,6 +3449,8 @@ export struct NotebookListPanel {
                 .padding({ bottom: 24 })
               }
               .width('100%')
+              .height('100%')
+              .align(Alignment.TopStart)
               .onDidScroll((_xOffset: number, yOffset: number, _scrollState: ScrollState) => {
                 if (Number.isFinite(yOffset)) {
                   this.workspaceScrollOffsetY = Math.max(0, yOffset);
@@ -3076,6 +3485,9 @@ export struct NotebookListPanel {
       }
       .width('100%')
       .height('100%')
+      .onAreaChange((_oldValue: Area, newValue: Area) => {
+        this.updatePanelArea(newValue);
+      })
 
       if (this.isExportDialogVisible) {
         Column() {

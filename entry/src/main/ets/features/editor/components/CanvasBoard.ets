@@ -1,5 +1,4 @@
 import common from '@ohos.app.ability.common';
-import abilityAccessCtrl, { Permissions } from '@ohos.abilityAccessCtrl';
 import photoAccessHelper from '@ohos.file.photoAccessHelper';
 import image from '@ohos.multimedia.image';
 
@@ -284,7 +283,6 @@ export struct CanvasBoard {
   private forceFullCommittedRedrawOnNextCanvasRefresh: boolean = false;
   private flattenedCommittedStrokeCount: number = 0;
   private activePreviewSession: InProgressStrokeRenderSession | null = null;
-  private hasRecognitionGalleryWritePermission: boolean = false;
   private isDrawingGestureActive: boolean = false;
   private isForwardingDocumentTouchGesture: boolean = false;
   private isLassoGestureActive: boolean = false;
@@ -5329,7 +5327,6 @@ export struct CanvasBoard {
       throw new Error('Host context is unavailable.');
     }
 
-    await this.ensureRecognitionGalleryWritePermission(hostContext);
     const title = this.buildRecognitionUploadImageTitle(mode, payload);
     const photoHelper = photoAccessHelper.getPhotoAccessHelper(hostContext);
     try {
@@ -5348,22 +5345,6 @@ export struct CanvasBoard {
       } catch (_releaseError) {
       }
     }
-  }
-
-  private async ensureRecognitionGalleryWritePermission(hostContext: common.Context): Promise<void> {
-    if (this.hasRecognitionGalleryWritePermission) {
-      return;
-    }
-
-    const permissions: Array<Permissions> = ['ohos.permission.WRITE_IMAGEVIDEO'];
-    const atManager = abilityAccessCtrl.createAtManager();
-    const result = await atManager.requestPermissionsFromUser(hostContext, permissions);
-    for (const authResult of result.authResults) {
-      if (authResult !== 0) {
-        throw new Error(`Gallery write permission denied authResults=${result.authResults.join(',')}`);
-      }
-    }
-    this.hasRecognitionGalleryWritePermission = true;
   }
 
   private buildRecognitionUploadImageTitle(

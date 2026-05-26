@@ -137,6 +137,15 @@ export class EditorViewModel {
     return this.getCachedNotebookPageCanvas();
   }
 
+  async updateNotebookLastEditedPage(notebookId: string, pageId: string): Promise<Notebook | null> {
+    const notebook: Notebook | null = await this.notebookRepository.updateNotebookLastEditedPage({
+      notebookId: notebookId,
+      pageId: pageId
+    });
+    this.notebook = notebook === null ? await this.notebookRepository.getNotebookById(notebookId) : notebook;
+    return this.getCachedNotebook();
+  }
+
   getCachedNotebook(): Notebook | null {
     if (this.notebook === null) {
       return null;
@@ -155,7 +164,8 @@ export class EditorViewModel {
       tags: Array.isArray(this.notebook.tags) ? this.notebook.tags.slice() : [],
       isDeleted: this.notebook.isDeleted,
       deletedAt: this.notebook.deletedAt,
-      lastOpenedAt: this.notebook.lastOpenedAt
+      lastOpenedAt: this.notebook.lastOpenedAt,
+      lastEditedPageId: this.notebook.lastEditedPageId
     };
   }
 

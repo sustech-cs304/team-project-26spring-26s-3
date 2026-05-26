@@ -21,6 +21,7 @@ import {
   ToggleNotebookFavoriteRequest,
   UpdateNotebookCoverRequest,
   UpdateNotebookFolderColorRequest,
+  UpdateNotebookLastEditedPageRequest,
   UpdateNotebookTagsRequest,
   UpdateNotebookPageCanvasRequest,
   UpdateNotebookPageTemplateRequest
@@ -96,8 +97,10 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       coverColor = NotebookEntity.COVER_COLOR_PALETTE[randomIndex];
     }
 
+    const notebookId: string = IdUtil.createNotebookId();
+    const firstNotebookPage: NotebookPage = this.buildNotebookPage(notebookId, 0, currentTime);
     const notebook: Notebook = {
-      id: IdUtil.createNotebookId(),
+      id: notebookId,
       title: notebookTitle,
       folderId: '',
       createdAt: currentTime,
@@ -109,11 +112,11 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       tags: [],
       isDeleted: false,
       deletedAt: 0,
-      lastOpenedAt: 0
+      lastOpenedAt: 0,
+      lastEditedPageId: firstNotebookPage.id
     };
 
     notebookList.push(notebook);
-    const firstNotebookPage: NotebookPage = this.buildNotebookPage(notebook.id, 0, currentTime);
     await this.persistNotebookList(notebookList);
     await this.persistNotebookPageList(notebook.id, [firstNotebookPage]);
     await this.persistNotebookPageCanvas(this.buildNotebookPageCanvas(firstNotebookPage, currentTime));
@@ -210,7 +213,8 @@ export class NotebookRepositoryImpl implements NotebookRepository {
           tags: this.normalizeTags(notebook.tags),
           isDeleted: notebook.isDeleted === true,
           deletedAt: this.normalizeTimestamp(notebook.deletedAt),
-          lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
+          lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt),
+          lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(notebook.lastEditedPageId)
         });
       } else {
         nextNotebookList.push(notebook);
@@ -247,7 +251,8 @@ export class NotebookRepositoryImpl implements NotebookRepository {
           tags: this.normalizeTags(currentNotebook.tags),
           isDeleted: currentNotebook.isDeleted === true,
           deletedAt: this.normalizeTimestamp(currentNotebook.deletedAt),
-          lastOpenedAt: this.normalizeTimestamp(currentNotebook.lastOpenedAt)
+          lastOpenedAt: this.normalizeTimestamp(currentNotebook.lastOpenedAt),
+          lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(currentNotebook.lastEditedPageId)
         };
 
         notebookList[index] = renamedNotebook;
@@ -292,7 +297,8 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       tags: this.normalizeTags(currentNotebook.tags),
       isDeleted: currentNotebook.isDeleted === true,
       deletedAt: this.normalizeTimestamp(currentNotebook.deletedAt),
-      lastOpenedAt: this.normalizeTimestamp(currentNotebook.lastOpenedAt)
+      lastOpenedAt: this.normalizeTimestamp(currentNotebook.lastOpenedAt),
+      lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(currentNotebook.lastEditedPageId)
     };
     notebookList[notebookIndex] = movedNotebook;
     await this.persistNotebookList(notebookList);
@@ -346,7 +352,8 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       tags: this.normalizeTags(notebook.tags),
       isDeleted: notebook.isDeleted === true,
       deletedAt: this.normalizeTimestamp(notebook.deletedAt),
-      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt),
+      lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(notebook.lastEditedPageId)
     };
     notebookList[notebookIndex] = updatedNotebook;
     await this.persistNotebookList(notebookList);
@@ -374,7 +381,8 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       tags: this.normalizeTags(request.tags),
       isDeleted: notebook.isDeleted === true,
       deletedAt: this.normalizeTimestamp(notebook.deletedAt),
-      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt),
+      lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(notebook.lastEditedPageId)
     };
     notebookList[notebookIndex] = updatedNotebook;
     await this.persistNotebookList(notebookList);
@@ -404,7 +412,47 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       tags: this.normalizeTags(notebook.tags),
       isDeleted: notebook.isDeleted === true,
       deletedAt: this.normalizeTimestamp(notebook.deletedAt),
-      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt),
+      lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(notebook.lastEditedPageId)
+    };
+    notebookList[notebookIndex] = updatedNotebook;
+    await this.persistNotebookList(notebookList);
+    return updatedNotebook;
+  }
+
+  async updateNotebookLastEditedPage(request: UpdateNotebookLastEditedPageRequest): Promise<Notebook | null> {
+    const notebookList: Notebook[] = await this.loadNotebookList();
+    const notebookIndex: number = this.findNotebookIndexById(notebookList, request.notebookId);
+    if (notebookIndex < 0) {
+      return null;
+    }
+
+    const pageId: string = NotebookEntity.normalizeLastEditedPageId(request.pageId);
+    if (pageId.length === 0) {
+      return null;
+    }
+
+    const notebookPageList: NotebookPage[] = await this.loadOrBootstrapNotebookPageList(notebookList[notebookIndex]);
+    if (this.findNotebookPageIndexById(notebookPageList, pageId) < 0) {
+      return null;
+    }
+
+    const notebook: Notebook = notebookList[notebookIndex];
+    const updatedNotebook: Notebook = {
+      id: notebook.id,
+      title: notebook.title,
+      folderId: notebook.folderId,
+      createdAt: notebook.createdAt,
+      updatedAt: notebook.updatedAt,
+      coverColor: NotebookEntity.normalizeCoverColor(notebook.coverColor),
+      coverImageUri: NotebookEntity.normalizeCoverImageUri(notebook.coverImageUri),
+      pageCount: NotebookEntity.normalizePageCount(notebook.pageCount),
+      isFavorite: notebook.isFavorite === true,
+      tags: this.normalizeTags(notebook.tags),
+      isDeleted: notebook.isDeleted === true,
+      deletedAt: this.normalizeTimestamp(notebook.deletedAt),
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt),
+      lastEditedPageId: pageId
     };
     notebookList[notebookIndex] = updatedNotebook;
     await this.persistNotebookList(notebookList);
@@ -433,7 +481,8 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       tags: this.normalizeTags(notebook.tags),
       isDeleted: notebook.isDeleted === true,
       deletedAt: this.normalizeTimestamp(notebook.deletedAt),
-      lastOpenedAt: currentTime
+      lastOpenedAt: currentTime,
+      lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(notebook.lastEditedPageId)
     };
     notebookList[notebookIndex] = updatedNotebook;
     await this.persistNotebookList(notebookList);
@@ -461,7 +510,8 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       tags: this.normalizeTags(notebook.tags),
       isDeleted: false,
       deletedAt: 0,
-      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt),
+      lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(notebook.lastEditedPageId)
     };
     notebookList[notebookIndex] = restoredNotebook;
     await this.persistNotebookList(notebookList);
@@ -523,7 +573,8 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       tags: this.normalizeTags(notebook.tags),
       isDeleted: true,
       deletedAt: TimeUtil.now(),
-      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt),
+      lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(notebook.lastEditedPageId)
     };
     notebookList[notebookIndex] = deletedNotebook;
     await this.persistNotebookList(notebookList);
@@ -591,7 +642,8 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       tags: this.normalizeTags(notebook.tags),
       isDeleted: notebook.isDeleted === true,
       deletedAt: this.normalizeTimestamp(notebook.deletedAt),
-      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt),
+      lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(notebook.lastEditedPageId)
     };
     await this.persistNotebookList(notebookList);
     return notebookPage;
@@ -606,11 +658,13 @@ export class NotebookRepositoryImpl implements NotebookRepository {
 
     const notebookPageList: NotebookPage[] = await this.loadNotebookPageList(request.notebookId);
     const filteredNotebookPageList: NotebookPage[] = [];
+    let deletedPageOrder: number = -1;
     let hasDeleted: boolean = false;
 
     for (const notebookPage of notebookPageList) {
       if (notebookPage.id === request.pageId) {
         hasDeleted = true;
+        deletedPageOrder = notebookPage.order;
         continue;
       }
       filteredNotebookPageList.push(notebookPage);
@@ -629,7 +683,9 @@ export class NotebookRepositoryImpl implements NotebookRepository {
           order: index,
           createdAt: notebookPage.createdAt,
           updatedAt: notebookPage.updatedAt,
-          templateType: notebookPage.templateType
+          templateType: notebookPage.templateType,
+          sourceFileUri: notebookPage.sourceFileUri,
+          sourceFileType: notebookPage.sourceFileType
         };
       }
     );
@@ -637,6 +693,12 @@ export class NotebookRepositoryImpl implements NotebookRepository {
 
     const currentTime: number = TimeUtil.now();
     const notebook: Notebook = notebookList[notebookIndex];
+    const currentLastEditedPageId: string = NotebookEntity.normalizeLastEditedPageId(notebook.lastEditedPageId);
+    const fallbackPageIndex: number = Math.max(0, Math.min(deletedPageOrder, reorderedNotebookPageList.length - 1));
+    const nextLastEditedPageId: string = currentLastEditedPageId === request.pageId
+      ? (reorderedNotebookPageList.length > 0 ? reorderedNotebookPageList[fallbackPageIndex].id : '')
+      : currentLastEditedPageId;
+
     notebookList[notebookIndex] = {
       id: notebook.id,
       title: notebook.title,
@@ -650,7 +712,8 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       tags: this.normalizeTags(notebook.tags),
       isDeleted: notebook.isDeleted === true,
       deletedAt: this.normalizeTimestamp(notebook.deletedAt),
-      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt),
+      lastEditedPageId: nextLastEditedPageId
     };
     await this.persistNotebookList(notebookList);
     return true;
@@ -691,7 +754,8 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       tags: this.normalizeTags(notebook.tags),
       isDeleted: notebook.isDeleted === true,
       deletedAt: this.normalizeTimestamp(notebook.deletedAt),
-      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt),
+      lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(notebook.lastEditedPageId)
     };
     await this.persistNotebookList(notebookList);
     return true;
@@ -744,7 +808,8 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       tags: this.normalizeTags(notebook.tags),
       isDeleted: notebook.isDeleted === true,
       deletedAt: this.normalizeTimestamp(notebook.deletedAt),
-      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt),
+      lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(notebook.lastEditedPageId)
     };
     await this.persistNotebookList(notebookList);
     return updatedNotebookPage;
@@ -787,7 +852,9 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       order: currentNotebookPage.order,
       createdAt: currentNotebookPage.createdAt,
       updatedAt: currentTime,
-      templateType: currentNotebookPage.templateType
+      templateType: currentNotebookPage.templateType,
+      sourceFileUri: currentNotebookPage.sourceFileUri,
+      sourceFileType: currentNotebookPage.sourceFileType
     };
     const updatedNotebookPageCanvas: NotebookPageCanvas = {
       pageId: currentNotebookPageCanvas.pageId,
@@ -809,7 +876,16 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       title: notebook.title,
       folderId: notebook.folderId,
       createdAt: notebook.createdAt,
-      updatedAt: currentTime
+      updatedAt: currentTime,
+      coverColor: NotebookEntity.normalizeCoverColor(notebook.coverColor),
+      coverImageUri: NotebookEntity.normalizeCoverImageUri(notebook.coverImageUri),
+      pageCount: NotebookEntity.normalizePageCount(notebook.pageCount),
+      isFavorite: notebook.isFavorite === true,
+      tags: this.normalizeTags(notebook.tags),
+      isDeleted: notebook.isDeleted === true,
+      deletedAt: this.normalizeTimestamp(notebook.deletedAt),
+      lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt),
+      lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(notebook.lastEditedPageId)
     };
     await this.persistNotebookList(notebookList);
     return updatedNotebookPageCanvas;
@@ -870,7 +946,8 @@ export class NotebookRepositoryImpl implements NotebookRepository {
           tags: this.normalizeTags(notebook.tags),
           isDeleted: notebook.isDeleted === true,
           deletedAt: this.normalizeTimestamp(notebook.deletedAt),
-          lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt)
+          lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt),
+          lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(notebook.lastEditedPageId)
         };
         await this.persistNotebookList(notebookList);
         return true;
@@ -1024,7 +1101,8 @@ export class NotebookRepositoryImpl implements NotebookRepository {
           tags: this.normalizeTags(item.tags),
           isDeleted: item.isDeleted === true,
           deletedAt: this.normalizeTimestamp(item.deletedAt),
-          lastOpenedAt: this.normalizeTimestamp(item.lastOpenedAt)
+          lastOpenedAt: this.normalizeTimestamp(item.lastOpenedAt),
+          lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(item.lastEditedPageId)
         };
         normalizedNotebookList.push(notebook);
         usedTitleList.push(uniqueTitle);

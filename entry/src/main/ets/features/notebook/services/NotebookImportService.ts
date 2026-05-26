@@ -158,6 +158,7 @@ export class NotebookImportService {
 
     const notebook: Notebook = await this.ensureNotebookCreated(profile.baseName, importedAsset.uri);
     const pageId: string = await this.ensureNotebookBackgroundPage(notebook.id, importedAsset, sourceUri, profile.lowerExtension);
+    await this.updateNotebookLastEditedPage(notebook.id, pageId);
     await this.persistImportSource(notebook.id, profile, importedAsset.uri);
     return {
       notebookId: notebook.id,
@@ -201,7 +202,7 @@ export class NotebookImportService {
   ): Promise<ImportResult | null> {
     const notebook: Notebook = await this.ensureNotebookCreated(profile.baseName, '');
     const openedPageId: string = await this.writeNotebookOfficePages(notebook.id, pageSpecs, profile, sourceUri);
-    await this.updateNotebookPageCount(notebook.id, pageSpecs.length);
+    await this.updateNotebookPageCount(notebook.id, pageSpecs.length, openedPageId);
     await this.persistImportSource(notebook.id, profile, sourceUri);
     return {
       notebookId: notebook.id,
@@ -217,7 +218,7 @@ export class NotebookImportService {
   ): Promise<ImportResult | null> {
     const notebook: Notebook = await this.ensureNotebookCreated(profile.baseName, '');
     const openedPageId: string = await this.writeNotebookBackgroundPages(notebook.id, pageSpecs, profile, sourceUri);
-    await this.updateNotebookPageCount(notebook.id, pageSpecs.length);
+    await this.updateNotebookPageCount(notebook.id, pageSpecs.length, openedPageId);
     await this.persistImportSource(notebook.id, profile, sourceUri);
     return {
       notebookId: notebook.id,
@@ -229,6 +230,7 @@ export class NotebookImportService {
   private async importAsTextNotebook(profile: ImportFileProfile, textContent: string, sourceUri: string): Promise<ImportResult | null> {
     const notebook: Notebook = await this.ensureNotebookCreated(profile.baseName, '');
     const pageId: string = await this.writeNotebookTextPage(notebook.id, textContent, profile, sourceUri);
+    await this.updateNotebookLastEditedPage(notebook.id, pageId);
     await this.persistImportSource(notebook.id, profile, sourceUri);
     return {
       notebookId: notebook.id,
@@ -240,6 +242,7 @@ export class NotebookImportService {
   private async importAsAttachmentNotebook(profile: ImportFileProfile, sourceUri: string): Promise<ImportResult | null> {
     const notebook: Notebook = await this.ensureNotebookCreated(profile.baseName, '');
     const pageId: string = await this.writeNotebookAttachmentPage(notebook.id, profile, sourceUri);
+    await this.updateNotebookLastEditedPage(notebook.id, pageId);
     await this.persistImportSource(notebook.id, profile, sourceUri);
     return {
       notebookId: notebook.id,
@@ -281,7 +284,8 @@ export class NotebookImportService {
       tags: [],
       isDeleted: false,
       deletedAt: 0,
-      lastOpenedAt: 0
+      lastOpenedAt: 0,
+      lastEditedPageId: ''
     };
 
     notebookList.push(notebook);
@@ -1150,7 +1154,11 @@ export class NotebookImportService {
     await this.fileDataSource.writeText(sourcePath, JSON.stringify(payload));
   }
 
-  private async updateNotebookPageCount(notebookId: string, pageCount: number): Promise<void> {
+  private async updateNotebookPageCount(
+    notebookId: string,
+    pageCount: number,
+    lastEditedPageId: string = ''
+  ): Promise<void> {
     const notebookList: Notebook[] = await this.readNotebookList();
     let hasUpdated: boolean = false;
     for (let index: number = 0; index < notebookList.length; index += 1) {
@@ -1171,7 +1179,49 @@ export class NotebookImportService {
         tags: Array.isArray(notebook.tags) ? notebook.tags.slice() : [],
         isDeleted: notebook.isDeleted === true,
         deletedAt: typeof notebook.deletedAt === 'number' ? notebook.deletedAt : 0,
-        lastOpenedAt: typeof notebook.lastOpenedAt === 'number' ? notebook.lastOpenedAt : 0
+        lastOpenedAt: typeof notebook.lastOpenedAt === 'number' ? notebook.lastOpenedAt : 0,
+        lastEditedPageId: lastEditedPageId.length > 0
+          ? NotebookEntity.normalizeLastEditedPageId(lastEditedPageId)
+          : NotebookEntity.normalizeLastEditedPageId(notebook.lastEditedPageId)
+      };
+      hasUpdated = true;
+      break;
+    }
+
+    if (hasUpdated) {
+      await this.writeNotebookList(notebookList);
+    }
+  }
+
+  private async updateNotebookLastEditedPage(notebookId: string, pageId: string): Promise<void> {
+    const normalizedPageId: string = NotebookEntity.normalizeLastEditedPageId(pageId);
+    if (normalizedPageId.length === 0) {
+      return;
+    }
+
+    const notebookList: Notebook[] = await this.readNotebookList();
+    let hasUpdated: boolean = false;
+    for (let index: number = 0; index < notebookList.length; index += 1) {
+      const notebook: Notebook = notebookList[index];
+      if (notebook.id !== notebookId) {
+        continue;
+      }
+
+      notebookList[index] = {
+        id: notebook.id,
+        title: notebook.title,
+        folderId: notebook.folderId,
+        createdAt: notebook.createdAt,
+        updatedAt: notebook.updatedAt,
+        coverColor: NotebookEntity.normalizeCoverColor(notebook.coverColor),
+        coverImageUri: NotebookEntity.normalizeCoverImageUri(notebook.coverImageUri),
+        pageCount: NotebookEntity.normalizePageCount(notebook.pageCount),
+        isFavorite: notebook.isFavorite === true,
+        tags: Array.isArray(notebook.tags) ? notebook.tags.slice() : [],
+        isDeleted: notebook.isDeleted === true,
+        deletedAt: typeof notebook.deletedAt === 'number' ? notebook.deletedAt : 0,
+        lastOpenedAt: typeof notebook.lastOpenedAt === 'number' ? notebook.lastOpenedAt : 0,
+        lastEditedPageId: normalizedPageId
       };
       hasUpdated = true;
       break;
@@ -1240,7 +1290,8 @@ export class NotebookImportService {
             tags: Array.isArray(notebook.tags) ? notebook.tags.slice() : [],
             isDeleted: notebook.isDeleted === true,
             deletedAt: typeof notebook.deletedAt === 'number' ? notebook.deletedAt : 0,
-            lastOpenedAt: typeof notebook.lastOpenedAt === 'number' ? notebook.lastOpenedAt : 0
+            lastOpenedAt: typeof notebook.lastOpenedAt === 'number' ? notebook.lastOpenedAt : 0,
+            lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(notebook.lastEditedPageId)
           });
           usedTitleList.push(uniqueTitle);
         }
@@ -1271,7 +1322,8 @@ export class NotebookImportService {
       tags: tags,
       isDeleted: this.parseBoolean(map.isDeleted),
       deletedAt: this.parseTimestamp(map.deletedAt, 0),
-      lastOpenedAt: this.parseTimestamp(map.lastOpenedAt, 0)
+      lastOpenedAt: this.parseTimestamp(map.lastOpenedAt, 0),
+      lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(this.parseString(map.lastEditedPageId))
     };
   }
 

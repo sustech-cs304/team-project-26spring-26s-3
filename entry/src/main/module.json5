@@ -19,16 +19,6 @@
           ],
           "when": "inuse"
         }
-      },
-      {
-        "name": "ohos.permission.WRITE_IMAGEVIDEO",
-        "reason": "$string:reason_save_recognition_image",
-        "usedScene": {
-          "abilities": [
-            "EntryAbility"
-          ],
-          "when": "inuse"
-        }
       }
     ],
     "deliveryWithInstall": true,
