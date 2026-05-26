@@ -75,12 +75,18 @@ export struct ElementLayer {
   @Builder
   private buildImageElement(element: ImageCanvasElement): void {
     Stack() {
-      Image(this.toImageSourceUri(this.getCurrentImageElementUri(element)))
-        .width('100%')
-        .height('100%')
-        .objectFit(ImageFit.Fill)
-        .opacity(this.getCurrentImageElementOpacity(element))
-        .hitTestBehavior(HitTestMode.None)
+      ForEach(
+        this.buildImageSourceCandidates(this.getCurrentImageElementUri(element)),
+        (candidate: string) => {
+          Image(candidate)
+            .width('100%')
+            .height('100%')
+            .objectFit(ImageFit.Fill)
+            .opacity(this.getCurrentImageElementOpacity(element))
+            .hitTestBehavior(HitTestMode.None)
+        },
+        (candidate: string): string => candidate
+      )
     }
     .width(this.getImageElementDisplayFrame(element).width)
     .height(this.getImageElementDisplayFrame(element).height)
@@ -309,20 +315,64 @@ export struct ElementLayer {
     return currentElement === undefined ? element : currentElement;
   }
 
-  private toImageSourceUri(path: string): string {
+  private buildImageSourceCandidates(path: string): string[] {
+    const candidates: string[] = [];
+    this.appendImageSourceCandidate(candidates, this.toImageSourceUri(path));
+    const decodedPath: string = this.decodeUriSegment(path);
+    if (decodedPath !== path) {
+      this.appendImageSourceCandidate(candidates, this.toImageSourceUri(decodedPath));
+    }
+
     if (path.startsWith('file://')) {
-      if (path.startsWith('file:///')) {
-        return path;
-      }
       const rawLocalPath: string = path.substring('file://'.length);
+      this.appendImageSourceCandidate(candidates, this.toImageSourceUri(rawLocalPath));
+      const decodedLocalPath: string = this.decodeUriSegment(rawLocalPath);
+      if (decodedLocalPath !== rawLocalPath) {
+        this.appendImageSourceCandidate(candidates, this.toImageSourceUri(decodedLocalPath));
+      }
+    }
+
+    if (decodedPath.startsWith('file://')) {
+      const decodedSchemePath: string = decodedPath.substring('file://'.length);
+      this.appendImageSourceCandidate(candidates, this.toImageSourceUri(decodedSchemePath));
+    }
+
+    return candidates;
+  }
+
+  private appendImageSourceCandidate(candidates: string[], candidate: string): void {
+    if (candidate.length === 0 || candidates.includes(candidate)) {
+      return;
+    }
+    candidates.push(candidate);
+  }
+
+  private toImageSourceUri(path: string): string {
+    const normalizedPath: string = path.trim();
+    if (normalizedPath.length === 0) {
+      return '';
+    }
+    if (normalizedPath.startsWith('file://')) {
+      if (normalizedPath.startsWith('file:///')) {
+        return normalizedPath;
+      }
+      const rawLocalPath: string = normalizedPath.substring('file://'.length);
       return rawLocalPath.startsWith('/') ? `file://${rawLocalPath}` : `file:///${rawLocalPath}`;
     }
 
-    if (path.startsWith('http://') || path.startsWith('https://')) {
-      return path;
+    if (normalizedPath.startsWith('http://') || normalizedPath.startsWith('https://')) {
+      return normalizedPath;
     }
 
-    return `file://${path}`;
+    return normalizedPath.startsWith('/') ? `file://${normalizedPath}` : `file:///${normalizedPath}`;
+  }
+
+  private decodeUriSegment(text: string): string {
+    try {
+      return decodeURIComponent(text);
+    } catch (_error) {
+      return text;
+    }
   }
 
   private getViewModel(): DrawingEditorViewModel | null {

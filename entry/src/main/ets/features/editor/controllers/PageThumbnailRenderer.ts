@@ -120,7 +120,7 @@ export class PageThumbnailRenderer {
       sourceSize.height,
       snapshot.paperBackgroundColor,
       undefined,
-      snapshot.backgroundImageUri.length === 0 || !didDrawBackgroundImage
+      this.shouldFillTemplateBackground(snapshot.backgroundImageUri, didDrawBackgroundImage)
     );
     this.drawContent(context, snapshot, scale);
     context.restore();
@@ -201,6 +201,10 @@ export class PageThumbnailRenderer {
   private static buildImageSourceCandidates(uri: string): string[] {
     const candidates: string[] = [];
     this.appendImageSourceCandidate(candidates, uri);
+    const decodedUri = this.decodeUriSegment(uri);
+    if (decodedUri !== uri) {
+      this.appendImageSourceCandidate(candidates, decodedUri);
+    }
 
     if (uri.startsWith('file://')) {
       const rawLocalPath = uri.substring('file://'.length);
@@ -208,9 +212,28 @@ export class PageThumbnailRenderer {
       if (!rawLocalPath.startsWith('/')) {
         this.appendImageSourceCandidate(candidates, `/${rawLocalPath}`);
       }
+      const decodedLocalPath = this.decodeUriSegment(rawLocalPath);
+      if (decodedLocalPath !== rawLocalPath) {
+        this.appendImageSourceCandidate(candidates, decodedLocalPath);
+        if (!decodedLocalPath.startsWith('/')) {
+          this.appendImageSourceCandidate(candidates, `/${decodedLocalPath}`);
+        }
+      }
+    }
+
+    if (decodedUri.startsWith('file://')) {
+      const decodedSchemePath = decodedUri.substring('file://'.length);
+      this.appendImageSourceCandidate(candidates, decodedSchemePath);
+      if (!decodedSchemePath.startsWith('/')) {
+        this.appendImageSourceCandidate(candidates, `/${decodedSchemePath}`);
+      }
     }
 
     return candidates;
+  }
+
+  private static shouldFillTemplateBackground(backgroundImageUri: string, didDrawBackgroundImage: boolean): boolean {
+    return this.resolveImageUri(backgroundImageUri).length === 0 || !didDrawBackgroundImage;
   }
 
   private static appendImageSourceCandidate(candidates: string[], candidate: string): void {
@@ -218,6 +241,14 @@ export class PageThumbnailRenderer {
       return;
     }
     candidates.push(candidate);
+  }
+
+  private static decodeUriSegment(text: string): string {
+    try {
+      return decodeURIComponent(text);
+    } catch (_error) {
+      return text;
+    }
   }
 
   private static drawContent(

@@ -151,6 +151,11 @@ export class NotebookImportService {
 
   private async importAsVisualNotebook(profile: ImportFileProfile, sourceUri: string): Promise<ImportResult | null> {
     const importedAsset: ImportedImageAsset = await this.importImageAsset(sourceUri);
+    if (importedAsset.uri.length === 0) {
+      this.lastFailureMessage = `图片导入失败：无法读取 ${profile.fileName}，请确认文件未损坏或重新选择一次。`;
+      return null;
+    }
+
     const notebook: Notebook = await this.ensureNotebookCreated(profile.baseName, importedAsset.uri);
     const pageId: string = await this.ensureNotebookBackgroundPage(notebook.id, importedAsset, sourceUri, profile.lowerExtension);
     await this.persistImportSource(notebook.id, profile, importedAsset.uri);
@@ -703,9 +708,9 @@ export class NotebookImportService {
       return await new ImageAssetDataSource(this.context).importImage(sourceUri);
     } catch (_error) {
       return {
-        uri: sourceUri,
-        originalWidth: 1,
-        originalHeight: 1
+        uri: '',
+        originalWidth: 0,
+        originalHeight: 0
       };
     }
   }

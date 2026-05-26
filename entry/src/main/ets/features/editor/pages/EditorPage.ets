@@ -2026,7 +2026,7 @@ struct EditorPage {
       this.activePageId = pageId;
       this.focusedPageId = pageId;
       this.retainEditableDocumentPage(pageId);
-      this.activePageCanvas = null;
+      this.activePageCanvas = this.getCachedPageCanvas(pageId);
       this.pendingDocumentViewportPageId = '';
       this.closePageActionMenu();
       this.scheduleActivePageCanvasLoad(pageId);
@@ -3490,12 +3490,20 @@ struct EditorPage {
   private getPageCanvasBackgroundImageUri(pageId: string): string {
     const activeCanvas: NotebookPageCanvas | null = this.getActivePageCanvasForPage(pageId);
     if (activeCanvas !== null && typeof activeCanvas.backgroundImageUri === 'string') {
-      return activeCanvas.backgroundImageUri;
+      const activeBackgroundImageUri: string = NotebookPageCanvasEntity.normalizeBackgroundImageUri(
+        activeCanvas.backgroundImageUri
+      );
+      if (activeBackgroundImageUri.length > 0) {
+        return activeBackgroundImageUri;
+      }
     }
 
     const cachedCanvas = this.pageCanvasMetadataMap.get(pageId);
     if (cachedCanvas !== undefined && typeof cachedCanvas.backgroundImageUri === 'string') {
-      return cachedCanvas.backgroundImageUri;
+      const cachedBackgroundImageUri: string = cachedCanvas.backgroundImageUri.trim();
+      if (cachedBackgroundImageUri.length > 0) {
+        return cachedBackgroundImageUri;
+      }
     }
 
     return '';
@@ -4325,7 +4333,7 @@ struct EditorPage {
         ? NotebookPageCanvasEntity.DEFAULT_BACKGROUND_COLOR
         : currentCanvas.backgroundColor,
       backgroundImageUri: currentCanvas === null
-        ? ''
+        ? this.getPageCanvasBackgroundImageUri(activePage.id)
         : NotebookPageCanvasEntity.normalizeBackgroundImageUri(currentCanvas.backgroundImageUri),
       createdAt: currentCanvas === null ? activePage.createdAt : currentCanvas.createdAt,
       updatedAt: currentTime

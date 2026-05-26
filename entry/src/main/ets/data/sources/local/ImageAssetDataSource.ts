@@ -34,24 +34,31 @@ export class ImageAssetDataSource {
   }
 
   private async copySourceToSandbox(sourceUri: string, targetPath: string): Promise<void> {
-    try {
-      await fs.copyFile(sourceUri, targetPath);
-      return;
-    } catch (_directCopyError) {
-    }
+    const sourceCandidates = this.buildPathCandidates(sourceUri);
+    for (const candidateSource of sourceCandidates) {
+      try {
+        await fs.copyFile(candidateSource, targetPath);
+        return;
+      } catch (_directCopyError) {
+      }
 
-    let sourceFile: fs.File | undefined = undefined;
-    try {
-      sourceFile = fs.openSync(sourceUri, fs.OpenMode.READ_ONLY);
-      await fs.copyFile(sourceFile.fd, targetPath);
-    } finally {
-      if (sourceFile !== undefined) {
-        try {
-          fs.closeSync(sourceFile);
-        } catch (_closeError) {
+      let sourceFile: fs.File | undefined = undefined;
+      try {
+        sourceFile = fs.openSync(candidateSource, fs.OpenMode.READ_ONLY);
+        await fs.copyFile(sourceFile.fd, targetPath);
+        return;
+      } catch (_fdCopyError) {
+      } finally {
+        if (sourceFile !== undefined) {
+          try {
+            fs.closeSync(sourceFile);
+          } catch (_closeError) {
+          }
         }
       }
     }
+
+    throw new Error('Unable to copy image source.');
   }
 
   private async getImageSize(imagePath: string): Promise<{ width: number; height: number }> {
@@ -100,6 +107,57 @@ export class ImageAssetDataSource {
         return extension;
       default:
         return '.jpg';
+    }
+  }
+
+  private buildPathCandidates(path: string): string[] {
+    const candidates: string[] = [];
+    this.appendPathCandidate(candidates, path);
+
+    const decodedPath: string = this.decodeUriSegment(path);
+    if (decodedPath !== path) {
+      this.appendPathCandidate(candidates, decodedPath);
+    }
+
+    if (path.startsWith('file://')) {
+      const rawLocalPath: string = path.substring('file://'.length);
+      this.appendPathCandidate(candidates, rawLocalPath);
+      if (!rawLocalPath.startsWith('/')) {
+        this.appendPathCandidate(candidates, `/${rawLocalPath}`);
+      }
+
+      const decodedLocalPath: string = this.decodeUriSegment(rawLocalPath);
+      if (decodedLocalPath !== rawLocalPath) {
+        this.appendPathCandidate(candidates, decodedLocalPath);
+        if (!decodedLocalPath.startsWith('/')) {
+          this.appendPathCandidate(candidates, `/${decodedLocalPath}`);
+        }
+      }
+    }
+
+    if (decodedPath.startsWith('file://')) {
+      const decodedSchemePath: string = decodedPath.substring('file://'.length);
+      this.appendPathCandidate(candidates, decodedSchemePath);
+      if (!decodedSchemePath.startsWith('/')) {
+        this.appendPathCandidate(candidates, `/${decodedSchemePath}`);
+      }
+    }
+
+    return candidates;
+  }
+
+  private appendPathCandidate(candidates: string[], path: string): void {
+    if (path.length === 0 || candidates.includes(path)) {
+      return;
+    }
+    candidates.push(path);
+  }
+
+  private decodeUriSegment(text: string): string {
+    try {
+      return decodeURIComponent(text);
+    } catch (_error) {
+      return text;
     }
   }
 }
