@@ -4961,6 +4961,7 @@ export struct CanvasBoard {
 
     offscreenContext.restore();
     const bitmap = offscreenCanvas.transferToImageBitmap();
+    this.committedContext2D.clearRect(viewportRegion.minX, viewportRegion.minY, width, height);
     this.committedContext2D.drawImage(bitmap, viewportRegion.minX, viewportRegion.minY, width, height);
     bitmap.close();
     return true;
