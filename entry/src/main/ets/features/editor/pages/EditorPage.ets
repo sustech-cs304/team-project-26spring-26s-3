@@ -1981,6 +1981,7 @@ struct EditorPage {
         this.activePageId = notebookPage.id;
         this.focusedPageId = notebookPage.id;
         this.retainEditableDocumentPage(notebookPage.id);
+        this.requestDocumentViewportForPage(notebookPage.id);
       }
 
       await this.loadActivePageCanvas();
