@@ -3,7 +3,7 @@ import { SelectionController } from '../selection/SelectionController';
 import { ResizeHandle, ResizeHandlePoint } from '../selection/SelectionTypes';
 
 const TRANSFORM_COLOR = '#2563EB';
-const HANDLE_SIZE = 10;
+const HANDLE_SIZE = 16;
 const HANDLE_OFFSET = -HANDLE_SIZE / 2;
 
 @Component
