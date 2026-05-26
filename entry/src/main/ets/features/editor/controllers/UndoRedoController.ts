@@ -1,6 +1,7 @@
 import { Stroke, StrokePoint, StrokeStyle } from '../../../domain/entities/Stroke';
 import {
   CanvasElement,
+  ElementOutlineStyle,
   ImageCanvasElement,
   ShapeCanvasElement,
   ShapeGeometry,
@@ -19,6 +20,8 @@ export type EditorDeltaLabel =
   'resize' |
   'elementInsert' |
   'elementEdit' |
+  'elementStyle' |
+  'layer' |
   'elementDelete' |
   'textEdit';
 
@@ -51,6 +54,8 @@ export interface ReplacePageDeltaOperation {
   addedElements: IndexedElementRecord[];
   beforeSelection?: EditorSelectionSnapshot;
   afterSelection?: EditorSelectionSnapshot;
+  beforeStrokeLayerZIndex?: number;
+  afterStrokeLayerZIndex?: number;
   label: EditorDeltaLabel;
 }
 
@@ -74,6 +79,7 @@ export interface UndoRedoApplyResult {
   removedElements: IndexedElementRecord[];
   addedElements: IndexedElementRecord[];
   selection: EditorSelectionSnapshot | null;
+  strokeLayerZIndex: number | null;
 }
 
 export class UndoRedoController {
@@ -96,9 +102,14 @@ export class UndoRedoController {
     removedElements: IndexedElementRecord[] = [],
     addedElements: IndexedElementRecord[] = [],
     beforeSelection: EditorSelectionSnapshot = UndoRedoController.createEmptySelectionSnapshot(),
-    afterSelection: EditorSelectionSnapshot = UndoRedoController.createEmptySelectionSnapshot()
+    afterSelection: EditorSelectionSnapshot = UndoRedoController.createEmptySelectionSnapshot(),
+    beforeStrokeLayerZIndex: number | null = null,
+    afterStrokeLayerZIndex: number | null = null
   ): void {
-    if (removed.length === 0 && added.length === 0 && removedElements.length === 0 && addedElements.length === 0) {
+    const hasStrokeLayerChange = beforeStrokeLayerZIndex !== null && afterStrokeLayerZIndex !== null &&
+      beforeStrokeLayerZIndex !== afterStrokeLayerZIndex;
+    if (removed.length === 0 && added.length === 0 && removedElements.length === 0 && addedElements.length === 0 &&
+      !hasStrokeLayerChange) {
       return;
     }
 
@@ -110,11 +121,16 @@ export class UndoRedoController {
       addedElements: addedElements.map((record: IndexedElementRecord) => this.cloneIndexedElementRecord(record)),
       beforeSelection: this.cloneSelectionSnapshot(beforeSelection),
       afterSelection: this.cloneSelectionSnapshot(afterSelection),
+      beforeStrokeLayerZIndex: beforeStrokeLayerZIndex === null ? undefined : beforeStrokeLayerZIndex,
+      afterStrokeLayerZIndex: afterStrokeLayerZIndex === null ? undefined : afterStrokeLayerZIndex,
       label
     });
   }
 
-  undo(currentStrokes: Stroke[], currentElements: CanvasElement[] = []): UndoRedoApplyResult {
+  undo(
+    currentStrokes: Stroke[],
+    currentElements: CanvasElement[] = []
+  ): UndoRedoApplyResult {
     const operation = this.undoStack.pop();
     if (!operation) {
       return {
@@ -124,7 +140,8 @@ export class UndoRedoController {
         added: [],
         removedElements: [],
         addedElements: [],
-        selection: null
+        selection: null,
+        strokeLayerZIndex: null
       };
     }
 
@@ -132,7 +149,10 @@ export class UndoRedoController {
     return this.applyInverse(operation, currentStrokes, currentElements);
   }
 
-  redo(currentStrokes: Stroke[], currentElements: CanvasElement[] = []): UndoRedoApplyResult {
+  redo(
+    currentStrokes: Stroke[],
+    currentElements: CanvasElement[] = []
+  ): UndoRedoApplyResult {
     const operation = this.redoStack.pop();
     if (!operation) {
       return {
@@ -142,7 +162,8 @@ export class UndoRedoController {
         added: [],
         removedElements: [],
         addedElements: [],
-        selection: null
+        selection: null,
+        strokeLayerZIndex: null
       };
     }
 
@@ -214,7 +235,8 @@ export class UndoRedoController {
           }],
           removedElements: [],
           addedElements: [],
-          selection: UndoRedoController.createEmptySelectionSnapshot()
+          selection: UndoRedoController.createEmptySelectionSnapshot(),
+          strokeLayerZIndex: null
         };
       }
       case 'replace_page_delta':
@@ -225,7 +247,8 @@ export class UndoRedoController {
           operation.added,
           operation.removedElements,
           operation.addedElements,
-          operation.afterSelection
+          operation.afterSelection,
+          operation.afterStrokeLayerZIndex ?? null
         );
       default:
         return {
@@ -235,7 +258,8 @@ export class UndoRedoController {
           added: [],
           removedElements: [],
           addedElements: [],
-          selection: null
+          selection: null,
+          strokeLayerZIndex: null
         };
     }
   }
@@ -256,7 +280,8 @@ export class UndoRedoController {
           operation.removed,
           operation.addedElements,
           operation.removedElements,
-          operation.beforeSelection
+          operation.beforeSelection,
+          operation.beforeStrokeLayerZIndex ?? null
         );
       default:
         return {
@@ -266,7 +291,8 @@ export class UndoRedoController {
           added: [],
           removedElements: [],
           addedElements: [],
-          selection: null
+          selection: null,
+          strokeLayerZIndex: null
         };
     }
   }
@@ -278,7 +304,8 @@ export class UndoRedoController {
     added: IndexedStrokeRecord[],
     removedElements: IndexedElementRecord[],
     addedElements: IndexedElementRecord[],
-    selection: EditorSelectionSnapshot | undefined
+    selection: EditorSelectionSnapshot | undefined,
+    nextStrokeLayerZIndex: number | null
   ): UndoRedoApplyResult {
     const nextStrokes = currentStrokes.slice();
     const removedIds = new Set<string>();
@@ -330,7 +357,8 @@ export class UndoRedoController {
       added: added.map((record: IndexedStrokeRecord) => this.cloneIndexedStrokeRecord(record)),
       removedElements: removedElements.map((record: IndexedElementRecord) => this.cloneIndexedElementRecord(record)),
       addedElements: addedElements.map((record: IndexedElementRecord) => this.cloneIndexedElementRecord(record)),
-      selection: this.cloneSelectionSnapshot(selection ?? UndoRedoController.createEmptySelectionSnapshot())
+      selection: this.cloneSelectionSnapshot(selection ?? UndoRedoController.createEmptySelectionSnapshot()),
+      strokeLayerZIndex: nextStrokeLayerZIndex
     };
   }
 
@@ -360,7 +388,8 @@ export class UndoRedoController {
       added: [],
       removedElements: [],
       addedElements: [],
-      selection: UndoRedoController.createEmptySelectionSnapshot()
+      selection: UndoRedoController.createEmptySelectionSnapshot(),
+      strokeLayerZIndex: null
     };
   }
 
@@ -386,6 +415,8 @@ export class UndoRedoController {
           afterSelection: this.cloneSelectionSnapshot(
             operation.afterSelection ?? UndoRedoController.createEmptySelectionSnapshot()
           ),
+          beforeStrokeLayerZIndex: operation.beforeStrokeLayerZIndex,
+          afterStrokeLayerZIndex: operation.afterStrokeLayerZIndex,
           label: operation.label
         };
       default:
@@ -397,6 +428,8 @@ export class UndoRedoController {
           addedElements: [],
           beforeSelection: UndoRedoController.createEmptySelectionSnapshot(),
           afterSelection: UndoRedoController.createEmptySelectionSnapshot(),
+          beforeStrokeLayerZIndex: undefined,
+          afterStrokeLayerZIndex: undefined,
           label: 'clear'
         };
     }
@@ -506,10 +539,17 @@ export class UndoRedoController {
       updatedAt: element.updatedAt,
       shapeType: element.shapeType,
       geometry: this.cloneShapeGeometry(element.geometry),
-      strokeColor: element.strokeColor,
       fillColor: element.fillColor,
-      strokeWidth: element.strokeWidth,
+      outline: this.cloneElementOutline(element.outline),
       opacity: element.opacity
+    };
+  }
+
+  private cloneElementOutline(outline: ElementOutlineStyle): ElementOutlineStyle {
+    return {
+      lineStyle: outline.lineStyle,
+      color: outline.color,
+      width: outline.width
     };
   }
 
@@ -541,7 +581,8 @@ export class UndoRedoController {
       uri: element.uri,
       originalWidth: element.originalWidth,
       originalHeight: element.originalHeight,
-      opacity: element.opacity
+      opacity: element.opacity,
+      outline: this.cloneElementOutline(element.outline)
     };
   }
 

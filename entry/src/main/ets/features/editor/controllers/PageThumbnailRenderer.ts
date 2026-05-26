@@ -1,4 +1,7 @@
-import { CanvasElement } from '../../../domain/entities/CanvasElement';
+import {
+  CanvasElement,
+  DEFAULT_STROKE_LAYER_Z_INDEX
+} from '../../../domain/entities/CanvasElement';
 import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
 import { CanvasDrawContext } from './CanvasDrawContext';
@@ -22,6 +25,7 @@ export interface PageThumbnailRenderSnapshot {
   isLoading: boolean;
   strokes: Stroke[];
   elements: CanvasElement[];
+  strokeLayerZIndex: number;
   activeStroke: Stroke | null;
 }
 
@@ -55,6 +59,7 @@ export function createEmptyPageThumbnailRenderSnapshot(pageId: string = ''): Pag
     isLoading: false,
     strokes: [],
     elements: [],
+    strokeLayerZIndex: DEFAULT_STROKE_LAYER_Z_INDEX,
     activeStroke: null
   };
 }
@@ -79,6 +84,7 @@ export class PageThumbnailRenderer {
       Math.round(snapshot.canvasHeight),
       snapshot.contentVersion,
       snapshot.activeStrokeVersion,
+      snapshot.strokeLayerZIndex,
       snapshot.isLoading ? 'loading' : 'ready',
       Math.round(viewportSize.width),
       Math.round(viewportSize.height)
@@ -219,15 +225,23 @@ export class PageThumbnailRenderer {
     snapshot: PageThumbnailRenderSnapshot,
     scale: number
   ): void {
+    CanvasElementRenderer.drawElements(
+      context,
+      snapshot.elements.filter((element: CanvasElement): boolean => element.zIndex < snapshot.strokeLayerZIndex)
+    );
+
     for (const stroke of snapshot.strokes) {
       this.drawStroke(context, stroke, scale, 1);
     }
 
-    CanvasElementRenderer.drawElements(context, snapshot.elements);
-
     if (snapshot.activeStroke !== null) {
       this.drawStroke(context, snapshot.activeStroke, scale, PREVIEW_ALPHA_SCALE);
     }
+
+    CanvasElementRenderer.drawElements(
+      context,
+      snapshot.elements.filter((element: CanvasElement): boolean => element.zIndex >= snapshot.strokeLayerZIndex)
+    );
   }
 
   private static drawStroke(

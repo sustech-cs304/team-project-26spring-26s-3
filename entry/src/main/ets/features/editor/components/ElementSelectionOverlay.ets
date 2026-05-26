@@ -3,7 +3,6 @@ import { CanvasElement, ShapeCanvasElement, ShapeGeometryPoint } from '../../../
 const SELECTION_COLOR = '#2563EB';
 const HANDLE_SIZE = 8;
 const HANDLE_OFFSET = -4;
-const DELETE_BUTTON_SIZE = 24;
 const LINE_SELECTION_PADDING = 10;
 
 @Component
@@ -50,7 +49,6 @@ export struct ElementSelectionOverlay {
         this.buildHandle(this.getBoxMiddleHandleX(), this.element.height - HANDLE_SIZE - HANDLE_OFFSET)
         this.buildHandle(HANDLE_OFFSET, this.getBoxMiddleHandleY())
       }
-      this.buildDeleteButton(this.getBoxDeleteButtonX(), 6)
     }
     .width(this.element.width)
     .height(this.element.height)
@@ -82,7 +80,6 @@ export struct ElementSelectionOverlay {
         this.getLineEndPoint().x - this.getLineOverlayX() - HANDLE_SIZE / 2,
         this.getLineEndPoint().y - this.getLineOverlayY() - HANDLE_SIZE / 2
       )
-      this.buildDeleteButton(this.getLineDeleteButtonX(), 6)
     }
     .width(this.getLineOverlayWidth())
     .height(this.getLineOverlayHeight())
@@ -109,29 +106,6 @@ export struct ElementSelectionOverlay {
         color: SELECTION_COLOR
       })
       .borderRadius(2)
-  }
-
-  @Builder
-  private buildDeleteButton(x: number, y: number): void {
-    Stack({ alignContent: Alignment.Center }) {
-      Text('X')
-        .fontSize(12)
-        .fontWeight(FontWeight.Bold)
-        .fontColor('#FFFFFF')
-    }
-    .width(DELETE_BUTTON_SIZE)
-    .height(DELETE_BUTTON_SIZE)
-    .position({
-      x,
-      y
-    })
-    .backgroundColor('#DC2626')
-    .borderRadius(12)
-    .border({
-      width: 2,
-      color: '#FFFFFF'
-    })
-    .hitTestBehavior(HitTestMode.None)
   }
 
   private onElementChanged(): void {
@@ -206,10 +180,6 @@ export struct ElementSelectionOverlay {
     return Math.max(1, Math.abs(this.getLineEndPoint().y - this.getLineStartPoint().y) + LINE_SELECTION_PADDING * 2);
   }
 
-  private getBoxDeleteButtonX(): number {
-    return Math.max(0, this.element.width - DELETE_BUTTON_SIZE - 6);
-  }
-
   private getBoxMiddleHandleY(): number {
     return this.element.height / 2 - HANDLE_SIZE / 2;
   }
@@ -218,7 +188,4 @@ export struct ElementSelectionOverlay {
     return this.element.width / 2 - HANDLE_SIZE / 2;
   }
 
-  private getLineDeleteButtonX(): number {
-    return Math.max(0, this.getLineOverlayWidth() - DELETE_BUTTON_SIZE - 6);
-  }
 }

@@ -23,6 +23,8 @@ import { now } from '../../../common/utils/TimeUtil';
 import { EditorRepositoryImpl } from '../../../data/repositories/EditorRepositoryImpl';
 import {
   CanvasElement,
+  DEFAULT_STROKE_LAYER_Z_INDEX,
+  ElementOutlineStyle,
   ImageCanvasElement,
   PAGE_CANVAS_CONTENT_VERSION,
   PageCanvasContent,
@@ -49,6 +51,8 @@ import {
 } from '../controllers/UndoRedoController';
 import { SelectionController } from '../selection/SelectionController';
 import {
+  LayerActionAvailability,
+  LayerOrderAction,
   ResizeHandle,
   SelectionAction,
   SelectionActionResult,
@@ -119,6 +123,11 @@ interface ElementEditGesture {
   originalElement: CanvasElement;
 }
 
+interface ElementOutlineEditGesture {
+  elementId: string;
+  originalElement: CanvasElement;
+}
+
 interface SelectionMoveGesture {
   startPoint: StrokePoint;
   currentOffsetX: number;
@@ -143,13 +152,48 @@ export interface ImageInsertAsset {
   originalHeight: number;
 }
 
+type LayerStackItemKind = 'strokeLayer' | 'element';
+
+interface LayerStackItem {
+  kind: LayerStackItemKind;
+  id: string;
+  zIndex: number;
+  createdAt: number;
+  orderIndex: number;
+}
+
+interface LayerReorderResult {
+  changed: boolean;
+  strokeLayerZIndex: number;
+  elements: CanvasElement[];
+}
+
+interface ElementLayerOrderRecord {
+  element: CanvasElement;
+  orderIndex: number;
+}
+
+export interface ImageElementEditDraft {
+  elementId: string;
+  originalFrame: ElementFrame;
+  currentFrame: ElementFrame;
+}
+
 const MAX_DEBUG_EVENTS = 20;
 const SAVE_DEBOUNCE_MS = 900;
 const INTERACTION_SAVE_DEBOUNCE_MS = 180;
 const EDITOR_BUILD_MARKER = 'editor-build-2026-04-20-state-link-sync-v1';
 const DEFAULT_TEXT_ELEMENT_TOP_OFFSET = 24;
-const DEFAULT_SHAPE_STROKE_COLOR = '#111827';
-const DEFAULT_SHAPE_STROKE_WIDTH = 2;
+const DEFAULT_SHAPE_OUTLINE: ElementOutlineStyle = {
+  lineStyle: 'solid',
+  color: '#111827',
+  width: 2
+};
+const DEFAULT_IMAGE_OUTLINE: ElementOutlineStyle = {
+  lineStyle: 'none',
+  color: '#111827',
+  width: 2
+};
 const MIN_SHAPE_DRAG_DISTANCE = 8;
 const ELEMENT_LINE_HIT_TOLERANCE = 8;
 const MIN_TEXT_FONT_SIZE = 8;
@@ -194,6 +238,7 @@ export class DrawingEditorViewModel {
   private pageId: string = '';
   private strokes: Stroke[] = [];
   private elements: CanvasElement[] = [];
+  private strokeLayerZIndex: number = DEFAULT_STROKE_LAYER_Z_INDEX;
   private toolSetting: ToolSetting = {
     tool: DEFAULT_TOOL_SETTING.tool,
     color: DEFAULT_TOOL_SETTING.color,
@@ -223,6 +268,8 @@ export class DrawingEditorViewModel {
   private selectedStrokeTargets: SelectionTarget[] = [];
   private lassoDraftPath: StrokePoint[] = [];
   private elementEditGesture: ElementEditGesture | null = null;
+  private elementOutlineEditGesture: ElementOutlineEditGesture | null = null;
+  private imageElementEditDraft: ImageElementEditDraft | null = null;
   private selectionMoveGesture: SelectionMoveGesture | null = null;
   private strokeResizeGesture: StrokeResizeGesture | null = null;
   private readonly instanceId: number = nextEditorViewModelInstanceId++;
@@ -244,6 +291,7 @@ export class DrawingEditorViewModel {
       const pageContent: PageCanvasContent = await this.createRepository().getPageContent(pageId);
       this.strokes = pageContent.strokes;
       this.elements = pageContent.elements;
+      this.strokeLayerZIndex = pageContent.strokeLayerZIndex;
       this.rebuildStrokeSpatialIndex();
       this.resetTransientState();
       this.undoRedoController.seedLoadedStrokes(this.strokes);
@@ -257,6 +305,7 @@ export class DrawingEditorViewModel {
       this.errorMessage = this.stringifyError(error);
       this.strokes = [];
       this.elements = [];
+      this.strokeLayerZIndex = DEFAULT_STROKE_LAYER_Z_INDEX;
       this.strokeSpatialIndex.clear();
       this.resetTransientState();
       this.markFullRenderInvalidation('load');
@@ -370,6 +419,9 @@ export class DrawingEditorViewModel {
     const applyStartedAt = Date.now();
     this.strokes = undoResult.strokes;
     this.elements = undoResult.elements;
+    if (undoResult.strokeLayerZIndex !== null) {
+      this.strokeLayerZIndex = undoResult.strokeLayerZIndex;
+    }
     this.restoreSelectionSnapshot(undoResult.selection);
     this.lassoDraftPath = [];
     this.applyStrokeSpatialIndexMutation(undoResult.removed, undoResult.added);
@@ -421,6 +473,9 @@ export class DrawingEditorViewModel {
     const applyStartedAt = Date.now();
     this.strokes = redoResult.strokes;
     this.elements = redoResult.elements;
+    if (redoResult.strokeLayerZIndex !== null) {
+      this.strokeLayerZIndex = redoResult.strokeLayerZIndex;
+    }
     this.restoreSelectionSnapshot(redoResult.selection);
     this.lassoDraftPath = [];
     this.applyStrokeSpatialIndexMutation(redoResult.removed, redoResult.added);
@@ -548,7 +603,19 @@ export class DrawingEditorViewModel {
   }
 
   getElementsForRendering(): CanvasElement[] {
-    return this.elements;
+    return this.cloneElements(this.getElementsInLayerOrderAscending(this.elements));
+  }
+
+  getStrokeLayerZIndex(): number {
+    return this.strokeLayerZIndex;
+  }
+
+  getImageElementEditDraft(): ImageElementEditDraft | null {
+    if (this.imageElementEditDraft === null) {
+      return null;
+    }
+
+    return this.cloneImageElementEditDraft(this.imageElementEditDraft);
   }
 
   getSelectedElementId(): string {
@@ -598,6 +665,22 @@ export class DrawingEditorViewModel {
     return selectedElement === undefined ? null : this.cloneElement(selectedElement);
   }
 
+  getElementForRendering(elementId: string): CanvasElement | null {
+    const element = this.getElementById(elementId);
+    return element === null ? null : this.cloneElement(element);
+  }
+
+  getElementContextMenuCandidate(point: StrokePoint, hitTolerance: number): CanvasElement | null {
+    for (const selectedElement of this.getSelectedElementsInZOrderDescending()) {
+      if (this.hitTestElementEditHandle(point, selectedElement, hitTolerance) !== null) {
+        return null;
+      }
+    }
+
+    const hitElement = this.hitTestElement(point);
+    return hitElement === null ? null : this.cloneElement(hitElement);
+  }
+
   selectElement(elementId: string): CanvasElement | null {
     if (elementId.length === 0) {
       this.clearElementSelection();
@@ -642,6 +725,8 @@ export class DrawingEditorViewModel {
       this.appendDebugEvent('clearElementSelection', `element=${this.selectedElementId}`);
     }
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
+    this.imageElementEditDraft = null;
     this.selectionMoveGesture = null;
     this.strokeResizeGesture = null;
     this.selectedElementId = '';
@@ -655,28 +740,11 @@ export class DrawingEditorViewModel {
       this.elements.some((element: CanvasElement): boolean => this.selectedElementIds.includes(element.id));
   }
 
-  isSelectedElementDeleteHit(point: StrokePoint, hitTolerance: number): boolean {
-    const radius = Math.max(12, hitTolerance);
-    const selectedElements = this.getSelectedElementsInZOrderDescending();
-    for (const selectedElement of selectedElements) {
-      const center = this.getDeleteButtonCenter(selectedElement);
-      const deltaX = point.x - center.x;
-      const deltaY = point.y - center.y;
-      if (Math.sqrt(deltaX * deltaX + deltaY * deltaY) <= radius) {
-        this.selectedElementId = selectedElement.id;
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  deleteSelectedElement(): CanvasElement | null {
+  deleteElementById(elementId: string): SelectionActionResult {
     const beforeSelection = this.getCurrentSelectionSnapshot();
-    const selectedElement = this.getElementById(this.selectedElementId);
+    const selectedElement = this.getElementById(elementId);
     if (selectedElement === null) {
-      this.clearElementSelection();
-      return null;
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
     }
 
     const selectedElementIndex = this.getElementIndexById(selectedElement.id);
@@ -684,6 +752,8 @@ export class DrawingEditorViewModel {
     this.selectedElementIds = this.selectedElementIds.filter((elementId: string): boolean => elementId !== selectedElement.id);
     this.selectedElementId = this.selectedElementIds.length > 0 ? this.selectedElementIds[0] : '';
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
+    this.imageElementEditDraft = null;
     this.selectionVersion += 1;
     this.recordElementDelta('elementDelete', [{
       index: selectedElementIndex,
@@ -694,7 +764,172 @@ export class DrawingEditorViewModel {
     this.schedulePersistCurrentStrokes('elementDelete', 0);
     this.errorMessage = '';
     this.appendDebugEvent('deleteElement', `element=${selectedElement.id} type=${selectedElement.type}`);
-    return this.cloneElement(selectedElement);
+    return {
+      changed: true,
+      changedStrokes: false,
+      changedElements: true,
+      elementSelectionChanged: true
+    };
+  }
+
+  updateShapeFillColorById(elementId: string, fillColor: string): SelectionActionResult {
+    const element = this.getElementById(elementId);
+    if (element === null || element.type !== 'shape' || element.fillColor === fillColor) {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    const nextElement: ShapeCanvasElement = {
+      ...this.cloneShapeElement(element),
+      fillColor,
+      updatedAt: now()
+    };
+    return this.replaceElementWithDelta('elementStyle', element, nextElement, 'elementStyle');
+  }
+
+  beginElementOutlineEdit(elementId: string): boolean {
+    const element = this.getElementById(elementId);
+    if (element === null || element.type === 'text') {
+      this.elementOutlineEditGesture = null;
+      return false;
+    }
+
+    this.elementOutlineEditGesture = {
+      elementId,
+      originalElement: this.cloneElement(element)
+    };
+    return true;
+  }
+
+  finishElementOutlineEdit(elementId: string): SelectionActionResult {
+    const gesture = this.elementOutlineEditGesture;
+    this.elementOutlineEditGesture = null;
+    if (gesture === null || gesture.elementId !== elementId) {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    const currentElement = this.getElementById(elementId);
+    if (currentElement === null || currentElement.type === 'text' ||
+      this.areElementsEquivalent(gesture.originalElement, currentElement)) {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    const finalElement = this.cloneElementWithUpdatedAt(currentElement);
+    return this.replaceElementWithDelta('elementStyle', gesture.originalElement, finalElement, 'elementStyle');
+  }
+
+  updateElementOutlineById(
+    elementId: string,
+    patch: Partial<ElementOutlineStyle>,
+    recordHistory: boolean = true
+  ): SelectionActionResult {
+    const element = this.getElementById(elementId);
+    if (element === null || element.type === 'text') {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+    if (recordHistory) {
+      this.elementOutlineEditGesture = null;
+    }
+
+    const nextOutline: ElementOutlineStyle = {
+      lineStyle: patch.lineStyle ?? element.outline.lineStyle,
+      color: patch.color ?? element.outline.color,
+      width: Math.max(0, patch.width ?? element.outline.width)
+    };
+    if (JSON.stringify(nextOutline) === JSON.stringify(element.outline)) {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    const nextElement = this.cloneElementWithOutline(element, nextOutline, recordHistory ? now() : element.updatedAt);
+    if (!recordHistory) {
+      this.replaceElementInMemory(nextElement);
+      return {
+        changed: true,
+        changedStrokes: false,
+        changedElements: true,
+        elementSelectionChanged: false
+      };
+    }
+
+    return this.replaceElementWithDelta('elementStyle', element, nextElement, 'elementStyle');
+  }
+
+  getElementLayerActionAvailability(elementId: string): LayerActionAvailability {
+    const stack = this.buildLayerStack();
+    const itemIndex = stack.findIndex((item: LayerStackItem): boolean => item.id === `element:${elementId}`);
+    if (itemIndex < 0) {
+      return {
+        canMoveUp: false,
+        canMoveDown: false,
+        canMoveTop: false,
+        canMoveBottom: false
+      };
+    }
+
+    const stackLength = stack.length;
+    return {
+      canMoveUp: itemIndex < stackLength - 1,
+      canMoveDown: itemIndex > 0,
+      canMoveTop: itemIndex < stackLength - 1,
+      canMoveBottom: itemIndex > 0
+    };
+  }
+
+  changeElementLayerById(elementId: string, action: LayerOrderAction): SelectionActionResult {
+    const element = this.getElementById(elementId);
+    if (element === null) {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    const beforeSelection = this.getCurrentSelectionSnapshot();
+    const beforeStrokeLayerZIndex = this.strokeLayerZIndex;
+    const beforeElements = this.cloneElements(this.elements);
+    const reorderResult = this.reorderLayerStack(`element:${elementId}`, action);
+    if (!reorderResult.changed) {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    this.elements = reorderResult.elements;
+    this.strokeLayerZIndex = reorderResult.strokeLayerZIndex;
+    const removedElements: IndexedElementRecord[] = [];
+    const addedElements: IndexedElementRecord[] = [];
+    for (let index = 0; index < beforeElements.length; index += 1) {
+      const beforeElement = beforeElements[index];
+      const afterElement = this.getElementByIdFromList(reorderResult.elements, beforeElement.id);
+      if (afterElement !== null &&
+        (beforeElement.zIndex !== afterElement.zIndex || !this.areElementsEquivalent(beforeElement, afterElement))) {
+        removedElements.push({
+          index,
+          element: this.cloneElement(beforeElement)
+        });
+        addedElements.push({
+          index,
+          element: this.cloneElement(afterElement)
+        });
+      }
+    }
+
+    this.undoRedoController.recordDelta(
+      [],
+      [],
+      'layer',
+      removedElements,
+      addedElements,
+      beforeSelection,
+      this.getCurrentSelectionSnapshot(),
+      beforeStrokeLayerZIndex,
+      this.strokeLayerZIndex
+    );
+    this.changeSequence += 1;
+    this.persistenceStatus = 'pending layer save';
+    this.schedulePersistCurrentStrokes('layer', 0);
+    this.errorMessage = '';
+    this.appendDebugEvent('layer', `element=${elementId} action=${action}`);
+    return {
+      changed: true,
+      changedStrokes: beforeStrokeLayerZIndex !== this.strokeLayerZIndex,
+      changedElements: removedElements.length > 0 || addedElements.length > 0,
+      elementSelectionChanged: false
+    };
   }
 
   beginLassoSelection(point: StrokePoint): void {
@@ -706,6 +941,8 @@ export class DrawingEditorViewModel {
     this.cancelShapeDraft();
     this.clearEraseState();
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
+    this.imageElementEditDraft = null;
     this.selectionMoveGesture = null;
     this.strokeResizeGesture = null;
     this.lassoDraftPath = [this.clonePoint(point)];
@@ -738,6 +975,8 @@ export class DrawingEditorViewModel {
     this.selectedElementIds = this.getElementIdsInsideLasso(lassoPath);
     this.selectedElementId = this.selectedElementIds.length > 0 ? this.selectedElementIds[0] : '';
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
+    this.imageElementEditDraft = null;
     this.selectionVersion += 1;
     this.appendDebugEvent(
       'lasso',
@@ -770,6 +1009,8 @@ export class DrawingEditorViewModel {
     this.clearEraseState();
     this.lassoDraftPath = [];
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
+    this.imageElementEditDraft = null;
     this.selectionMoveGesture = {
       startPoint: this.clonePoint(point),
       currentOffsetX: 0,
@@ -902,6 +1143,8 @@ export class DrawingEditorViewModel {
     this.selectedElementIds = [];
     this.lassoDraftPath = [];
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
+    this.imageElementEditDraft = null;
     if (hadElementSelection) {
       this.selectionVersion += 1;
     }
@@ -927,6 +1170,8 @@ export class DrawingEditorViewModel {
     this.clearEraseState();
     this.lassoDraftPath = [];
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
+    this.imageElementEditDraft = null;
     this.selectionMoveGesture = null;
     this.strokeResizeGesture = {
       handle,
@@ -1020,6 +1265,7 @@ export class DrawingEditorViewModel {
     this.cancelStroke();
     this.cancelShapeDraft();
     this.cancelSelectionMove();
+    this.imageElementEditDraft = null;
 
     const selectedElements = this.getSelectedElementsInZOrderDescending();
     for (const selectedElement of selectedElements) {
@@ -1032,6 +1278,7 @@ export class DrawingEditorViewModel {
           startPoint: this.clonePoint(point),
           originalElement: this.cloneElement(selectedElement)
         };
+        this.beginImageElementEditDraft(selectedElement);
         this.appendDebugEvent('beginElementEdit', `element=${selectedElement.id} kind=${handleKind}`);
         return true;
       }
@@ -1044,20 +1291,28 @@ export class DrawingEditorViewModel {
       return false;
     }
 
-    this.selectedElementId = hitElement.id;
-    if (!this.selectedElementIds.includes(hitElement.id)) {
-      this.selectedElementIds = [hitElement.id];
-      this.selectedStrokeTargets = [];
-      this.selectionVersion += 1;
-    }
+    this.activateHitElementSelection(hitElement);
     this.elementEditGesture = {
       elementId: hitElement.id,
       kind: 'move',
       startPoint: this.clonePoint(point),
       originalElement: this.cloneElement(hitElement)
     };
+    this.beginImageElementEditDraft(hitElement);
     this.appendDebugEvent('beginElementEdit', `element=${hitElement.id} kind=move`);
     return true;
+  }
+
+  private activateHitElementSelection(hitElement: CanvasElement): void {
+    const wasAlreadySelected = this.selectedElementIds.includes(hitElement.id);
+    this.selectedElementId = hitElement.id;
+    if (wasAlreadySelected) {
+      return;
+    }
+
+    this.selectedElementIds = [hitElement.id];
+    this.selectedStrokeTargets = [];
+    this.selectionVersion += 1;
   }
 
   updateElementEditGesture(point: StrokePoint, bounds: ElementBounds): boolean {
@@ -1068,6 +1323,22 @@ export class DrawingEditorViewModel {
     const nextElement = this.buildElementFromEditGesture(this.elementEditGesture, point, bounds);
     if (nextElement === null) {
       return false;
+    }
+
+    if (this.elementEditGesture.originalElement.type === 'image' && nextElement.type === 'image') {
+      const nextFrame = this.getElementFrame(nextElement);
+      if (this.imageElementEditDraft !== null &&
+        this.areElementFramesEquivalent(this.imageElementEditDraft.currentFrame, nextFrame)) {
+        return false;
+      }
+      this.imageElementEditDraft = {
+        elementId: nextElement.id,
+        originalFrame: this.imageElementEditDraft === null ?
+          this.getElementFrame(this.elementEditGesture.originalElement) :
+          this.cloneElementFrame(this.imageElementEditDraft.originalFrame),
+        currentFrame: nextFrame
+      };
+      return true;
     }
 
     this.replaceElementInMemory(nextElement);
@@ -1081,6 +1352,33 @@ export class DrawingEditorViewModel {
 
     const gesture = this.elementEditGesture;
     this.elementEditGesture = null;
+    if (gesture.originalElement.type === 'image') {
+      const draft = this.imageElementEditDraft;
+      this.imageElementEditDraft = null;
+      if (draft === null || draft.elementId !== gesture.elementId ||
+        this.areElementFramesEquivalent(draft.originalFrame, draft.currentFrame)) {
+        return null;
+      }
+
+      const finalElement = this.cloneElementWithFrame(gesture.originalElement, draft.currentFrame);
+      this.replaceElementInMemory(finalElement);
+      this.selectedElementId = finalElement.id;
+      const elementIndex = this.getElementIndexById(finalElement.id);
+      this.recordElementDelta('elementEdit', [{
+        index: elementIndex,
+        element: this.cloneElement(gesture.originalElement)
+      }], [{
+        index: elementIndex,
+        element: this.cloneElement(finalElement)
+      }]);
+      this.changeSequence += 1;
+      this.persistenceStatus = 'pending element edit save';
+      this.schedulePersistCurrentStrokes('elementEdit', 0);
+      this.errorMessage = '';
+      this.appendDebugEvent('finishElementEdit', `element=${finalElement.id} kind=${gesture.kind}`);
+      return this.cloneElement(finalElement);
+    }
+
     const editedElement = this.getElementById(gesture.elementId);
     if (editedElement === null || this.areElementsEquivalent(gesture.originalElement, editedElement)) {
       return null;
@@ -1113,6 +1411,8 @@ export class DrawingEditorViewModel {
     this.selectedElementId = originalElement.id;
     this.appendDebugEvent('cancelElementEdit', `element=${originalElement.id}`);
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
+    this.imageElementEditDraft = null;
   }
 
   insertTextElement(point: StrokePoint, bounds: ElementBounds): TextCanvasElement | null {
@@ -1199,7 +1499,8 @@ export class DrawingEditorViewModel {
       uri: asset.uri,
       originalWidth: asset.originalWidth,
       originalHeight: asset.originalHeight,
-      opacity: 1
+      opacity: 1,
+      outline: { ...DEFAULT_IMAGE_OUTLINE }
     };
 
     const insertionIndex = this.elements.length;
@@ -1338,9 +1639,8 @@ export class DrawingEditorViewModel {
       updatedAt: timestamp,
       shapeType: draft.shapeType,
       geometry: this.buildShapeGeometry(draft.shapeType, startPoint, currentPoint),
-      strokeColor: DEFAULT_SHAPE_STROKE_COLOR,
       fillColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR,
-      strokeWidth: DEFAULT_SHAPE_STROKE_WIDTH,
+      outline: { ...DEFAULT_SHAPE_OUTLINE },
       opacity
     };
   }
@@ -1674,6 +1974,8 @@ export class DrawingEditorViewModel {
 
   private clearSelectionState(): void {
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
+    this.imageElementEditDraft = null;
     this.selectionMoveGesture = null;
     this.selectedElementId = '';
     this.selectedElementIds = [];
@@ -1683,7 +1985,8 @@ export class DrawingEditorViewModel {
 
   private hasUndoRedoChanges(result: UndoRedoApplyResult): boolean {
     return result.removed.length > 0 || result.added.length > 0 ||
-      result.removedElements.length > 0 || result.addedElements.length > 0;
+      result.removedElements.length > 0 || result.addedElements.length > 0 ||
+      result.strokeLayerZIndex !== null;
   }
 
   private schedulePersistCurrentStrokes(reason: string, delayMs: number = SAVE_DEBOUNCE_MS): void {
@@ -1726,6 +2029,7 @@ export class DrawingEditorViewModel {
     this.isPersisting = true;
     const strokeSnapshot = this.cloneStrokes(this.strokes);
     const elementSnapshot = this.cloneElements(this.elements);
+    const strokeLayerZIndexSnapshot = this.strokeLayerZIndex;
     const snapshotChangeSequence: number = this.changeSequence;
     this.persistenceStatus = `saving ${reason}`;
     const snapshotPointCount = this.countStrokePoints(strokeSnapshot);
@@ -1737,7 +2041,8 @@ export class DrawingEditorViewModel {
           await this.createRepository().savePageContent(this.pageId, {
             version: PAGE_CANVAS_CONTENT_VERSION,
             strokes: strokeSnapshot,
-            elements: elementSnapshot
+            elements: elementSnapshot,
+            strokeLayerZIndex: strokeLayerZIndexSnapshot
           });
         },
         `reason=${reason} strokes=${strokeSnapshot.length} points=${snapshotPointCount} elements=${elementSnapshot.length}`,
@@ -1855,9 +2160,7 @@ export class DrawingEditorViewModel {
   }
 
   private hitTestElement(point: StrokePoint): CanvasElement | null {
-    const sortedElements = this.elements
-      .map((element: CanvasElement): CanvasElement => element)
-      .sort((left: CanvasElement, right: CanvasElement): number => right.zIndex - left.zIndex);
+    const sortedElements = this.getElementsInLayerOrderDescending(this.elements);
 
     for (const element of sortedElements) {
       if (this.isPointInElement(point, element)) {
@@ -2143,9 +2446,112 @@ export class DrawingEditorViewModel {
       return this.buildResizedTextElement(gesture.originalElement, gesture.kind, targetFrame, bounds);
     }
 
-    const minSize = gesture.originalElement.type === 'image' ? MIN_IMAGE_ELEMENT_SIZE : MIN_SHAPE_ELEMENT_SIZE;
-    const frame = this.clampFrameWithMinimumSize(targetFrame, bounds, minSize, minSize);
+    if (gesture.originalElement.type === 'image') {
+      return this.buildAspectRatioResizedImageElement(gesture.originalElement, gesture.kind, targetFrame, bounds);
+    }
+
+    const frame = this.clampFrameWithMinimumSize(targetFrame, bounds, MIN_SHAPE_ELEMENT_SIZE, MIN_SHAPE_ELEMENT_SIZE);
     return this.cloneElementWithFrame(gesture.originalElement, frame);
+  }
+
+  private buildAspectRatioResizedImageElement(
+    originalElement: ImageCanvasElement,
+    kind: ElementEditGestureKind,
+    targetFrame: ElementFrame,
+    bounds: ElementBounds
+  ): ImageCanvasElement {
+    const aspectRatio = this.getImageAspectRatio(originalElement);
+    let width = Math.max(MIN_IMAGE_ELEMENT_SIZE, targetFrame.width);
+    let height = Math.max(MIN_IMAGE_ELEMENT_SIZE, targetFrame.height);
+
+    if (kind === 'resizeLeft' || kind === 'resizeRight') {
+      height = width / aspectRatio;
+    } else if (kind === 'resizeTop' || kind === 'resizeBottom') {
+      width = height * aspectRatio;
+    } else if (width / Math.max(1, height) > aspectRatio) {
+      width = height * aspectRatio;
+    } else {
+      height = width / aspectRatio;
+    }
+
+    const constrainedSize = this.constrainImageSizeToBounds(width, height, aspectRatio, bounds);
+    width = constrainedSize.width;
+    height = constrainedSize.height;
+
+    const frame = clampElementFrameToBounds({
+      x: this.resolveAspectResizeX(originalElement, kind, width),
+      y: this.resolveAspectResizeY(originalElement, kind, height),
+      width,
+      height
+    }, bounds);
+    return this.cloneElementWithFrame(originalElement, frame) as ImageCanvasElement;
+  }
+
+  private getImageAspectRatio(element: ImageCanvasElement): number {
+    if (element.originalWidth > 0 && element.originalHeight > 0) {
+      return element.originalWidth / element.originalHeight;
+    }
+
+    return Math.max(1, element.width) / Math.max(1, element.height);
+  }
+
+  private constrainImageSizeToBounds(
+    width: number,
+    height: number,
+    aspectRatio: number,
+    bounds: ElementBounds
+  ): ElementBounds {
+    const maxWidth = Math.max(MIN_IMAGE_ELEMENT_SIZE, bounds.width);
+    const maxHeight = Math.max(MIN_IMAGE_ELEMENT_SIZE, bounds.height);
+    let nextWidth = Math.max(MIN_IMAGE_ELEMENT_SIZE, width);
+    let nextHeight = Math.max(MIN_IMAGE_ELEMENT_SIZE, height);
+    const scale = Math.min(1, maxWidth / nextWidth, maxHeight / nextHeight);
+    nextWidth *= scale;
+    nextHeight *= scale;
+
+    if (nextWidth < MIN_IMAGE_ELEMENT_SIZE) {
+      nextWidth = MIN_IMAGE_ELEMENT_SIZE;
+      nextHeight = nextWidth / aspectRatio;
+    }
+    if (nextHeight < MIN_IMAGE_ELEMENT_SIZE) {
+      nextHeight = MIN_IMAGE_ELEMENT_SIZE;
+      nextWidth = nextHeight * aspectRatio;
+    }
+
+    return {
+      width: Math.min(maxWidth, nextWidth),
+      height: Math.min(maxHeight, nextHeight)
+    };
+  }
+
+  private resolveAspectResizeX(
+    originalElement: ImageCanvasElement,
+    kind: ElementEditGestureKind,
+    width: number
+  ): number {
+    if (kind === 'resizeTopLeft' || kind === 'resizeBottomLeft' || kind === 'resizeLeft') {
+      return originalElement.x + originalElement.width - width;
+    }
+    if (kind === 'resizeTop' || kind === 'resizeBottom') {
+      return originalElement.x + originalElement.width / 2 - width / 2;
+    }
+
+    return originalElement.x;
+  }
+
+  private resolveAspectResizeY(
+    originalElement: ImageCanvasElement,
+    kind: ElementEditGestureKind,
+    height: number
+  ): number {
+    if (kind === 'resizeTopLeft' || kind === 'resizeTopRight' || kind === 'resizeTop') {
+      return originalElement.y + originalElement.height - height;
+    }
+    if (kind === 'resizeLeft' || kind === 'resizeRight') {
+      return originalElement.y + originalElement.height / 2 - height / 2;
+    }
+
+    return originalElement.y;
   }
 
   private buildResizeFrame(
@@ -2362,6 +2768,53 @@ export class DrawingEditorViewModel {
     }, bounds);
   }
 
+  private beginImageElementEditDraft(element: CanvasElement): void {
+    if (element.type !== 'image') {
+      this.imageElementEditDraft = null;
+      return;
+    }
+
+    const frame = this.getElementFrame(element);
+    this.imageElementEditDraft = {
+      elementId: element.id,
+      originalFrame: this.cloneElementFrame(frame),
+      currentFrame: this.cloneElementFrame(frame)
+    };
+  }
+
+  private getElementFrame(element: CanvasElement): ElementFrame {
+    return {
+      x: element.x,
+      y: element.y,
+      width: element.width,
+      height: element.height
+    };
+  }
+
+  private cloneImageElementEditDraft(draft: ImageElementEditDraft): ImageElementEditDraft {
+    return {
+      elementId: draft.elementId,
+      originalFrame: this.cloneElementFrame(draft.originalFrame),
+      currentFrame: this.cloneElementFrame(draft.currentFrame)
+    };
+  }
+
+  private cloneElementFrame(frame: ElementFrame): ElementFrame {
+    return {
+      x: frame.x,
+      y: frame.y,
+      width: frame.width,
+      height: frame.height
+    };
+  }
+
+  private areElementFramesEquivalent(left: ElementFrame, right: ElementFrame): boolean {
+    return Math.abs(left.x - right.x) < 0.01 &&
+      Math.abs(left.y - right.y) < 0.01 &&
+      Math.abs(left.width - right.width) < 0.01 &&
+      Math.abs(left.height - right.height) < 0.01;
+  }
+
   private cloneElementWithFrame(element: CanvasElement, frame: ElementFrame): CanvasElement {
     if (element.type === 'text') {
       return {
@@ -2404,6 +2857,47 @@ export class DrawingEditorViewModel {
     }
 
     return nextElement;
+  }
+
+  private cloneElementWithOutline(
+    element: ShapeCanvasElement | ImageCanvasElement,
+    outline: ElementOutlineStyle,
+    updatedAt: number
+  ): CanvasElement {
+    if (element.type === 'shape') {
+      return {
+        ...this.cloneShapeElement(element),
+        outline: this.cloneElementOutline(outline),
+        updatedAt
+      };
+    }
+
+    return {
+      ...this.cloneImageElement(element),
+      outline: this.cloneElementOutline(outline),
+      updatedAt
+    };
+  }
+
+  private cloneElementWithUpdatedAt(element: CanvasElement): CanvasElement {
+    if (element.type === 'text') {
+      return {
+        ...this.cloneTextElement(element),
+        updatedAt: now()
+      };
+    }
+
+    if (element.type === 'shape') {
+      return {
+        ...this.cloneShapeElement(element),
+        updatedAt: now()
+      };
+    }
+
+    return {
+      ...this.cloneImageElement(element),
+      updatedAt: now()
+    };
   }
 
   private replaceElementInMemory(nextElement: CanvasElement): void {
@@ -2521,6 +3015,8 @@ export class DrawingEditorViewModel {
 
   private restoreSelectionSnapshot(snapshot: EditorSelectionSnapshot | null): void {
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
+    this.imageElementEditDraft = null;
     this.selectionMoveGesture = null;
     if (snapshot === null) {
       this.selectedElementId = '';
@@ -2633,6 +3129,8 @@ export class DrawingEditorViewModel {
     this.selectedElementId = '';
     this.selectedElementIds = [];
     this.elementEditGesture = null;
+    this.elementOutlineEditGesture = null;
+    this.imageElementEditDraft = null;
     this.selectionMoveGesture = null;
     this.lassoDraftPath = [];
     this.selectionVersion += 1;
@@ -3092,6 +3590,190 @@ export class DrawingEditorViewModel {
     return Math.max(minValue, Math.min(maxValue, value));
   }
 
+  private buildLayerStack(): LayerStackItem[] {
+    const stack: LayerStackItem[] = [];
+
+    if (this.hasVisibleStrokeLayer()) {
+      stack.push({
+        kind: 'strokeLayer',
+        id: 'strokeLayer',
+        zIndex: this.strokeLayerZIndex,
+        createdAt: 0,
+        orderIndex: -1
+      });
+    }
+
+    for (let index = 0; index < this.elements.length; index += 1) {
+      const element = this.elements[index];
+      stack.push({
+        kind: 'element',
+        id: `element:${element.id}`,
+        zIndex: element.zIndex,
+        createdAt: element.createdAt,
+        orderIndex: index
+      });
+    }
+
+    return stack.sort((left: LayerStackItem, right: LayerStackItem): number =>
+      this.compareLayerStackItemAscending(left, right));
+  }
+
+  private hasVisibleStrokeLayer(): boolean {
+    return this.strokes.length > 0;
+  }
+
+  private getElementsInLayerOrderAscending(elements: CanvasElement[]): CanvasElement[] {
+    return elements
+      .map((element: CanvasElement, orderIndex: number): ElementLayerOrderRecord => ({ element, orderIndex }))
+      .sort((left: ElementLayerOrderRecord, right: ElementLayerOrderRecord): number =>
+        this.compareElementLayerOrderAscending(left.element, left.orderIndex, right.element, right.orderIndex))
+      .map((record: ElementLayerOrderRecord): CanvasElement => record.element);
+  }
+
+  private getElementsInLayerOrderDescending(elements: CanvasElement[]): CanvasElement[] {
+    return elements
+      .map((element: CanvasElement, orderIndex: number): ElementLayerOrderRecord => ({ element, orderIndex }))
+      .sort((left: ElementLayerOrderRecord, right: ElementLayerOrderRecord): number =>
+        this.compareElementLayerOrderAscending(right.element, right.orderIndex, left.element, left.orderIndex))
+      .map((record: ElementLayerOrderRecord): CanvasElement => record.element);
+  }
+
+  private compareElementLayerOrderAscending(
+    leftElement: CanvasElement,
+    leftOrderIndex: number,
+    rightElement: CanvasElement,
+    rightOrderIndex: number
+  ): number {
+    if (leftElement.zIndex !== rightElement.zIndex) {
+      return leftElement.zIndex - rightElement.zIndex;
+    }
+    if (leftOrderIndex !== rightOrderIndex) {
+      return leftOrderIndex - rightOrderIndex;
+    }
+    if (leftElement.createdAt !== rightElement.createdAt) {
+      return leftElement.createdAt - rightElement.createdAt;
+    }
+    return leftElement.id.localeCompare(rightElement.id);
+  }
+
+  private compareLayerStackItemAscending(left: LayerStackItem, right: LayerStackItem): number {
+    if (left.zIndex !== right.zIndex) {
+      return left.zIndex - right.zIndex;
+    }
+    if (left.orderIndex !== right.orderIndex) {
+      return left.orderIndex - right.orderIndex;
+    }
+    if (left.createdAt !== right.createdAt) {
+      return left.createdAt - right.createdAt;
+    }
+    return left.id.localeCompare(right.id);
+  }
+
+  private reorderLayerStack(itemId: string, action: LayerOrderAction): LayerReorderResult {
+    const stack = this.buildLayerStack();
+    const itemIndex = stack.findIndex((item: LayerStackItem): boolean => item.id === itemId);
+    if (itemIndex < 0) {
+      return {
+        changed: false,
+        strokeLayerZIndex: this.strokeLayerZIndex,
+        elements: this.cloneElements(this.elements)
+      };
+    }
+
+    const targetIndex = this.getLayerReorderTargetIndex(itemIndex, stack.length, action);
+    if (targetIndex === itemIndex) {
+      return {
+        changed: false,
+        strokeLayerZIndex: this.strokeLayerZIndex,
+        elements: this.cloneElements(this.elements)
+      };
+    }
+
+    const reorderedStack = stack.slice();
+    const movedItems = reorderedStack.splice(itemIndex, 1);
+    reorderedStack.splice(targetIndex, 0, movedItems[0]);
+    return this.buildLayerReorderResult(reorderedStack);
+  }
+
+  private getLayerReorderTargetIndex(currentIndex: number, stackLength: number, action: LayerOrderAction): number {
+    switch (action) {
+      case 'layerUp':
+        return Math.min(stackLength - 1, currentIndex + 1);
+      case 'layerDown':
+        return Math.max(0, currentIndex - 1);
+      case 'layerTop':
+        return stackLength - 1;
+      case 'layerBottom':
+        return 0;
+      default:
+        return currentIndex;
+    }
+  }
+
+  private buildLayerReorderResult(stack: LayerStackItem[]): LayerReorderResult {
+    let nextStrokeLayerZIndex = this.strokeLayerZIndex;
+    const nextElementZIndexById = new Map<string, number>();
+    for (let index = 0; index < stack.length; index += 1) {
+      const item = stack[index];
+      if (item.kind === 'strokeLayer') {
+        nextStrokeLayerZIndex = index;
+      } else {
+        nextElementZIndexById.set(item.id.substring('element:'.length), index);
+      }
+    }
+
+    const timestamp = now();
+    let changed = nextStrokeLayerZIndex !== this.strokeLayerZIndex;
+    const nextElements = this.elements.map((element: CanvasElement): CanvasElement => {
+      const nextZIndex = nextElementZIndexById.get(element.id) ?? element.zIndex;
+      if (nextZIndex === element.zIndex) {
+        return this.cloneElement(element);
+      }
+      changed = true;
+      return this.cloneElementWithZIndex(element, nextZIndex, timestamp);
+    });
+
+    return {
+      changed,
+      strokeLayerZIndex: nextStrokeLayerZIndex,
+      elements: nextElements
+    };
+  }
+
+  private getElementByIdFromList(elements: CanvasElement[], elementId: string): CanvasElement | null {
+    for (const element of elements) {
+      if (element.id === elementId) {
+        return element;
+      }
+    }
+
+    return null;
+  }
+
+  private cloneElementWithZIndex(element: CanvasElement, zIndex: number, updatedAt: number): CanvasElement {
+    if (element.type === 'text') {
+      return {
+        ...this.cloneTextElement(element),
+        zIndex,
+        updatedAt
+      };
+    }
+
+    if (element.type === 'shape') {
+      return {
+        ...this.cloneShapeElement(element),
+        zIndex,
+        updatedAt
+      };
+    }
+
+    return {
+      ...this.cloneImageElement(element),
+      zIndex,
+      updatedAt
+    };
+  }
+
   private recordElementDelta(
     label: EditorDeltaLabel,
     removedElements: IndexedElementRecord[],
@@ -3108,6 +3790,35 @@ export class DrawingEditorViewModel {
       beforeSelection ?? this.getCurrentSelectionSnapshot(),
       afterSelection ?? this.getCurrentSelectionSnapshot()
     );
+  }
+
+  private replaceElementWithDelta(
+    label: EditorDeltaLabel,
+    originalElement: CanvasElement,
+    nextElement: CanvasElement,
+    persistenceLabel: string
+  ): SelectionActionResult {
+    const beforeSelection = this.getCurrentSelectionSnapshot();
+    const elementIndex = this.getElementIndexById(originalElement.id);
+    this.replaceElementInMemory(nextElement);
+    this.recordElementDelta(label, [{
+      index: elementIndex,
+      element: this.cloneElement(originalElement)
+    }], [{
+      index: elementIndex,
+      element: this.cloneElement(nextElement)
+    }], beforeSelection, this.getCurrentSelectionSnapshot());
+    this.changeSequence += 1;
+    this.persistenceStatus = `pending ${persistenceLabel} save`;
+    this.schedulePersistCurrentStrokes(persistenceLabel, 0);
+    this.errorMessage = '';
+    this.appendDebugEvent(persistenceLabel, `element=${nextElement.id} type=${nextElement.type}`);
+    return {
+      changed: true,
+      changedStrokes: false,
+      changedElements: true,
+      elementSelectionChanged: false
+    };
   }
 
   private getElementIndexById(elementId: string): number {
@@ -3663,9 +4374,8 @@ export class DrawingEditorViewModel {
   }
 
   private getSelectedElementsInZOrderDescending(): CanvasElement[] {
-    return this.elements
-      .filter((element: CanvasElement): boolean => this.selectedElementIds.includes(element.id))
-      .sort((left: CanvasElement, right: CanvasElement): number => right.zIndex - left.zIndex);
+    return this.getElementsInLayerOrderDescending(this.elements)
+      .filter((element: CanvasElement): boolean => this.selectedElementIds.includes(element.id));
   }
 
   private getElementBoundingBox(element: CanvasElement): BoundingBox {
@@ -3677,7 +4387,7 @@ export class DrawingEditorViewModel {
         minY: Math.min(startPoint.y, endPoint.y),
         maxX: Math.max(startPoint.x, endPoint.x),
         maxY: Math.max(startPoint.y, endPoint.y)
-      }, Math.max(ELEMENT_LINE_HIT_TOLERANCE, element.strokeWidth));
+      }, Math.max(ELEMENT_LINE_HIT_TOLERANCE, element.outline.width));
     }
 
     return {
@@ -3777,22 +4487,6 @@ export class DrawingEditorViewModel {
   private getElementById(elementId: string): CanvasElement | null {
     const element = this.elements.find((candidate: CanvasElement): boolean => candidate.id === elementId);
     return element === undefined ? null : element;
-  }
-
-  private getDeleteButtonCenter(element: CanvasElement): ShapeGeometryPoint {
-    if (element.type === 'shape' && element.shapeType === 'line' && element.geometry.points.length >= 2) {
-      const startPoint = element.geometry.points[0];
-      const endPoint = element.geometry.points[1];
-      return {
-        x: Math.max(startPoint.x, endPoint.x) - 8,
-        y: Math.min(startPoint.y, endPoint.y) + 8
-      };
-    }
-
-    return {
-      x: element.x + Math.max(12, element.width - 18),
-      y: element.y + 18
-    };
   }
 
   private areElementsEquivalent(left: CanvasElement, right: CanvasElement): boolean {
@@ -3917,10 +4611,17 @@ export class DrawingEditorViewModel {
       updatedAt: element.updatedAt,
       shapeType: element.shapeType,
       geometry: this.cloneShapeGeometry(element.geometry),
-      strokeColor: element.strokeColor,
       fillColor: element.fillColor,
-      strokeWidth: element.strokeWidth,
+      outline: this.cloneElementOutline(element.outline),
       opacity: element.opacity
+    };
+  }
+
+  private cloneElementOutline(outline: ElementOutlineStyle): ElementOutlineStyle {
+    return {
+      lineStyle: outline.lineStyle,
+      color: outline.color,
+      width: outline.width
     };
   }
 
@@ -3952,7 +4653,8 @@ export class DrawingEditorViewModel {
       uri: element.uri,
       originalWidth: element.originalWidth,
       originalHeight: element.originalHeight,
-      opacity: element.opacity
+      opacity: element.opacity,
+      outline: this.cloneElementOutline(element.outline)
     };
   }
 
@@ -3988,7 +4690,7 @@ export class DrawingEditorViewModel {
   }
 
   private getNextElementZIndex(): number {
-    let maxZIndex = 0;
+    let maxZIndex = this.strokeLayerZIndex;
     for (const element of this.elements) {
       maxZIndex = Math.max(maxZIndex, element.zIndex);
     }
