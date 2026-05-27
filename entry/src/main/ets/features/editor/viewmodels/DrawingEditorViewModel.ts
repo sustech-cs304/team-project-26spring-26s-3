@@ -2368,14 +2368,7 @@ export class DrawingEditorViewModel {
     }
 
     if (element.type === 'text') {
-      const verticalCenter = element.y + element.height / 2;
-      if (this.isPointNearGeometryPoint(point, { x: element.x, y: verticalCenter }, hitTolerance)) {
-        return 'resizeTextLeft';
-      }
-
-      if (this.isPointNearGeometryPoint(point, { x: element.x + element.width, y: verticalCenter }, hitTolerance)) {
-        return 'resizeTextRight';
-      }
+      return this.hitTestTextElementEditHandle(point, element, hitTolerance);
     }
 
     const handles: Array<{ kind: ElementEditGestureKind; point: ShapeGeometryPoint }> = [
@@ -2396,26 +2389,24 @@ export class DrawingEditorViewModel {
         point: { x: element.x + element.width, y: element.y + element.height }
       }
     ];
-    if (element.type !== 'text') {
-      handles.push(
-        {
-          kind: 'resizeTop',
-          point: { x: element.x + element.width / 2, y: element.y }
-        },
-        {
-          kind: 'resizeRight',
-          point: { x: element.x + element.width, y: element.y + element.height / 2 }
-        },
-        {
-          kind: 'resizeBottom',
-          point: { x: element.x + element.width / 2, y: element.y + element.height }
-        },
-        {
-          kind: 'resizeLeft',
-          point: { x: element.x, y: element.y + element.height / 2 }
-        }
-      );
-    }
+    handles.push(
+      {
+        kind: 'resizeTop',
+        point: { x: element.x + element.width / 2, y: element.y }
+      },
+      {
+        kind: 'resizeRight',
+        point: { x: element.x + element.width, y: element.y + element.height / 2 }
+      },
+      {
+        kind: 'resizeBottom',
+        point: { x: element.x + element.width / 2, y: element.y + element.height }
+      },
+      {
+        kind: 'resizeLeft',
+        point: { x: element.x, y: element.y + element.height / 2 }
+      }
+    );
 
     for (const handle of handles) {
       if (this.isPointNearGeometryPoint(point, handle.point, hitTolerance)) {
@@ -2426,10 +2417,60 @@ export class DrawingEditorViewModel {
     return null;
   }
 
+  private hitTestTextElementEditHandle(
+    point: StrokePoint,
+    element: TextCanvasElement,
+    hitTolerance: number
+  ): ElementEditGestureKind | null {
+    const verticalCenter = element.y + element.height / 2;
+    const handles: Array<{ kind: ElementEditGestureKind; point: ShapeGeometryPoint }> = [
+      {
+        kind: 'resizeTopLeft',
+        point: { x: element.x, y: element.y }
+      },
+      {
+        kind: 'resizeTopRight',
+        point: { x: element.x + element.width, y: element.y }
+      },
+      {
+        kind: 'resizeBottomLeft',
+        point: { x: element.x, y: element.y + element.height }
+      },
+      {
+        kind: 'resizeBottomRight',
+        point: { x: element.x + element.width, y: element.y + element.height }
+      },
+      {
+        kind: 'resizeTextLeft',
+        point: { x: element.x, y: verticalCenter }
+      },
+      {
+        kind: 'resizeTextRight',
+        point: { x: element.x + element.width, y: verticalCenter }
+      }
+    ];
+    const tolerance = Math.max(1, hitTolerance);
+    let bestKind: ElementEditGestureKind | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const handle of handles) {
+      const distance = this.getPointToGeometryPointDistance(point, handle.point);
+      if (distance <= tolerance && distance < bestDistance) {
+        bestKind = handle.kind;
+        bestDistance = distance;
+      }
+    }
+
+    return bestKind;
+  }
+
   private isPointNearGeometryPoint(point: StrokePoint, targetPoint: ShapeGeometryPoint, tolerance: number): boolean {
+    return this.getPointToGeometryPointDistance(point, targetPoint) <= Math.max(1, tolerance);
+  }
+
+  private getPointToGeometryPointDistance(point: StrokePoint, targetPoint: ShapeGeometryPoint): number {
     const deltaX = point.x - targetPoint.x;
     const deltaY = point.y - targetPoint.y;
-    return Math.sqrt(deltaX * deltaX + deltaY * deltaY) <= Math.max(1, tolerance);
+    return Math.sqrt(deltaX * deltaX + deltaY * deltaY);
   }
 
   private buildElementFromEditGesture(
@@ -2736,11 +2777,23 @@ export class DrawingEditorViewModel {
     bounds: ElementBounds
   ): TextCanvasElement {
     const nextFontSize = this.calculateFontSizeForTextTarget(originalElement, targetFrame);
+    const fontScale = nextFontSize / Math.max(1, originalElement.fontSize);
+    const targetWidth = this.clampNumber(
+      originalElement.width * fontScale,
+      MIN_TEXT_ELEMENT_WIDTH,
+      Math.max(MIN_TEXT_ELEMENT_WIDTH, bounds.width)
+    );
+    const fittedHeight = this.calculatePredictedTextHeight(originalElement.content, targetWidth, nextFontSize);
     const anchoredFrame = this.buildAnchoredTextFrame(
       originalElement,
       kind,
       this.clampFrameWithMinimumSize(
-        targetFrame,
+        {
+          x: targetFrame.x,
+          y: targetFrame.y,
+          width: targetWidth,
+          height: fittedHeight
+        },
         bounds,
         MIN_TEXT_ELEMENT_WIDTH,
         this.calculateTextMinimumHeight(nextFontSize)
