@@ -21,7 +21,7 @@ function point(x: number, y: number, t: number = 0, pressure?: number): StrokePo
   return pressure === undefined ? { x, y, t } : { x, y, t, pressure };
 }
 
-function stroke(points: StrokePoint[], width: number = 4): Stroke {
+function stroke(points: StrokePoint[], width: number = 4, overrides: Partial<Stroke> = {}): Stroke {
   return {
     id: 'stroke-1',
     pageId: 'page-1',
@@ -33,8 +33,22 @@ function stroke(points: StrokePoint[], width: number = 4): Stroke {
       opacity: 1
     },
     createdAt: 1,
-    updatedAt: 1
+    updatedAt: 1,
+    ...overrides
   };
+}
+
+function expectBoxCloseTo(actual: ReturnType<typeof getStrokeRenderBoundingBox>, expected: {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}): void {
+  expect(actual).not.toBeNull();
+  expect(actual!.minX).toBeCloseTo(expected.minX);
+  expect(actual!.minY).toBeCloseTo(expected.minY);
+  expect(actual!.maxX).toBeCloseTo(expected.maxX);
+  expect(actual!.maxY).toBeCloseTo(expected.maxY);
 }
 
 describe('GeometryUtil', () => {
@@ -94,6 +108,31 @@ describe('GeometryUtil', () => {
       maxY: 60
     });
     expect(getStrokeRenderBoundingBox(stroke([], 8))).toBeNull();
+  });
+
+  it('uses tool-specific render bounds and includes warmup points', () => {
+    expectBoxCloseTo(getStrokeRenderBoundingBox(stroke([point(10, 20), point(30, 40)], 8, {
+      style: {
+        tool: 'highlighter',
+        color: '#ffff00',
+        width: 8,
+        opacity: 0.4
+      }
+    })), {
+      minX: -12.4,
+      minY: -2.400000000000002,
+      maxX: 52.4,
+      maxY: 62.4
+    });
+
+    expect(getStrokeRenderBoundingBox(stroke([point(10, 20), point(30, 40)], 4, {
+      renderWarmupPoints: [point(-6, 14)]
+    }))).toEqual({
+      minX: -18,
+      minY: 2,
+      maxX: 42,
+      maxY: 52
+    });
   });
 
   it('detects intersecting boxes and nearby path points', () => {

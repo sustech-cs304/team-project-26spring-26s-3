@@ -4,7 +4,9 @@ const DEFAULT_POINT_MERGE_THRESHOLD = 0.5;
 const SINGLE_POINT_OFFSET = 0.1;
 const DEFAULT_STROKE_SAMPLING_STEP = 2;
 const DEFAULT_RENDER_BOUNDS_PADDING = 12;
-const RENDER_BOUNDS_WIDTH_FACTOR = 2.5;
+const PEN_RENDER_BOUNDS_WIDTH_FACTOR = 2.5;
+const PENCIL_RENDER_BOUNDS_WIDTH_FACTOR = 3.2;
+const HIGHLIGHTER_RENDER_BOUNDS_WIDTH_FACTOR = 2.8;
 const ERASE_SEGMENT_WARMUP_POINT_WINDOW = 8;
 
 export interface BoundingBox {
@@ -166,13 +168,28 @@ export function clampBoundingBox(box: BoundingBox, width: number, height: number
 }
 
 export function getStrokeRenderBoundingBox(stroke: Stroke): BoundingBox | null {
-  const box = getBoundingBox(stroke.points);
+  const box = getBoundingBox([
+    ...(stroke.renderWarmupPoints ?? []),
+    ...stroke.points
+  ]);
   if (box === null) {
     return null;
   }
 
-  const padding = Math.max(DEFAULT_RENDER_BOUNDS_PADDING, stroke.style.width * RENDER_BOUNDS_WIDTH_FACTOR);
+  const padding = Math.max(DEFAULT_RENDER_BOUNDS_PADDING, stroke.style.width * getStrokeRenderBoundsWidthFactor(stroke));
   return expandBoundingBox(box, padding);
+}
+
+function getStrokeRenderBoundsWidthFactor(stroke: Stroke): number {
+  switch (stroke.style.tool) {
+    case 'pencil':
+      return PENCIL_RENDER_BOUNDS_WIDTH_FACTOR;
+    case 'highlighter':
+      return HIGHLIGHTER_RENDER_BOUNDS_WIDTH_FACTOR;
+    case 'pen':
+    default:
+      return PEN_RENDER_BOUNDS_WIDTH_FACTOR;
+  }
 }
 
 export function doBoundingBoxesIntersect(left: BoundingBox, right: BoundingBox): boolean {

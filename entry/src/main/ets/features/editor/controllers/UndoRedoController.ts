@@ -27,6 +27,7 @@ export type EditorDeltaLabel =
 
 export interface AppendStrokeOperation {
   type: 'append_stroke';
+  index: number;
   stroke: Stroke;
 }
 
@@ -88,10 +89,11 @@ export class UndoRedoController {
 
   constructor(private readonly historyLimit: number = DEFAULT_HISTORY_LIMIT) {}
 
-  recordAppendStroke(stroke: Stroke): void {
+  recordAppendStroke(stroke: Stroke, index: number = Number.MAX_SAFE_INTEGER): void {
     this.pushUndoOperation({
       type: 'append_stroke',
-      stroke: this.cloneStroke(stroke)
+      index,
+      stroke
     });
   }
 
@@ -145,7 +147,7 @@ export class UndoRedoController {
       };
     }
 
-    this.redoStack.push(this.cloneOperation(operation));
+    this.redoStack.push(operation);
     return this.applyInverse(operation, currentStrokes, currentElements);
   }
 
@@ -167,7 +169,7 @@ export class UndoRedoController {
       };
     }
 
-    this.undoStack.push(this.cloneOperation(operation));
+    this.undoStack.push(operation);
     return this.applyForward(operation, currentStrokes, currentElements);
   }
 
@@ -208,7 +210,7 @@ export class UndoRedoController {
   }
 
   private pushUndoOperation(operation: EditorOperation): void {
-    this.undoStack.push(this.cloneOperation(operation));
+    this.undoStack.push(operation);
     if (this.undoStack.length > this.historyLimit) {
       this.undoStack.shift();
     }
@@ -223,15 +225,15 @@ export class UndoRedoController {
     switch (operation.type) {
       case 'append_stroke': {
         const nextStrokes = currentStrokes.slice();
-        const addedStroke = this.cloneStroke(operation.stroke);
-        nextStrokes.push(this.cloneStroke(operation.stroke));
+        const insertionIndex = Math.max(0, Math.min(operation.index, nextStrokes.length));
+        nextStrokes.splice(insertionIndex, 0, operation.stroke);
         return {
           strokes: nextStrokes,
-          elements: currentElements.map((element: CanvasElement): CanvasElement => this.cloneElement(element)),
+          elements: currentElements.slice(),
           removed: [],
           added: [{
-            index: currentStrokes.length,
-            stroke: addedStroke
+            index: insertionIndex,
+            stroke: operation.stroke
           }],
           removedElements: [],
           addedElements: [],
@@ -367,6 +369,23 @@ export class UndoRedoController {
     elements: CanvasElement[],
     strokeId: string
   ): UndoRedoApplyResult {
+    const lastIndex = strokes.length - 1;
+    if (lastIndex >= 0 && strokes[lastIndex].id === strokeId) {
+      return {
+        strokes: strokes.slice(0, lastIndex),
+        elements: elements.slice(),
+        removed: [{
+          index: lastIndex,
+          stroke: strokes[lastIndex]
+        }],
+        added: [],
+        removedElements: [],
+        addedElements: [],
+        selection: UndoRedoController.createEmptySelectionSnapshot(),
+        strokeLayerZIndex: null
+      };
+    }
+
     const nextStrokes = strokes.slice();
     let removedRecord: IndexedStrokeRecord | null = null;
 
@@ -374,7 +393,7 @@ export class UndoRedoController {
       if (nextStrokes[index].id === strokeId) {
         removedRecord = {
           index,
-          stroke: this.cloneStroke(nextStrokes[index])
+          stroke: nextStrokes[index]
         };
         nextStrokes.splice(index, 1);
         break;
@@ -383,7 +402,7 @@ export class UndoRedoController {
 
     return {
       strokes: nextStrokes,
-      elements: elements.map((element: CanvasElement): CanvasElement => this.cloneElement(element)),
+      elements: elements.slice(),
       removed: removedRecord === null ? [] : [removedRecord],
       added: [],
       removedElements: [],
@@ -398,6 +417,7 @@ export class UndoRedoController {
       case 'append_stroke':
         return {
           type: 'append_stroke',
+          index: operation.index,
           stroke: this.cloneStroke(operation.stroke)
         };
       case 'replace_page_delta':
@@ -590,6 +610,8 @@ export class UndoRedoController {
     return {
       id: stroke.id,
       pageId: stroke.pageId,
+      renderKey: stroke.renderKey,
+      renderWarmupPoints: stroke.renderWarmupPoints?.map((point: StrokePoint) => this.clonePoint(point)) ?? [],
       points: stroke.points.map((point: StrokePoint) => this.clonePoint(point)),
       style: this.cloneStyle(stroke.style),
       createdAt: stroke.createdAt,

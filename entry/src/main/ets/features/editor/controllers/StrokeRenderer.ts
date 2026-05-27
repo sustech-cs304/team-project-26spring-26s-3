@@ -40,6 +40,20 @@ interface BrushPass {
   normalOffsetFactor: number;
 }
 
+interface HighlighterPass {
+  widthScale: number;
+  alphaScale: number;
+  normalOffsetFactor: number;
+  lineJoin: string;
+}
+
+interface HighlighterPathPoint {
+  x: number;
+  y: number;
+  normalX: number;
+  normalY: number;
+}
+
 export interface InProgressStrokeRenderSession {
   strokeId: string;
   styleSignature: string;
@@ -90,44 +104,40 @@ const PEN_PROFILE: BrushProfile = {
 };
 
 const PENCIL_PROFILE: BrushProfile = {
-  minWidthFactor: 0.34,
-  maxWidthFactor: 0.88,
+  minWidthFactor: 0.38,
+  maxWidthFactor: 1.02,
   pressureFactor: 0.76,
   velocityFactor: 0.96,
-  resampleSpacingFactor: 0.14,
-  widthBlend: 0.2,
+  resampleSpacingFactor: 0.18,
+  widthBlend: 0.24,
   velocityBlend: 0.14,
-  baseAlpha: 0.18
+  baseAlpha: 0.28
 };
 
 const HIGHLIGHTER_PROFILE: BrushProfile = {
-  minWidthFactor: 0.92,
-  maxWidthFactor: 1.1,
+  minWidthFactor: 1.02,
+  maxWidthFactor: 1.22,
   pressureFactor: 0.14,
   velocityFactor: 0.74,
   resampleSpacingFactor: 0.34,
   widthBlend: 0.58,
   velocityBlend: 0.36,
-  baseAlpha: 0.24
+  baseAlpha: 0.3
 };
 
 const PEN_PASSES: BrushPass[] = [
-  { widthScale: 1, alphaScale: 1, jitter: 0.004, widthJitter: 0.02, alphaJitter: 0.02, normalOffsetFactor: 0 },
-  { widthScale: 0.72, alphaScale: 0.16, jitter: 0.01, widthJitter: 0.04, alphaJitter: 0.05, normalOffsetFactor: 0 }
+  { widthScale: 1.02, alphaScale: 1, jitter: 0.002, widthJitter: 0.015, alphaJitter: 0.015, normalOffsetFactor: 0 }
 ];
 
 const PENCIL_PASSES: BrushPass[] = [
-  { widthScale: 0.78, alphaScale: 0.66, jitter: 0.05, widthJitter: 0.14, alphaJitter: 0.18, normalOffsetFactor: 0 },
-  { widthScale: 0.6, alphaScale: 0.54, jitter: 0.1, widthJitter: 0.22, alphaJitter: 0.26, normalOffsetFactor: 0.1 },
-  { widthScale: 0.44, alphaScale: 0.42, jitter: 0.14, widthJitter: 0.3, alphaJitter: 0.34, normalOffsetFactor: -0.14 },
-  { widthScale: 0.3, alphaScale: 0.24, jitter: 0.18, widthJitter: 0.38, alphaJitter: 0.42, normalOffsetFactor: 0.2 },
-  { widthScale: 0.18, alphaScale: 0.16, jitter: 0.24, widthJitter: 0.46, alphaJitter: 0.5, normalOffsetFactor: -0.24 }
+  { widthScale: 0.96, alphaScale: 0.98, jitter: 0.035, widthJitter: 0.12, alphaJitter: 0.14, normalOffsetFactor: 0 },
+  { widthScale: 0.62, alphaScale: 0.48, jitter: 0.11, widthJitter: 0.25, alphaJitter: 0.28, normalOffsetFactor: 0.16 },
+  { widthScale: 0.36, alphaScale: 0.28, jitter: 0.18, widthJitter: 0.42, alphaJitter: 0.5, normalOffsetFactor: -0.2 }
 ];
 
 const HIGHLIGHTER_PASSES: BrushPass[] = [
-  { widthScale: 1.16, alphaScale: 0.44, jitter: 0.01, widthJitter: 0.03, alphaJitter: 0.04, normalOffsetFactor: -0.18 },
-  { widthScale: 1.08, alphaScale: 0.72, jitter: 0.008, widthJitter: 0.03, alphaJitter: 0.03, normalOffsetFactor: 0 },
-  { widthScale: 1.16, alphaScale: 0.44, jitter: 0.01, widthJitter: 0.03, alphaJitter: 0.04, normalOffsetFactor: 0.18 }
+  { widthScale: 1.28, alphaScale: 0.54, jitter: 0.006, widthJitter: 0.02, alphaJitter: 0.03, normalOffsetFactor: -0.08 },
+  { widthScale: 1.1, alphaScale: 0.82, jitter: 0.004, widthJitter: 0.02, alphaJitter: 0.02, normalOffsetFactor: 0.08 }
 ];
 
 const PREVIEW_PEN_PASSES: BrushPass[] = [
@@ -135,19 +145,27 @@ const PREVIEW_PEN_PASSES: BrushPass[] = [
 ];
 
 const PREVIEW_PENCIL_PASSES: BrushPass[] = [
-  { widthScale: 0.76, alphaScale: 0.9, jitter: 0, widthJitter: 0, alphaJitter: 0, normalOffsetFactor: 0 },
-  { widthScale: 0.54, alphaScale: 0.42, jitter: 0, widthJitter: 0, alphaJitter: 0, normalOffsetFactor: 0.08 },
-  { widthScale: 0.42, alphaScale: 0.24, jitter: 0, widthJitter: 0, alphaJitter: 0, normalOffsetFactor: -0.1 }
+  { widthScale: 0.92, alphaScale: 1, jitter: 0, widthJitter: 0, alphaJitter: 0, normalOffsetFactor: 0 },
+  { widthScale: 0.58, alphaScale: 0.42, jitter: 0, widthJitter: 0, alphaJitter: 0, normalOffsetFactor: 0.1 },
+  { widthScale: 0.34, alphaScale: 0.24, jitter: 0, widthJitter: 0, alphaJitter: 0, normalOffsetFactor: -0.12 }
 ];
 
 const PREVIEW_HIGHLIGHTER_PASSES: BrushPass[] = [
-  { widthScale: 1.08, alphaScale: 1.22, jitter: 0, widthJitter: 0, alphaJitter: 0, normalOffsetFactor: 0 }
+  { widthScale: 1.16, alphaScale: 1.34, jitter: 0, widthJitter: 0, alphaJitter: 0, normalOffsetFactor: 0 }
+];
+
+const HIGHLIGHTER_RENDER_PASSES: HighlighterPass[] = [
+  { widthScale: 1.36, alphaScale: 0.38, normalOffsetFactor: 0, lineJoin: 'bevel' },
+  { widthScale: 1.04, alphaScale: 0.78, normalOffsetFactor: 0, lineJoin: 'bevel' },
+  { widthScale: 0.18, alphaScale: 0.34, normalOffsetFactor: -0.56, lineJoin: 'round' },
+  { widthScale: 0.16, alphaScale: 0.28, normalOffsetFactor: 0.56, lineJoin: 'round' }
 ];
 
 const MIN_RESAMPLE_SPACING = 0.75;
 const MIN_DT = 4;
 const MIN_RENDER_WIDTH = 0.8;
 const MIN_PRESSURE = 0.12;
+const BALANCED_RENDER_POINT_LIMIT = 520;
 const HASH_OFFSET = 2166136261;
 const CAUSAL_MIN_SMOOTHING = 0.18;
 const CAUSAL_MAX_SMOOTHING = 0.72;
@@ -157,16 +175,60 @@ const INCREMENTAL_PREVIEW_REPAIR_OVERLAP_POINTS = 12;
 const INCREMENTAL_PREVIEW_STABLE_PROMOTION_STEP = 4;
 export class StrokeRenderer {
   static drawStrokeFast(context: StrokeRenderContext, stroke: Stroke): void {
-    this.drawRawPolyline(context, stroke);
+    this.drawFastCommittedStroke(context, stroke);
   }
 
   static drawPreviewStrokeFast(context: StrokeRenderContext, stroke: Stroke): void {
     this.drawPreviewStroke(context, stroke);
   }
 
+  static drawStrokeBalanced(context: StrokeRenderContext, stroke: Stroke): void {
+    this.drawCommittedStroke(context, stroke);
+  }
+
+  private static drawFastCommittedStroke(context: StrokeRenderContext, stroke: Stroke): void {
+    switch (stroke.style.tool) {
+      case 'pencil':
+        this.drawFastPencilStroke(context, stroke);
+        return;
+      case 'highlighter':
+        this.drawHighlighterStroke(context, stroke);
+        return;
+      case 'pen':
+      default:
+        this.drawBalancedPolylineStroke(context, stroke);
+        return;
+    }
+  }
+
+  private static drawCommittedStroke(context: StrokeRenderContext, stroke: Stroke): void {
+    if (!this.shouldUseBalancedStroke(stroke)) {
+      this.drawStroke(context, stroke);
+      return;
+    }
+
+    switch (stroke.style.tool) {
+      case 'pencil':
+        this.drawFastPencilStroke(context, stroke);
+        return;
+      case 'highlighter':
+        this.drawHighlighterStroke(context, stroke);
+        return;
+      case 'pen':
+      default:
+        this.drawBalancedPolylineStroke(context, stroke);
+        return;
+    }
+  }
+
   static drawStroke(context: StrokeRenderContext, stroke: Stroke): void {
     const samples = this.buildVisibleSamplesForStroke(stroke);
     if (samples.length === 0) {
+      return;
+    }
+
+    if (stroke.style.tool === 'highlighter') {
+      this.drawHighlighterSamples(context, stroke, samples);
       return;
     }
 
@@ -532,23 +594,12 @@ export class StrokeRenderer {
   }
 
   private static drawHighlighterStroke(context: StrokeRenderContext, stroke: Stroke): void {
-    const points = this.buildHighlighterPathPoints(stroke.points, stroke.style.width);
-    if (points.length === 0) {
+    const samples = this.buildVisibleSamplesForStroke(stroke);
+    if (samples.length === 0) {
       return;
     }
 
-    const lineWidth = Math.max(MIN_RENDER_WIDTH, stroke.style.width * 1.02);
-    const alpha = this.clamp(stroke.style.opacity * 0.3, 0.08, 0.42);
-
-    context.strokeStyle = stroke.style.color;
-    context.lineCap = 'butt';
-    context.lineJoin = 'round';
-    context.lineWidth = lineWidth;
-    context.globalAlpha = alpha;
-    context.beginPath();
-    this.traceHighlighterPoints(context, points);
-    context.stroke();
-    context.globalAlpha = 1;
+    this.drawHighlighterSamples(context, stroke, samples);
   }
 
   private static drawHighlighterSamples(
@@ -560,102 +611,88 @@ export class StrokeRenderer {
       return;
     }
 
-    const lineWidth = Math.max(MIN_RENDER_WIDTH, stroke.style.width * 1.02);
-    const alpha = this.clamp(stroke.style.opacity * 0.3, 0.08, 0.42);
-
-    context.strokeStyle = stroke.style.color;
-    context.lineCap = 'butt';
-    context.lineJoin = 'round';
-    context.lineWidth = lineWidth;
-    context.globalAlpha = alpha;
-    context.beginPath();
-    this.traceHighlighterPath(context, samples);
-    context.stroke();
+    const pathPoints = this.buildHighlighterSamplePathPoints(samples);
+    for (const pass of HIGHLIGHTER_RENDER_PASSES) {
+      this.drawHighlighterPass(context, stroke, pathPoints, pass);
+    }
     context.globalAlpha = 1;
   }
 
-  private static traceHighlighterPath(
-    context: StrokeRenderContext,
-    samples: RenderSample[]
-  ): void {
-    const firstSample = samples[0];
-    context.moveTo(firstSample.x, firstSample.y);
+  private static buildHighlighterSamplePathPoints(samples: RenderSample[]): HighlighterPathPoint[] {
+    return samples.map((sample: RenderSample): HighlighterPathPoint => ({
+      x: sample.x,
+      y: sample.y,
+      normalX: sample.normalX,
+      normalY: sample.normalY
+    }));
+  }
 
-    if (samples.length === 1) {
-      context.lineTo(firstSample.x + 0.01, firstSample.y + 0.01);
+  private static drawHighlighterPass(
+    context: StrokeRenderContext,
+    stroke: Stroke,
+    points: HighlighterPathPoint[],
+    pass: HighlighterPass
+  ): void {
+    if (points.length === 0) {
       return;
     }
 
-    if (samples.length === 2) {
-      const lastSample = samples[1];
-      context.lineTo(lastSample.x, lastSample.y);
-      return;
-    }
+    const baseWidth = Math.max(MIN_RENDER_WIDTH, stroke.style.width);
+    const alpha = this.clamp(this.getHighlighterBaseAlpha(stroke.style.opacity) * pass.alphaScale, 0.02, 0.5);
+    const normalOffset = baseWidth * pass.normalOffsetFactor;
 
-    for (let index = 1; index < samples.length - 1; index += 1) {
-      const currentSample = samples[index];
-      const nextSample = samples[index + 1];
-      const midpointX = (currentSample.x + nextSample.x) / 2;
-      const midpointY = (currentSample.y + nextSample.y) / 2;
-      context.quadraticCurveTo(currentSample.x, currentSample.y, midpointX, midpointY);
-    }
-
-    const tailSample = samples[samples.length - 1];
-    context.lineTo(tailSample.x, tailSample.y);
+    context.strokeStyle = stroke.style.color;
+    context.lineCap = 'butt';
+    context.lineJoin = pass.lineJoin;
+    context.lineWidth = Math.max(MIN_RENDER_WIDTH, baseWidth * pass.widthScale);
+    context.globalAlpha = alpha;
+    context.beginPath();
+    this.traceHighlighterPathPoints(context, points, normalOffset);
+    context.stroke();
   }
 
-  private static buildHighlighterPathPoints(points: StrokePoint[], width: number): StrokePoint[] {
-    if (points.length <= 2) {
-      return points;
-    }
-
-    const minimumDistance = Math.max(1.5, width * 0.45);
-    const simplified: StrokePoint[] = [points[0]];
-    let lastPoint = points[0];
-
-    for (let index = 1; index < points.length - 1; index += 1) {
-      const point = points[index];
-      if (getDistance(lastPoint, point) >= minimumDistance) {
-        simplified.push(point);
-        lastPoint = point;
-      }
-    }
-
-    const finalPoint = points[points.length - 1];
-    if (simplified[simplified.length - 1] !== finalPoint) {
-      simplified.push(finalPoint);
-    }
-    return simplified;
+  private static getHighlighterBaseAlpha(opacity: number): number {
+    return this.clamp(opacity * 0.34, 0.14, 0.48);
   }
 
-  private static traceHighlighterPoints(
+  private static traceHighlighterPathPoints(
     context: StrokeRenderContext,
-    points: StrokePoint[]
+    points: HighlighterPathPoint[],
+    normalOffset: number
   ): void {
-    const firstPoint = points[0];
+    const firstPoint = this.offsetHighlighterPathPoint(points[0], normalOffset);
     context.moveTo(firstPoint.x, firstPoint.y);
 
-    if (points.length === 1) {
-      context.lineTo(firstPoint.x + 0.01, firstPoint.y + 0.01);
-      return;
-    }
-
-    if (points.length === 2) {
-      const lastPoint = points[1];
-      context.lineTo(lastPoint.x, lastPoint.y);
+    if (points.length <= 2) {
+      if (points.length === 1) {
+        context.lineTo(firstPoint.x + 0.01, firstPoint.y + 0.01);
+      } else {
+        const lastPoint = this.offsetHighlighterPathPoint(points[1], normalOffset);
+        context.lineTo(lastPoint.x, lastPoint.y);
+      }
       return;
     }
 
     for (let index = 1; index < points.length - 1; index += 1) {
-      const currentPoint = points[index];
-      const nextPoint = points[index + 1];
+      const currentPoint = this.offsetHighlighterPathPoint(points[index], normalOffset);
+      const nextPoint = this.offsetHighlighterPathPoint(points[index + 1], normalOffset);
       const midpointX = (currentPoint.x + nextPoint.x) / 2;
       const midpointY = (currentPoint.y + nextPoint.y) / 2;
       context.quadraticCurveTo(currentPoint.x, currentPoint.y, midpointX, midpointY);
     }
 
-    const tailPoint = points[points.length - 1];
+    const tailPoint = this.offsetHighlighterPathPoint(points[points.length - 1], normalOffset);
     context.lineTo(tailPoint.x, tailPoint.y);
+  }
+
+  private static offsetHighlighterPathPoint(
+    point: HighlighterPathPoint,
+    normalOffset: number
+  ): { x: number; y: number } {
+    return {
+      x: point.x + point.normalX * normalOffset,
+      y: point.y + point.normalY * normalOffset
+    };
   }
 
   private static drawFastPencilStroke(context: StrokeRenderContext, stroke: Stroke): void {
@@ -668,9 +705,9 @@ export class StrokeRenderer {
     context.lineJoin = 'round';
 
     const passes = [
-      { widthScale: 0.74, alpha: this.clamp(stroke.style.opacity * 0.34, 0.05, 0.52), offsetX: 0, offsetY: 0 },
-      { widthScale: 0.5, alpha: this.clamp(stroke.style.opacity * 0.16, 0.03, 0.24), offsetX: 0.35, offsetY: -0.25 },
-      { widthScale: 0.38, alpha: this.clamp(stroke.style.opacity * 0.1, 0.02, 0.16), offsetX: -0.3, offsetY: 0.3 }
+      { widthScale: 0.9, alpha: this.clamp(stroke.style.opacity * 0.46, 0.08, 0.68), offsetX: 0, offsetY: 0 },
+      { widthScale: 0.56, alpha: this.clamp(stroke.style.opacity * 0.22, 0.04, 0.34), offsetX: 0.35, offsetY: -0.25 },
+      { widthScale: 0.34, alpha: this.clamp(stroke.style.opacity * 0.13, 0.03, 0.22), offsetX: -0.3, offsetY: 0.3 }
     ];
 
     for (const pass of passes) {
@@ -948,42 +985,98 @@ export class StrokeRenderer {
     return this.buildStrokeRange(stroke, 0, session.mutableStartIndex);
   }
 
-  private static drawRawPolyline(context: StrokeRenderContext, stroke: Stroke): void {
+  private static drawBalancedPolylineStroke(context: StrokeRenderContext, stroke: Stroke): void {
     if (stroke.points.length === 0) {
       return;
     }
 
-    const points = stroke.points;
+    const points = this.buildBalancedPolylinePoints(stroke);
     context.strokeStyle = stroke.style.color;
     context.lineCap = stroke.style.tool === 'highlighter' ? 'butt' : 'round';
     context.lineJoin = 'round';
-    context.lineWidth = Math.max(MIN_RENDER_WIDTH, stroke.style.width);
-    context.globalAlpha = this.getFastStrokeOpacity(stroke.style.tool, stroke.style.opacity);
+    context.lineWidth = Math.max(MIN_RENDER_WIDTH, stroke.style.width * this.getBalancedStrokeWidthScale(stroke.style.tool));
+    context.globalAlpha = this.getBalancedStrokeOpacity(stroke.style.tool, stroke.style.opacity);
     context.beginPath();
-    context.moveTo(points[0].x, points[0].y);
-
-    if (points.length === 1) {
-      context.lineTo(points[0].x + 0.01, points[0].y + 0.01);
-    } else {
-      for (let index = 1; index < points.length; index += 1) {
-        context.lineTo(points[index].x, points[index].y);
-      }
-    }
-
+    this.traceOffsetStrokePoints(context, points, 0, 0);
     context.stroke();
     context.globalAlpha = 1;
   }
 
-  private static getFastStrokeOpacity(tool: DrawableToolType, opacity: number): number {
+  private static shouldUseBalancedStroke(stroke: Stroke): boolean {
+    if (stroke.points.length < BALANCED_RENDER_POINT_LIMIT) {
+      return false;
+    }
+
+    if (stroke.style.tool === 'pencil') {
+      return true;
+    }
+
+    if (stroke.style.tool === 'pen') {
+      return stroke.points.length >= BALANCED_RENDER_POINT_LIMIT;
+    }
+
+    return stroke.points.length >= BALANCED_RENDER_POINT_LIMIT * 2;
+  }
+
+  private static buildBalancedPolylinePoints(stroke: Stroke): StrokePoint[] {
+    const points = stroke.points;
+    if (points.length <= 2) {
+      return points;
+    }
+
+    const minimumDistance = this.getBalancedPolylineMinimumDistance(stroke);
+    const simplified: StrokePoint[] = [points[0]];
+    let lastPoint = points[0];
+
+    for (let index = 1; index < points.length - 1; index += 1) {
+      const point = points[index];
+      if (getDistance(lastPoint, point) >= minimumDistance) {
+        simplified.push(point);
+        lastPoint = point;
+      }
+    }
+
+    const finalPoint = points[points.length - 1];
+    if (simplified[simplified.length - 1] !== finalPoint) {
+      simplified.push(finalPoint);
+    }
+    return simplified;
+  }
+
+  private static getBalancedPolylineMinimumDistance(stroke: Stroke): number {
+    switch (stroke.style.tool) {
+      case 'pencil':
+        return Math.max(1.1, stroke.style.width * 0.22);
+      case 'highlighter':
+        return Math.max(1.8, stroke.style.width * 0.38);
+      case 'pen':
+      default:
+        return Math.max(0.9, stroke.style.width * 0.18);
+    }
+  }
+
+  private static getBalancedStrokeOpacity(tool: DrawableToolType, opacity: number): number {
     if (tool === 'highlighter') {
-      return this.clamp(opacity * 0.42, 0.08, 1);
+      return this.clamp(opacity * 0.46, 0.12, 1);
     }
 
     if (tool === 'pencil') {
-      return this.clamp(opacity * 0.46, 0.05, 0.72);
+      return this.clamp(opacity * 0.72, 0.12, 0.86);
     }
 
     return this.clamp(opacity, 0.12, 1);
+  }
+
+  private static getBalancedStrokeWidthScale(tool: DrawableToolType): number {
+    if (tool === 'highlighter') {
+      return 1.14;
+    }
+
+    if (tool === 'pencil') {
+      return 0.94;
+    }
+
+    return 1.02;
   }
 
   private static getProfile(tool: DrawableToolType): BrushProfile {
@@ -1465,12 +1558,7 @@ export class StrokeRenderer {
       id: stroke.id,
       pageId: stroke.pageId,
       renderKey: stroke.renderKey,
-      renderWarmupPoints: stroke.renderWarmupPoints?.map((point: StrokePoint) => ({
-        x: point.x,
-        y: point.y,
-        t: point.t,
-        pressure: point.pressure
-      })) ?? [],
+      renderWarmupPoints: this.buildSliceWarmupPoints(stroke, normalizedStartIndex),
       points: stroke.points.slice(normalizedStartIndex, normalizedEndExclusive).map((point: StrokePoint) => ({
         x: point.x,
         y: point.y,
@@ -1485,6 +1573,32 @@ export class StrokeRenderer {
       },
       createdAt: stroke.createdAt,
       updatedAt: stroke.updatedAt
+    };
+  }
+
+  private static buildSliceWarmupPoints(stroke: Stroke, normalizedStartIndex: number): StrokePoint[] {
+    const sourceWarmupPoints = stroke.renderWarmupPoints ?? [];
+    const warmupPoints: StrokePoint[] = [];
+    if (normalizedStartIndex === 0) {
+      for (const point of sourceWarmupPoints) {
+        warmupPoints.push(this.cloneInputPoint(point));
+      }
+      return warmupPoints;
+    }
+
+    const warmupStartIndex = Math.max(0, normalizedStartIndex - INCREMENTAL_PREVIEW_REPAIR_OVERLAP_POINTS);
+    for (const point of stroke.points.slice(warmupStartIndex, normalizedStartIndex)) {
+      warmupPoints.push(this.cloneInputPoint(point));
+    }
+    return warmupPoints;
+  }
+
+  private static cloneInputPoint(point: StrokePoint): StrokePoint {
+    return {
+      x: point.x,
+      y: point.y,
+      t: point.t,
+      pressure: point.pressure
     };
   }
 

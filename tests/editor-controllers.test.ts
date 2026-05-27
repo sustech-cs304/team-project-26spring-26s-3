@@ -6,6 +6,7 @@ import type {
 } from '../entry/src/main/ets/domain/entities/CanvasElement';
 import type { Stroke, StrokePoint, StrokeStyle } from '../entry/src/main/ets/domain/entities/Stroke';
 import { StrokeController } from '../entry/src/main/ets/features/editor/controllers/StrokeController';
+import { StrokeRenderer } from '../entry/src/main/ets/features/editor/controllers/StrokeRenderer';
 import { UndoRedoController } from '../entry/src/main/ets/features/editor/controllers/UndoRedoController';
 import type { SelectionTarget } from '../entry/src/main/ets/features/editor/selection/SelectionTypes';
 
@@ -77,9 +78,12 @@ function shapeElement(id: string): ShapeCanvasElement {
         { x: 80, y: 60 }
       ]
     },
-    strokeColor: '#222222',
     fillColor: '#ffffff',
-    strokeWidth: 2,
+    outline: {
+      lineStyle: 'solid',
+      color: '#222222',
+      width: 2
+    },
     opacity: 0.8
   };
 }
@@ -100,7 +104,12 @@ function imageElement(id: string): ImageCanvasElement {
     uri: `file://${id}.png`,
     originalWidth: 400,
     originalHeight: 200,
-    opacity: 0.7
+    opacity: 0.7,
+    outline: {
+      lineStyle: 'none',
+      color: '#222222',
+      width: 0
+    }
   };
 }
 
@@ -172,25 +181,28 @@ describe('StrokeController', () => {
 });
 
 describe('UndoRedoController', () => {
-  it('undoes and redoes appended strokes while preserving clones', () => {
+  it('undoes and redoes appended strokes through the immutable hot path', () => {
     const controller = new UndoRedoController();
     const originalStroke = stroke('stroke-a');
+    const otherStroke = stroke('stroke-b');
 
-    controller.recordAppendStroke(originalStroke);
-    originalStroke.points[0].x = 999;
+    controller.recordAppendStroke(originalStroke, 0);
 
-    const afterUndo = controller.undo([stroke('stroke-a'), stroke('stroke-b')]);
+    const afterUndo = controller.undo([originalStroke, otherStroke]);
 
     expect(afterUndo.strokes.map((item) => item.id)).toEqual(['stroke-b']);
     expect(afterUndo.removed).toHaveLength(1);
-    expect(afterUndo.removed[0].stroke.points[0].x).toBe(0);
+    expect(afterUndo.removed[0].stroke).toBe(originalStroke);
     expect(controller.canRedo()).toBe(true);
 
     const afterRedo = controller.redo(afterUndo.strokes);
 
-    expect(afterRedo.strokes.map((item) => item.id)).toEqual(['stroke-b', 'stroke-a']);
-    expect(afterRedo.added[0].index).toBe(1);
-    expect(afterRedo.added[0].stroke.points[0].x).toBe(0);
+    expect(afterRedo.strokes.map((item) => item.id)).toEqual(['stroke-a', 'stroke-b']);
+    expect(afterRedo.strokes[0]).toBe(originalStroke);
+    expect(afterRedo.added[0].index).toBe(0);
+    expect(afterRedo.added[0].stroke).toBe(originalStroke);
+    expect(afterRedo.added[0].stroke.renderKey).toBe('stroke-a-render');
+    expect(afterRedo.added[0].stroke.renderWarmupPoints?.[0].x).toBe(-1);
     expect(controller.canRedo()).toBe(false);
   });
 
@@ -300,5 +312,43 @@ describe('UndoRedoController', () => {
     const result = restoredController.undo([stroke('stroke-a')]);
 
     expect(result.removed[0].stroke.points[0].x).toBe(0);
+
+    const redoResult = restoredController.redo(result.strokes);
+
+    expect(redoResult.added[0].stroke.renderKey).toBe('stroke-a-render');
+    expect(redoResult.added[0].stroke.renderWarmupPoints?.[0].x).toBe(-1);
+  });
+});
+
+describe('StrokeRenderer incremental preview', () => {
+  it('uses local repair warmup for long-stroke tail slices', () => {
+    const points = Array.from({ length: 64 }, (_, index) => point(index, index * 0.5, index));
+    const longStroke = stroke('long-stroke', points);
+
+    const stableStroke = StrokeRenderer.buildStablePreviewStroke(longStroke);
+    const update = StrokeRenderer.buildIncrementalPreviewUpdate(longStroke, null);
+
+    expect(stableStroke?.renderWarmupPoints?.map((item) => item.x)).toEqual([-1]);
+    expect(update.renderStroke.points[0].x).toBe(28);
+    expect(update.renderStroke.renderWarmupPoints?.map((item) => item.x)).toEqual([
+      16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27
+    ]);
+  });
+
+  it('promotes stable prefix and redraws only the mutable tail while drawing', () => {
+    const points = Array.from({ length: 64 }, (_, index) => point(index, index * 0.5, index));
+    const previousStroke = stroke('long-stroke', points.slice(0, 40));
+    const currentStroke = stroke('long-stroke', points);
+    const previousUpdate = StrokeRenderer.buildIncrementalPreviewUpdate(previousStroke, null);
+
+    const update = StrokeRenderer.buildIncrementalPreviewUpdate(currentStroke, previousUpdate.nextSession);
+
+    expect(update.requiresFullRedraw).toBe(false);
+    expect(update.promoteStroke?.points).toHaveLength(40);
+    expect(update.promoteStroke?.points[0].x).toBe(0);
+    expect(update.promoteStroke?.points.at(-1)?.x).toBe(39);
+    expect(update.promoteDirtyRect).not.toBeNull();
+    expect(update.renderStroke.points[0].x).toBe(28);
+    expect(update.nextSession.mutableStartIndex).toBe(40);
   });
 });
