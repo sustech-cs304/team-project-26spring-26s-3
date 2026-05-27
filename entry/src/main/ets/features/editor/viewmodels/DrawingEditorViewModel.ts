@@ -123,7 +123,7 @@ interface ElementEditGesture {
   originalElement: CanvasElement;
 }
 
-interface ElementOutlineEditGesture {
+interface ElementStyleEditGesture {
   elementId: string;
   originalElement: CanvasElement;
 }
@@ -194,6 +194,11 @@ const EDITOR_BUILD_MARKER = 'editor-build-2026-04-20-state-link-sync-v1';
 const DEFAULT_TEXT_ELEMENT_TOP_OFFSET = 24;
 const DEFAULT_SHAPE_OUTLINE: ElementOutlineStyle = {
   lineStyle: 'solid',
+  color: '#111827',
+  width: 2
+};
+const DEFAULT_TEXT_OUTLINE: ElementOutlineStyle = {
+  lineStyle: 'none',
   color: '#111827',
   width: 2
 };
@@ -276,7 +281,7 @@ export class DrawingEditorViewModel {
   private selectedStrokeTargets: SelectionTarget[] = [];
   private lassoDraftPath: StrokePoint[] = [];
   private elementEditGesture: ElementEditGesture | null = null;
-  private elementOutlineEditGesture: ElementOutlineEditGesture | null = null;
+  private elementStyleEditGesture: ElementStyleEditGesture | null = null;
   private imageElementEditDraft: ImageElementEditDraft | null = null;
   private selectionMoveGesture: SelectionMoveGesture | null = null;
   private strokeResizeGesture: StrokeResizeGesture | null = null;
@@ -733,7 +738,7 @@ export class DrawingEditorViewModel {
       this.appendDebugEvent('clearElementSelection', `element=${this.selectedElementId}`);
     }
     this.elementEditGesture = null;
-    this.elementOutlineEditGesture = null;
+    this.elementStyleEditGesture = null;
     this.imageElementEditDraft = null;
     this.selectionMoveGesture = null;
     this.strokeResizeGesture = null;
@@ -760,7 +765,7 @@ export class DrawingEditorViewModel {
     this.selectedElementIds = this.selectedElementIds.filter((elementId: string): boolean => elementId !== selectedElement.id);
     this.selectedElementId = this.selectedElementIds.length > 0 ? this.selectedElementIds[0] : '';
     this.elementEditGesture = null;
-    this.elementOutlineEditGesture = null;
+    this.elementStyleEditGesture = null;
     this.imageElementEditDraft = null;
     this.selectionVersion += 1;
     this.recordElementDelta('elementDelete', [{
@@ -794,35 +799,124 @@ export class DrawingEditorViewModel {
     return this.replaceElementWithDelta('elementStyle', element, nextElement, 'elementStyle');
   }
 
-  beginElementOutlineEdit(elementId: string): boolean {
+  updateTextBackgroundColorById(elementId: string, backgroundColor: string): SelectionActionResult {
     const element = this.getElementById(elementId);
-    if (element === null || element.type === 'text') {
-      this.elementOutlineEditGesture = null;
+    if (element === null || element.type !== 'text' || element.backgroundColor === backgroundColor) {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    const nextElement: TextCanvasElement = {
+      ...this.cloneTextElement(element),
+      backgroundColor,
+      updatedAt: now()
+    };
+    return this.replaceElementWithDelta('elementStyle', element, nextElement, 'elementStyle');
+  }
+
+  updateTextColorById(elementId: string, color: string): SelectionActionResult {
+    const element = this.getElementById(elementId);
+    if (element === null || element.type !== 'text' || element.color === color) {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    const nextElement: TextCanvasElement = {
+      ...this.cloneTextElement(element),
+      color,
+      updatedAt: now()
+    };
+    return this.replaceElementWithDelta('elementStyle', element, nextElement, 'elementStyle');
+  }
+
+  updateTextFontSizeById(
+    elementId: string,
+    fontSize: number,
+    bounds: ElementBounds,
+    recordHistory: boolean = true
+  ): SelectionActionResult {
+    const element = this.getElementById(elementId);
+    if (element === null || element.type !== 'text') {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+    if (recordHistory) {
+      this.elementStyleEditGesture = null;
+    }
+
+    const nextFontSize = this.clampNumber(Math.round(fontSize), MIN_TEXT_FONT_SIZE, MAX_TEXT_FONT_SIZE);
+    const nextHeight = this.calculatePredictedTextHeight(element.content, element.width, nextFontSize);
+    const nextFrame = clampElementFrameToBounds({
+      x: element.x,
+      y: element.y,
+      width: element.width,
+      height: nextHeight
+    }, bounds);
+    if (
+      element.fontSize === nextFontSize &&
+        element.x === nextFrame.x &&
+        element.y === nextFrame.y &&
+        element.width === nextFrame.width &&
+        element.height === nextFrame.height
+    ) {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    const nextElement: TextCanvasElement = {
+      ...this.cloneTextElement(element),
+      x: nextFrame.x,
+      y: nextFrame.y,
+      width: nextFrame.width,
+      height: nextFrame.height,
+      fontSize: nextFontSize,
+      updatedAt: recordHistory ? now() : element.updatedAt
+    };
+    if (!recordHistory) {
+      this.replaceElementInMemory(nextElement);
+      return {
+        changed: true,
+        changedStrokes: false,
+        changedElements: true,
+        elementSelectionChanged: false
+      };
+    }
+
+    return this.replaceElementWithDelta('elementStyle', element, nextElement, 'elementStyle');
+  }
+
+  beginElementStyleEdit(elementId: string): boolean {
+    const element = this.getElementById(elementId);
+    if (element === null) {
+      this.elementStyleEditGesture = null;
       return false;
     }
 
-    this.elementOutlineEditGesture = {
+    this.elementStyleEditGesture = {
       elementId,
       originalElement: this.cloneElement(element)
     };
     return true;
   }
 
-  finishElementOutlineEdit(elementId: string): SelectionActionResult {
-    const gesture = this.elementOutlineEditGesture;
-    this.elementOutlineEditGesture = null;
+  finishElementStyleEdit(elementId: string): SelectionActionResult {
+    const gesture = this.elementStyleEditGesture;
+    this.elementStyleEditGesture = null;
     if (gesture === null || gesture.elementId !== elementId) {
       return { ...EMPTY_SELECTION_ACTION_RESULT };
     }
 
     const currentElement = this.getElementById(elementId);
-    if (currentElement === null || currentElement.type === 'text' ||
-      this.areElementsEquivalent(gesture.originalElement, currentElement)) {
+    if (currentElement === null || this.areElementsEquivalent(gesture.originalElement, currentElement)) {
       return { ...EMPTY_SELECTION_ACTION_RESULT };
     }
 
     const finalElement = this.cloneElementWithUpdatedAt(currentElement);
     return this.replaceElementWithDelta('elementStyle', gesture.originalElement, finalElement, 'elementStyle');
+  }
+
+  beginElementOutlineEdit(elementId: string): boolean {
+    return this.beginElementStyleEdit(elementId);
+  }
+
+  finishElementOutlineEdit(elementId: string): SelectionActionResult {
+    return this.finishElementStyleEdit(elementId);
   }
 
   updateElementOutlineById(
@@ -831,11 +925,11 @@ export class DrawingEditorViewModel {
     recordHistory: boolean = true
   ): SelectionActionResult {
     const element = this.getElementById(elementId);
-    if (element === null || element.type === 'text') {
+    if (element === null) {
       return { ...EMPTY_SELECTION_ACTION_RESULT };
     }
     if (recordHistory) {
-      this.elementOutlineEditGesture = null;
+      this.elementStyleEditGesture = null;
     }
 
     const nextOutline: ElementOutlineStyle = {
@@ -972,7 +1066,7 @@ export class DrawingEditorViewModel {
     this.cancelShapeDraft();
     this.clearEraseState();
     this.elementEditGesture = null;
-    this.elementOutlineEditGesture = null;
+    this.elementStyleEditGesture = null;
     this.imageElementEditDraft = null;
     this.selectionMoveGesture = null;
     this.strokeResizeGesture = null;
@@ -1006,7 +1100,7 @@ export class DrawingEditorViewModel {
     this.selectedElementIds = this.getElementIdsInsideLasso(lassoPath);
     this.selectedElementId = this.selectedElementIds.length > 0 ? this.selectedElementIds[0] : '';
     this.elementEditGesture = null;
-    this.elementOutlineEditGesture = null;
+    this.elementStyleEditGesture = null;
     this.imageElementEditDraft = null;
     this.selectionVersion += 1;
     this.appendDebugEvent(
@@ -1040,7 +1134,7 @@ export class DrawingEditorViewModel {
     this.clearEraseState();
     this.lassoDraftPath = [];
     this.elementEditGesture = null;
-    this.elementOutlineEditGesture = null;
+    this.elementStyleEditGesture = null;
     this.imageElementEditDraft = null;
     this.selectionMoveGesture = {
       startPoint: this.clonePoint(point),
@@ -1174,7 +1268,7 @@ export class DrawingEditorViewModel {
     this.selectedElementIds = [];
     this.lassoDraftPath = [];
     this.elementEditGesture = null;
-    this.elementOutlineEditGesture = null;
+    this.elementStyleEditGesture = null;
     this.imageElementEditDraft = null;
     if (hadElementSelection) {
       this.selectionVersion += 1;
@@ -1201,7 +1295,7 @@ export class DrawingEditorViewModel {
     this.clearEraseState();
     this.lassoDraftPath = [];
     this.elementEditGesture = null;
-    this.elementOutlineEditGesture = null;
+    this.elementStyleEditGesture = null;
     this.imageElementEditDraft = null;
     this.selectionMoveGesture = null;
     this.strokeResizeGesture = {
@@ -1442,7 +1536,7 @@ export class DrawingEditorViewModel {
     this.selectedElementId = originalElement.id;
     this.appendDebugEvent('cancelElementEdit', `element=${originalElement.id}`);
     this.elementEditGesture = null;
-    this.elementOutlineEditGesture = null;
+    this.elementStyleEditGesture = null;
     this.imageElementEditDraft = null;
   }
 
@@ -1477,7 +1571,8 @@ export class DrawingEditorViewModel {
       content: 'Text',
       color: this.toolSetting.color,
       fontSize,
-      backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR
+      backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR,
+      outline: { ...DEFAULT_TEXT_OUTLINE }
     };
 
     const insertionIndex = this.elements.length;
@@ -1718,6 +1813,7 @@ export class DrawingEditorViewModel {
         color: element.color,
         fontSize: element.fontSize,
         backgroundColor: element.backgroundColor,
+        outline: this.cloneElementOutline(element.outline ?? DEFAULT_TEXT_OUTLINE),
         updatedAt: timestamp
       };
       updatedTextElement = this.cloneTextElement(nextElement);
@@ -1782,6 +1878,7 @@ export class DrawingEditorViewModel {
       color: '#111827',
       fontSize,
       backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR,
+      outline: { ...DEFAULT_TEXT_OUTLINE },
       recognition: options.recognition
     };
 
@@ -2006,7 +2103,7 @@ export class DrawingEditorViewModel {
 
   private clearSelectionState(): void {
     this.elementEditGesture = null;
-    this.elementOutlineEditGesture = null;
+    this.elementStyleEditGesture = null;
     this.imageElementEditDraft = null;
     this.selectionMoveGesture = null;
     this.selectedElementId = '';
@@ -2271,14 +2368,7 @@ export class DrawingEditorViewModel {
     }
 
     if (element.type === 'text') {
-      const verticalCenter = element.y + element.height / 2;
-      if (this.isPointNearGeometryPoint(point, { x: element.x, y: verticalCenter }, hitTolerance)) {
-        return 'resizeTextLeft';
-      }
-
-      if (this.isPointNearGeometryPoint(point, { x: element.x + element.width, y: verticalCenter }, hitTolerance)) {
-        return 'resizeTextRight';
-      }
+      return this.hitTestTextElementEditHandle(point, element, hitTolerance);
     }
 
     const handles: Array<{ kind: ElementEditGestureKind; point: ShapeGeometryPoint }> = [
@@ -2299,26 +2389,24 @@ export class DrawingEditorViewModel {
         point: { x: element.x + element.width, y: element.y + element.height }
       }
     ];
-    if (element.type !== 'text') {
-      handles.push(
-        {
-          kind: 'resizeTop',
-          point: { x: element.x + element.width / 2, y: element.y }
-        },
-        {
-          kind: 'resizeRight',
-          point: { x: element.x + element.width, y: element.y + element.height / 2 }
-        },
-        {
-          kind: 'resizeBottom',
-          point: { x: element.x + element.width / 2, y: element.y + element.height }
-        },
-        {
-          kind: 'resizeLeft',
-          point: { x: element.x, y: element.y + element.height / 2 }
-        }
-      );
-    }
+    handles.push(
+      {
+        kind: 'resizeTop',
+        point: { x: element.x + element.width / 2, y: element.y }
+      },
+      {
+        kind: 'resizeRight',
+        point: { x: element.x + element.width, y: element.y + element.height / 2 }
+      },
+      {
+        kind: 'resizeBottom',
+        point: { x: element.x + element.width / 2, y: element.y + element.height }
+      },
+      {
+        kind: 'resizeLeft',
+        point: { x: element.x, y: element.y + element.height / 2 }
+      }
+    );
 
     for (const handle of handles) {
       if (this.isPointNearGeometryPoint(point, handle.point, hitTolerance)) {
@@ -2329,10 +2417,60 @@ export class DrawingEditorViewModel {
     return null;
   }
 
+  private hitTestTextElementEditHandle(
+    point: StrokePoint,
+    element: TextCanvasElement,
+    hitTolerance: number
+  ): ElementEditGestureKind | null {
+    const verticalCenter = element.y + element.height / 2;
+    const handles: Array<{ kind: ElementEditGestureKind; point: ShapeGeometryPoint }> = [
+      {
+        kind: 'resizeTopLeft',
+        point: { x: element.x, y: element.y }
+      },
+      {
+        kind: 'resizeTopRight',
+        point: { x: element.x + element.width, y: element.y }
+      },
+      {
+        kind: 'resizeBottomLeft',
+        point: { x: element.x, y: element.y + element.height }
+      },
+      {
+        kind: 'resizeBottomRight',
+        point: { x: element.x + element.width, y: element.y + element.height }
+      },
+      {
+        kind: 'resizeTextLeft',
+        point: { x: element.x, y: verticalCenter }
+      },
+      {
+        kind: 'resizeTextRight',
+        point: { x: element.x + element.width, y: verticalCenter }
+      }
+    ];
+    const tolerance = Math.max(1, hitTolerance);
+    let bestKind: ElementEditGestureKind | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const handle of handles) {
+      const distance = this.getPointToGeometryPointDistance(point, handle.point);
+      if (distance <= tolerance && distance < bestDistance) {
+        bestKind = handle.kind;
+        bestDistance = distance;
+      }
+    }
+
+    return bestKind;
+  }
+
   private isPointNearGeometryPoint(point: StrokePoint, targetPoint: ShapeGeometryPoint, tolerance: number): boolean {
+    return this.getPointToGeometryPointDistance(point, targetPoint) <= Math.max(1, tolerance);
+  }
+
+  private getPointToGeometryPointDistance(point: StrokePoint, targetPoint: ShapeGeometryPoint): number {
     const deltaX = point.x - targetPoint.x;
     const deltaY = point.y - targetPoint.y;
-    return Math.sqrt(deltaX * deltaX + deltaY * deltaY) <= Math.max(1, tolerance);
+    return Math.sqrt(deltaX * deltaX + deltaY * deltaY);
   }
 
   private buildElementFromEditGesture(
@@ -2639,11 +2777,23 @@ export class DrawingEditorViewModel {
     bounds: ElementBounds
   ): TextCanvasElement {
     const nextFontSize = this.calculateFontSizeForTextTarget(originalElement, targetFrame);
+    const fontScale = nextFontSize / Math.max(1, originalElement.fontSize);
+    const targetWidth = this.clampNumber(
+      originalElement.width * fontScale,
+      MIN_TEXT_ELEMENT_WIDTH,
+      Math.max(MIN_TEXT_ELEMENT_WIDTH, bounds.width)
+    );
+    const fittedHeight = this.calculatePredictedTextHeight(originalElement.content, targetWidth, nextFontSize);
     const anchoredFrame = this.buildAnchoredTextFrame(
       originalElement,
       kind,
       this.clampFrameWithMinimumSize(
-        targetFrame,
+        {
+          x: targetFrame.x,
+          y: targetFrame.y,
+          width: targetWidth,
+          height: fittedHeight
+        },
         bounds,
         MIN_TEXT_ELEMENT_WIDTH,
         this.calculateTextMinimumHeight(nextFontSize)
@@ -2892,10 +3042,18 @@ export class DrawingEditorViewModel {
   }
 
   private cloneElementWithOutline(
-    element: ShapeCanvasElement | ImageCanvasElement,
+    element: TextCanvasElement | ShapeCanvasElement | ImageCanvasElement,
     outline: ElementOutlineStyle,
     updatedAt: number
   ): CanvasElement {
+    if (element.type === 'text') {
+      return {
+        ...this.cloneTextElement(element),
+        outline: this.cloneElementOutline(outline),
+        updatedAt
+      };
+    }
+
     if (element.type === 'shape') {
       return {
         ...this.cloneShapeElement(element),
@@ -3047,7 +3205,7 @@ export class DrawingEditorViewModel {
 
   private restoreSelectionSnapshot(snapshot: EditorSelectionSnapshot | null): void {
     this.elementEditGesture = null;
-    this.elementOutlineEditGesture = null;
+    this.elementStyleEditGesture = null;
     this.imageElementEditDraft = null;
     this.selectionMoveGesture = null;
     if (snapshot === null) {
@@ -3161,7 +3319,7 @@ export class DrawingEditorViewModel {
     this.selectedElementId = '';
     this.selectedElementIds = [];
     this.elementEditGesture = null;
-    this.elementOutlineEditGesture = null;
+    this.elementStyleEditGesture = null;
     this.imageElementEditDraft = null;
     this.selectionMoveGesture = null;
     this.lassoDraftPath = [];
@@ -4618,6 +4776,7 @@ export class DrawingEditorViewModel {
       color: element.color,
       fontSize: element.fontSize,
       backgroundColor: element.backgroundColor,
+      outline: this.cloneElementOutline(element.outline ?? DEFAULT_TEXT_OUTLINE),
       recognition: element.recognition ? {
         source: element.recognition.source,
         sid: element.recognition.sid,

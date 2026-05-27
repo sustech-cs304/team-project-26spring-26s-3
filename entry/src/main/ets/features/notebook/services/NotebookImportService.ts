@@ -534,7 +534,12 @@ export class NotebookImportService {
           content: `Imported file: ${profile.fileName}`,
           color: '#111827',
           fontSize: 18,
-          backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR
+          backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR,
+          outline: {
+            lineStyle: 'none',
+            color: '#111827',
+            width: 2
+          }
         }
       ],
       strokeLayerZIndex: DEFAULT_STROKE_LAYER_Z_INDEX
@@ -781,7 +786,12 @@ export class NotebookImportService {
       content: content,
       color: '#111827',
       fontSize: 18,
-      backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR
+      backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR,
+      outline: {
+        lineStyle: 'none',
+        color: '#111827',
+        width: 2
+      }
     };
   }
 
@@ -804,7 +814,12 @@ export class NotebookImportService {
         content: textSpec.content,
         color: '#111827',
         fontSize: textSpec.fontSize,
-        backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR
+        backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR,
+        outline: {
+          lineStyle: 'none',
+          color: '#111827',
+          width: 2
+        }
       });
       zIndex += 1;
     }

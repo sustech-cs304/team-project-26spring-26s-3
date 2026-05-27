@@ -11,6 +11,11 @@ import {
 import { SelectionTarget } from '../selection/SelectionTypes';
 
 const DEFAULT_HISTORY_LIMIT = 50;
+const DEFAULT_TEXT_OUTLINE: ElementOutlineStyle = {
+  lineStyle: 'none',
+  color: '#111827',
+  width: 2
+};
 export type EditorDeltaLabel =
   'erase' |
   'delete' |
@@ -514,6 +519,11 @@ export class UndoRedoController {
       color: element.color,
       fontSize: element.fontSize,
       backgroundColor: element.backgroundColor,
+      outline: {
+        lineStyle: element.outline?.lineStyle ?? DEFAULT_TEXT_OUTLINE.lineStyle,
+        color: element.outline?.color ?? DEFAULT_TEXT_OUTLINE.color,
+        width: element.outline?.width ?? DEFAULT_TEXT_OUTLINE.width
+      },
       recognition: element.recognition ? {
         source: element.recognition.source,
         sid: element.recognition.sid,

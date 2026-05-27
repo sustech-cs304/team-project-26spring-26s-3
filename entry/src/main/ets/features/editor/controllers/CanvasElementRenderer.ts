@@ -47,6 +47,7 @@ export class CanvasElementRenderer {
 
     context.save();
     CanvasElementRenderer.drawTextBackground(context, element);
+    CanvasElementRenderer.drawTextOutline(context, element);
     const textColor = CanvasElementRenderer.resolveCanvasColor(element.color, '#111827');
     context.fillStyle = textColor.fillStyle;
     context.globalAlpha = textColor.alpha;
@@ -70,6 +71,32 @@ export class CanvasElementRenderer {
     context.fillStyle = backgroundColor.fillStyle;
     context.globalAlpha = backgroundColor.alpha;
     context.fillRect(element.x, element.y, element.width, element.height);
+  }
+
+  private static drawTextOutline(context: CanvasDrawContext, element: TextCanvasElement): void {
+    const lineWidth = CanvasElementRenderer.getVisibleOutlineWidth(element.outline);
+    if (lineWidth <= 0) {
+      return;
+    }
+
+    context.save();
+    try {
+      context.globalAlpha = 1;
+      context.strokeStyle = element.outline.color;
+      context.lineWidth = lineWidth;
+      CanvasElementRenderer.applyLineDash(context, element.outline, lineWidth);
+      context.strokeRect(
+        element.x + lineWidth / 2,
+        element.y + lineWidth / 2,
+        Math.max(0, element.width - lineWidth),
+        Math.max(0, element.height - lineWidth)
+      );
+    } finally {
+      try {
+        context.restore();
+      } catch (_restoreError) {
+      }
+    }
   }
 
   private static drawShapeElement(context: CanvasDrawContext, element: ShapeCanvasElement): void {

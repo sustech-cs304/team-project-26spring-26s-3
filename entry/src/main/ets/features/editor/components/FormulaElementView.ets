@@ -1,6 +1,7 @@
 import webview from '@ohos.web.webview';
 
 import { TextCanvasElement } from '../../../domain/entities/CanvasElement';
+import { TextElementOutlineView } from './TextElementOutlineView';
 
 const DEFAULT_FORMULA_ELEMENT: TextCanvasElement = {
   id: '',
@@ -17,7 +18,12 @@ const DEFAULT_FORMULA_ELEMENT: TextCanvasElement = {
   content: '',
   color: '#111827',
   fontSize: 18,
-  backgroundColor: '#00FFFFFF'
+  backgroundColor: '#00FFFFFF',
+  outline: {
+    lineStyle: 'none',
+    color: '#111827',
+    width: 2
+  }
 };
 
 interface FormulaRenderPayload {
@@ -96,6 +102,8 @@ export struct FormulaElementView {
           .zIndex(this.element.zIndex)
           .hitTestBehavior(HitTestMode.None)
       }
+
+      TextElementOutlineView({ element: this.element })
     }
   }
 

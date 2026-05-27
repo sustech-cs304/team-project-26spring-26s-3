@@ -11,8 +11,8 @@ import { ElementSelectionOverlay } from './ElementSelectionOverlay';
 import { FormulaElementView } from './FormulaElementView';
 import { ShapeElementView } from './ShapeElementView';
 import { StableImageElementView } from './StableImageElementView';
+import { TextElementView } from './TextElementView';
 
-const TEXT_LINE_HEIGHT_FACTOR = 1.35;
 const ELEMENT_LAYER_Z_INDEX_MIN = -1000000000;
 const ELEMENT_LAYER_Z_INDEX_MAX = 1000000000;
 
@@ -98,45 +98,13 @@ export struct ElementLayer {
 
   @Builder
   private buildTextElement(element: TextCanvasElement): void {
-    TextArea({
-      text: this.getDisplayText(element)
-    })
-      .width(element.width)
-      .height(element.height)
-      .position({
-        x: element.x,
-        y: element.y
-      })
-      .padding({
-        left: 8,
-        right: 8,
-        top: 6,
-        bottom: 6
-      })
-      .fontSize(Math.max(8, element.fontSize))
-      .lineHeight(this.getTextLineHeight(element))
-      .fontFamily('monospace')
-      .fontColor(element.color)
-      .wordBreak(WordBreak.BREAK_ALL)
-      .maxLines(1000)
-      .barState(BarState.Off)
-      .backgroundColor(element.backgroundColor)
-      .zIndex(element.zIndex)
-      .hitTestBehavior(HitTestMode.None)
-  }
-
-  private getDisplayText(element: TextCanvasElement): string {
-    return element.content.length === 0 ? 'Text' : element.content;
+    TextElementView({ element })
   }
 
   private shouldRenderFormula(element: TextCanvasElement): boolean {
     return element.recognition?.source === 'formula' &&
       typeof element.recognition.latex === 'string' &&
       element.recognition.latex.trim().length > 0;
-  }
-
-  private getTextLineHeight(element: TextCanvasElement): number {
-    return Math.max(8, element.fontSize) * TEXT_LINE_HEIGHT_FACTOR;
   }
 
   private getSelectionRenderKey(element: CanvasElement): string {
@@ -153,7 +121,8 @@ export struct ElementLayer {
       return this.getImageElementRenderKey(element as ImageCanvasElement);
     }
 
-    return `${element.id}_${element.updatedAt}_${geometryKey}`;
+    const textElement = element as TextCanvasElement;
+    return `${element.id}_${element.updatedAt}_${geometryKey}_${textElement.color}_${textElement.fontSize}_${textElement.backgroundColor}_${textElement.outline.lineStyle}_${textElement.outline.color}_${textElement.outline.width}`;
   }
 
   private getImageElementRenderKey(element: ImageCanvasElement): string {

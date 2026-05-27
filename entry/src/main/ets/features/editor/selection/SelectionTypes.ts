@@ -11,6 +11,9 @@ export type SelectionAction =
   'ocr' |
   'formula' |
   'fill' |
+  'textColor' |
+  'background' |
+  'fontSize' |
   'outline' |
   'layer' |
   LayerOrderAction;

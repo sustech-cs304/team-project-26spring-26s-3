@@ -36,6 +36,11 @@ const DEFAULT_SHAPE_OUTLINE: ElementOutlineStyle = {
   color: '#111827',
   width: 2
 };
+const DEFAULT_TEXT_OUTLINE: ElementOutlineStyle = {
+  lineStyle: 'none',
+  color: '#111827',
+  width: 2
+};
 const DEFAULT_IMAGE_OUTLINE: ElementOutlineStyle = {
   lineStyle: 'none',
   color: '#111827',
@@ -411,6 +416,7 @@ export class EditorRepositoryImpl implements EditorRepository {
     const fontSize = Math.max(8, this.parseFiniteNumber(candidate.fontSize, 18));
     const backgroundColor = typeof candidate.backgroundColor === 'string' && candidate.backgroundColor.length > 0 ?
       candidate.backgroundColor : TRANSPARENT_ELEMENT_BACKGROUND_COLOR;
+    const outline = this.parseElementOutline(candidate.outline, DEFAULT_TEXT_OUTLINE);
     const recognition = this.parseTextRecognitionMetadata(candidate.recognition);
 
     return {
@@ -429,6 +435,7 @@ export class EditorRepositoryImpl implements EditorRepository {
       color,
       fontSize,
       backgroundColor,
+      outline,
       recognition
     };
   }

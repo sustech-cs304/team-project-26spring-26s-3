@@ -1,6 +1,6 @@
 import { Stroke } from './Stroke';
 
-export const PAGE_CANVAS_CONTENT_VERSION = 3;
+export const PAGE_CANVAS_CONTENT_VERSION = 4;
 export const DEFAULT_STROKE_LAYER_Z_INDEX = 0;
 export const TRANSPARENT_ELEMENT_BACKGROUND_COLOR = '#00FFFFFF';
 export const CANVAS_ELEMENT_TYPES = ['text', 'shape', 'image'] as const;
@@ -42,6 +42,7 @@ export interface TextCanvasElement extends CanvasElementBase {
   color: string;
   fontSize: number;
   backgroundColor: string;
+  outline: ElementOutlineStyle;
   recognition?: TextRecognitionMetadata;
 }
 
