@@ -152,7 +152,7 @@ const PARTIAL_REDRAW_OVERDRAW_VIEWPORT_PX = 2;
 const RECENT_COMMITTED_STROKE_LIMIT = 6;
 const RECENT_COMMITTED_IDLE_FLUSH_DELAY_MS = 420;
 type StrokeResizeUiMode = 'none' | 'ready' | 'resizing' | 'moving';
-type ElementStylePanelMode = 'none' | 'fill' | 'background' | 'fontSize' | 'outline' | 'layer';
+type ElementStylePanelMode = 'none' | 'fill' | 'textColor' | 'background' | 'fontSize' | 'outline' | 'layer';
 const DEFAULT_VIEWPORT_WIDTH = 1600;
 const DEFAULT_VIEWPORT_HEIGHT = 900;
 const TEXT_EDIT_DOUBLE_TAP_MS = 360;
@@ -191,6 +191,7 @@ const ELEMENT_STYLE_PANEL_COLOR_OPTIONS: string[] = [
   '#3B82F6',
   '#8B5CF6'
 ];
+const TEXT_COLOR_OPTIONS: string[] = ['#111827', '#FFFFFF', '#EF4444', '#F59E0B', '#22C55E', '#3B82F6', '#8B5CF6'];
 const ELEMENT_OUTLINE_COLOR_OPTIONS: string[] = ['#111827', '#FFFFFF', '#EF4444', '#F59E0B', '#22C55E', '#3B82F6', '#8B5CF6'];
 const ELEMENT_OUTLINE_WIDTH_OPTIONS: number[] = [1, 2, 4, 6, 8];
 const ELEMENT_OUTLINE_WIDTH_MIN = 1;
@@ -368,6 +369,7 @@ export struct CanvasBoard {
   @State private selectionContextMenuElementId: string = '';
   @State private elementStylePanelMode: ElementStylePanelMode = 'none';
   @State private selectionContextFillColor: string = '#00FFFFFF';
+  @State private selectionContextTextColor: string = '#111827';
   @State private selectionContextOutlineLineStyle: ElementOutlineLineStyle = 'solid';
   @State private selectionContextOutlineColor: string = '#111827';
   @State private selectionContextOutlineWidth: number = 2;
@@ -913,6 +915,8 @@ export struct CanvasBoard {
     Column() {
       if (this.elementStylePanelMode === 'fill') {
         this.buildFillStylePanel()
+      } else if (this.elementStylePanelMode === 'textColor') {
+        this.buildTextColorStylePanel()
       } else if (this.elementStylePanelMode === 'background') {
         this.buildBackgroundStylePanel()
       } else if (this.elementStylePanelMode === 'fontSize') {
@@ -978,6 +982,7 @@ export struct CanvasBoard {
           this.buildSelectionMenuButton('填充', 'fill')
         }
         if (this.isSelectionContextElementText()) {
+          this.buildSelectionMenuButton('颜色', 'textColor')
           this.buildSelectionMenuButton('背景', 'background')
           this.buildSelectionMenuButton(`字号：${this.getSelectionContextFontSize()}`, 'fontSize')
         }
@@ -1036,6 +1041,25 @@ export struct CanvasBoard {
       Flex({ wrap: FlexWrap.Wrap }) {
         ForEach(ELEMENT_STYLE_PANEL_COLOR_OPTIONS, (color: string) => {
           this.buildFillColorSwatch(color)
+        }, (color: string): string => color)
+      }
+        .width('100%')
+    }
+      .width('100%')
+      .padding(4)
+  }
+
+  @Builder
+  private buildTextColorStylePanel(): void {
+    Column({ space: 8 }) {
+      Text('颜色')
+        .fontSize(12)
+        .fontColor('#475569')
+        .width('100%')
+
+      Flex({ wrap: FlexWrap.Wrap }) {
+        ForEach(TEXT_COLOR_OPTIONS, (color: string) => {
+          this.buildTextColorSwatch(color)
         }, (color: string): string => color)
       }
         .width('100%')
@@ -1246,6 +1270,23 @@ export struct CanvasBoard {
       })
       .onClick(() => {
         this.updateSelectionContextElementFill(color);
+      })
+  }
+
+  @Builder
+  private buildTextColorSwatch(color: string): void {
+    Stack() {}
+      .width(24)
+      .height(24)
+      .margin({ right: 6, bottom: 6 })
+      .backgroundColor(color)
+      .borderRadius(12)
+      .border({
+        width: this.getSelectionContextTextColor() === color ? 3 : 1,
+        color: this.getSelectionContextTextColor() === color ? '#111827' : '#CBD5E1'
+      })
+      .onClick(() => {
+        this.updateSelectionContextElementTextColor(color);
       })
   }
 
@@ -2807,6 +2848,7 @@ export struct CanvasBoard {
     this.elementStylePanelMode = 'none';
     this.selectionContextMenuElementId = '';
     this.selectionContextFillColor = '#00FFFFFF';
+    this.selectionContextTextColor = '#111827';
     this.selectionContextOutlineLineStyle = 'solid';
     this.selectionContextOutlineColor = '#111827';
     this.selectionContextOutlineWidth = 2;
@@ -2816,7 +2858,11 @@ export struct CanvasBoard {
   }
 
   private getSelectionContextMenuHeight(): number {
-    if (this.elementStylePanelMode === 'fill' || this.elementStylePanelMode === 'background') {
+    if (
+      this.elementStylePanelMode === 'fill' ||
+        this.elementStylePanelMode === 'textColor' ||
+        this.elementStylePanelMode === 'background'
+    ) {
       return 96;
     }
 
@@ -2841,7 +2887,7 @@ export struct CanvasBoard {
       itemCount += 1;
     }
     if (this.isSelectionContextElementText()) {
-      itemCount += 2;
+      itemCount += 3;
     }
     if (this.isSelectionContextElementOutlineEditable()) {
       itemCount += 1;
@@ -2913,6 +2959,14 @@ export struct CanvasBoard {
     if (action === 'background') {
       if (this.isSelectionContextElementText()) {
         this.elementStylePanelMode = 'background';
+        this.clampSelectionContextMenuToCanvas();
+      }
+      return;
+    }
+
+    if (action === 'textColor') {
+      if (this.isSelectionContextElementText()) {
+        this.elementStylePanelMode = 'textColor';
         this.clampSelectionContextMenuToCanvas();
       }
       return;
@@ -3315,6 +3369,21 @@ export struct CanvasBoard {
     }
   }
 
+  private updateSelectionContextElementTextColor(color: string): void {
+    const viewModel = this.getViewModel();
+    if (viewModel === null || this.selectionContextMenuElementId.length === 0) {
+      return;
+    }
+
+    this.selectionContextTextColor = color;
+    const result = viewModel.updateTextColorById(this.selectionContextMenuElementId, color);
+    this.syncEditorSnapshot();
+    this.redrawOverlayLayer();
+    if (result.changed) {
+      this.onContentChanged(true, 'element');
+    }
+  }
+
   private updateSelectionContextFontSizeFromSlider(fontSize: number, mode: SliderChangeMode): void {
     if (mode === SliderChangeMode.Begin) {
       this.beginSelectionContextFontSizeDrag();
@@ -3525,6 +3594,10 @@ export struct CanvasBoard {
     return this.selectionContextFillColor;
   }
 
+  private getSelectionContextTextColor(): string {
+    return this.selectionContextTextColor;
+  }
+
   private getSelectionContextOutlineColor(): string {
     return this.selectionContextOutlineColor;
   }
@@ -3549,6 +3622,7 @@ export struct CanvasBoard {
     this.selectionContextFillColor = element.type === 'shape' ? element.fillColor :
       element.type === 'text' ? element.backgroundColor : '#00FFFFFF';
     if (element.type === 'text') {
+      this.selectionContextTextColor = element.color;
       this.selectionContextFontSize =
         Math.max(TEXT_FONT_SIZE_MIN, Math.min(TEXT_FONT_SIZE_MAX, Math.round(element.fontSize)));
       this.selectionContextOutlineLineStyle = element.outline?.lineStyle ?? DEFAULT_TEXT_OUTLINE.lineStyle;
@@ -3558,6 +3632,7 @@ export struct CanvasBoard {
     }
 
     this.selectionContextFontSize = 18;
+    this.selectionContextTextColor = '#111827';
     this.selectionContextOutlineLineStyle = element.outline.lineStyle;
     this.selectionContextOutlineColor = element.outline.color;
     this.selectionContextOutlineWidth = element.outline.width;

@@ -813,6 +813,20 @@ export class DrawingEditorViewModel {
     return this.replaceElementWithDelta('elementStyle', element, nextElement, 'elementStyle');
   }
 
+  updateTextColorById(elementId: string, color: string): SelectionActionResult {
+    const element = this.getElementById(elementId);
+    if (element === null || element.type !== 'text' || element.color === color) {
+      return { ...EMPTY_SELECTION_ACTION_RESULT };
+    }
+
+    const nextElement: TextCanvasElement = {
+      ...this.cloneTextElement(element),
+      color,
+      updatedAt: now()
+    };
+    return this.replaceElementWithDelta('elementStyle', element, nextElement, 'elementStyle');
+  }
+
   updateTextFontSizeById(
     elementId: string,
     fontSize: number,
