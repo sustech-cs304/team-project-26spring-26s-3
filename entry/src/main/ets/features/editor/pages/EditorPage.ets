@@ -55,6 +55,19 @@ interface PaperSizeTemplateOption {
   height: number;
 }
 
+class WorkspaceMenuAnchor {
+  key: string = '';
+  left: number = 0;
+  top: number = 0;
+  width: number = 0;
+  height: number = 0;
+}
+
+class MenuPosition {
+  x: Length = 0;
+  y: Length = 0;
+}
+
 interface NotebookExportPageRangeResult {
   pageIds: string[];
   message: string;
@@ -67,9 +80,20 @@ const SIDEBAR_COLLAPSED_WIDTH = 56;
 const PAGE_THUMBNAIL_WIDTH = SIDEBAR_EXPANDED_WIDTH - SIDEBAR_EXPANDED_PADDING * 2;
 const WORKSPACE_MENU_BUTTON_FONT_SIZE = 26;
 const PAGE_TEMPLATE_DROPDOWN_LEFT = 384;
-const DOCUMENT_PAGE_GAP = 10;
-const DOCUMENT_PAGE_HORIZONTAL_PADDING = 12;
-const DOCUMENT_PAGE_HEADER_HEIGHT = 28;
+const WORKSPACE_TOOL_BUTTON_SIZE = 40;
+const WORKSPACE_TOOL_DROPDOWN_TOP = 52;
+const WORKSPACE_TOOL_DROPDOWN_GAP = 4;
+const TOOL_DROPDOWN_WIDTH = 276;
+const SHAPE_DROPDOWN_WIDTH = 204;
+const PAGE_TEMPLATE_DROPDOWN_WIDTH = 444;
+const WORKSPACE_TOOLBAR_THEME_COLOR = '#FCFDFE';
+const WORKSPACE_TOOL_SELECTED_DARK_BACKGROUND = '#0F172A';
+const WORKSPACE_TOOL_LIGHT_BACKGROUND = '#FFFFFF';
+const WORKSPACE_TOOL_DARK_ICON = '#111827';
+const WORKSPACE_TOOL_LIGHT_ICON = '#FFFFFF';
+const TRANSPARENT_BACKGROUND = '#00FFFFFF';
+const DOCUMENT_PAGE_GAP = 0;
+const DOCUMENT_PAGE_HORIZONTAL_PADDING = 0;
 const DOCUMENT_PAGE_SURFACE_MAX_WIDTH = 980;
 const DOCUMENT_PAGE_SURFACE_MIN_WIDTH = 320;
 const DOCUMENT_PAGE_RENDER_WINDOW_PADDING_FACTOR = 1.25;
@@ -148,7 +172,6 @@ struct EditorPage {
   @State private isReorderingPages: boolean = false;
   @State private isUpdatingPageTemplate: boolean = false;
   @State private isImportingImage: boolean = false;
-  @State private pageActionMenuPageId: string = '';
   @State private isDeletePageDialogVisible: boolean = false;
   @State private isDeletingPage: boolean = false;
   @State private deleteTargetPageId: string = '';
@@ -169,6 +192,7 @@ struct EditorPage {
   @State private canvasInputMode: CanvasInputMode = 'stylus';
   @State private focusedPageId: string = '';
   private lastWritingTool: ToolType = 'pen';
+  private readonly toolSettingByTool: Map<ToolType, ToolSetting> = new Map<ToolType, ToolSetting>();
   @State private selectedShapeType: ShapeType = 'rectangle';
   @State private editorSnapshot: EditorDebugSnapshot = this.buildEmptySnapshot('');
   @State private canvasVersion: number = 0;
@@ -178,6 +202,7 @@ struct EditorPage {
   @State private isToolDropdownVisible: boolean = false;
   @State private isShapeDropdownVisible: boolean = false;
   @State private isPageTemplateDropdownVisible: boolean = false;
+  @State private workspaceMenuAnchors: WorkspaceMenuAnchor[] = [];
   private isDocumentTouchNavigationActive: boolean = false;
   @State private workspaceViewportWidth: number = 0;
   @State private workspaceViewportHeight: number = 0;
@@ -211,6 +236,10 @@ struct EditorPage {
   private documentGestureAnchorPageId: string = '';
   private documentGestureAnchorPageUnitX: number = 0.5;
   private documentGestureAnchorPageUnitY: number = 0.5;
+  private workspaceContainerWindowX: number = 0;
+  private workspaceContainerWindowY: number = 0;
+  private workspaceContainerWidth: number = 0;
+  private workspaceContainerHeight: number = 0;
   private lastDocumentGesturePreviewTime: number = 0;
   private isDocumentSingleFingerPanPending: boolean = false;
   private documentSingleFingerPanTouchId: number = -1;
@@ -371,10 +400,10 @@ struct EditorPage {
 
   @Builder
   private buildEditorShell(): void {
-    Column({ space: 16 }) {
+    Column({ space: 0 }) {
       this.buildTopBar()
 
-      Row({ space: 16 }) {
+      Row({ space: 0 }) {
         this.buildSidebar()
         this.buildWorkspace()
       }
@@ -384,26 +413,27 @@ struct EditorPage {
     }
     .width('100%')
     .height('100%')
-    .padding({
-      left: $r('app.float.page_padding_horizontal'),
-      right: $r('app.float.page_padding_horizontal'),
-      top: $r('app.float.page_padding_vertical'),
-      bottom: $r('app.float.page_padding_vertical')
-    })
   }
 
   @Builder
   private buildTopBar(): void {
     Stack({ alignContent: Alignment.Center }) {
       Row() {
-        Button('返回')
+        Button() {
+          Image($rawfile('icons/editor_arrow_left_black.svg'))
+            .width(19)
+            .height(19)
+            .objectFit(ImageFit.Contain)
+        }
+          .width(34)
           .height(34)
-          .padding({
-            left: 12,
-            right: 12
-          })
+          .padding(0)
           .backgroundColor($r('app.color.surface_background'))
-          .fontColor($r('app.color.primary_text'))
+          .borderRadius(12)
+          .border({
+            width: 1,
+            color: $r('app.color.editor_toolbar_border')
+          })
           .onClick(() => {
             void this.returnToPreviousPage();
           })
@@ -449,7 +479,7 @@ struct EditorPage {
       bottom: 10
     })
     .backgroundColor($r('app.color.editor_toolbar_background'))
-    .borderRadius(28)
+    .borderRadius(0)
     .border({
       width: 1,
       color: $r('app.color.editor_toolbar_border')
@@ -491,12 +521,7 @@ struct EditorPage {
 
         if (!this.isPagePreviewCollapsed) {
           Button() {
-            Text('+')
-              .fontColor('#000000')
-              .fontSize(22)
-              .fontWeight(FontWeight.Bold)
-              .textAlign(TextAlign.Center)
-              .width('100%')
+            this.buildNewPageGlyph()
           }
           .width(32)
           .height(32)
@@ -512,12 +537,7 @@ struct EditorPage {
         }
 
         Button() {
-          Text(this.isPagePreviewCollapsed ? '>' : '<')
-            .fontColor('#000000')
-            .fontSize(22)
-            .fontWeight(FontWeight.Bold)
-            .textAlign(TextAlign.Center)
-            .width('100%')
+          this.buildSidebarCollapseGlyph()
         }
         .width(32)
         .height(32)
@@ -579,7 +599,7 @@ struct EditorPage {
     .height('100%')
     .padding(this.isPagePreviewCollapsed ? 10 : SIDEBAR_EXPANDED_PADDING)
     .backgroundColor($r('app.color.editor_sidebar_background'))
-    .borderRadius(28)
+    .borderRadius(0)
     .border({
       width: 1,
       color: $r('app.color.editor_sidebar_border')
@@ -588,6 +608,37 @@ struct EditorPage {
       this.closeToolDropdown();
       this.closeShapeDropdown();
     })
+  }
+
+  @Builder
+  private buildNewPageGlyph(): void {
+    Image($rawfile('icons/editor_file_plus_black.svg'))
+      .width(21)
+      .height(21)
+      .objectFit(ImageFit.Contain)
+  }
+
+  @Builder
+  private buildSidebarCollapseGlyph(): void {
+    if (this.isPagePreviewCollapsed) {
+      Image($rawfile('icons/editor_panel_left_open_black.svg'))
+        .width(21)
+        .height(21)
+        .objectFit(ImageFit.Contain)
+    } else {
+      Image($rawfile('icons/editor_panel_left_close_black.svg'))
+        .width(21)
+        .height(21)
+        .objectFit(ImageFit.Contain)
+    }
+  }
+
+  @Builder
+  private buildDeletePageGlyph(): void {
+    Image($rawfile('icons/editor_trash_red.svg'))
+      .width(17)
+      .height(17)
+      .objectFit(ImageFit.Contain)
   }
 
   @Builder
@@ -610,38 +661,53 @@ struct EditorPage {
           color: this.isPageVisuallySelected(page.id) ? $r('app.color.editor_accent') :
             $r('app.color.editor_paper_border')
         })
+        .onClick(() => {
+          this.closeTransientDropdowns();
+          void this.selectNotebookPage(page);
+        })
 
-        Text(this.getPageOrderText(page.id, pageIndex))
-          .fontSize(12)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.isPageVisuallySelected(page.id) ? '#FFFFFF' : $r('app.color.primary_text'))
-          .width(24)
-          .height(24)
-          .textAlign(TextAlign.Center)
-          .backgroundColor(this.isPageVisuallySelected(page.id) ? $r('app.color.editor_accent') : '#FFFFFF')
-          .borderRadius(6)
-          .margin({
-            right: 8,
-            bottom: 8
-          })
+        Row({ space: 5 }) {
+          if (this.isPageActionButtonVisible(page.id)) {
+            Button() {
+              this.buildDeletePageGlyph()
+            }
+            .width(24)
+            .height(24)
+            .padding(0)
+            .backgroundColor('#FFFFFF')
+            .borderRadius(6)
+            .border({
+              width: 1,
+              color: '#CBD5E1'
+            })
+            .onClick(() => {
+              this.closeToolDropdown();
+              this.closeShapeDropdown();
+              this.closePageTemplateDropdown();
+              this.openDeletePageDialog(page);
+            })
+          }
 
-        Text('⋮⋮')
-          .fontSize(14)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.secondary_text'))
-          .opacity(this.canDragReorderPages() ? 0.72 : 0.28)
-          .margin({
-            left: 10,
-            top: 8
-          })
-          .align(Alignment.TopStart)
+          Text(this.getPageOrderText(page.id, pageIndex))
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.isPageVisuallySelected(page.id) ? '#FFFFFF' : $r('app.color.primary_text'))
+            .width(24)
+            .height(24)
+            .textAlign(TextAlign.Center)
+            .backgroundColor(this.isPageVisuallySelected(page.id) ? $r('app.color.editor_accent') : '#FFFFFF')
+            .borderRadius(6)
+        }
+        .alignItems(VerticalAlign.Center)
+        .align(Alignment.BottomEnd)
+        .zIndex(20)
+        .margin({
+          right: 8,
+          bottom: 8
+        })
       }
       .width('100%')
       .layoutWeight(1)
-      .onClick(() => {
-        this.closeTransientDropdowns();
-        void this.selectNotebookPage(page);
-      })
     }
     .width('100%')
     .height(this.getPageThumbnailHeight(page.id))
@@ -658,168 +724,84 @@ struct EditorPage {
   @Builder
   private buildWorkspace(): void {
     Stack({ alignContent: Alignment.TopEnd }) {
-      Column({ space: 16 }) {
-        Row({ space: 12 }) {
+      Column({ space: 0 }) {
+        if (this.notebookPageList.length > 0) {
+          Row({ space: 8 }) {
+            Scroll() {
+              Row({ space: 8 }) {
+                ForEach(WORKSPACE_TOOL_OPTIONS, (tool: ToolType) => {
+                  Button() {
+                    this.buildWorkspaceToolIcon(tool, this.getWorkspaceToolIconTone(this.isWorkspaceToolActive(tool)))
+                  }
+                    .width(WORKSPACE_TOOL_BUTTON_SIZE)
+                    .height(WORKSPACE_TOOL_BUTTON_SIZE)
+                    .padding(0)
+                    .backgroundColor(this.getWorkspaceToolButtonBackgroundColor(this.isWorkspaceToolActive(tool)))
+                    .borderRadius(10)
+                    .border({
+                      width: this.shouldUseLightWorkspaceToolbarTheme() && this.isWorkspaceToolActive(tool) ? 1 : 0,
+                      color: this.shouldUseLightWorkspaceToolbarTheme() && this.isWorkspaceToolActive(tool) ?
+                        WORKSPACE_TOOL_SELECTED_DARK_BACKGROUND : TRANSPARENT_BACKGROUND
+                    })
+                    .enabled(!this.isCanvasLoading)
+                    .onAreaChange((_oldValue: Area, newValue: Area) => {
+                      this.updateWorkspaceMenuAnchor(this.getWorkspaceToolMenuKey(tool), newValue);
+                    })
+                    .onTouch((event?: TouchEvent) => {
+                      if (event !== undefined) {
+                        if (event.type === TouchType.Down) {
+                          this.updateWorkspaceMenuAnchor(this.getWorkspaceToolMenuKey(tool), event.target.area);
+                        }
+                        event.stopPropagation();
+                      }
+                    })
+                    .onClick(() => {
+                      this.handleWorkspaceToolButtonClick(tool);
+                    })
+                }, (tool: ToolType): string => this.getWorkspaceToolRenderKey(tool))
 
-          if (this.notebookPageList.length > 0) {
-            Row({ space: 8 }) {
-              ForEach(WORKSPACE_TOOL_OPTIONS, (tool: ToolType) => {
-                Button(this.getWorkspaceToolLabel(tool))
-                  .height(32)
-                  .padding({
-                    left: 10,
-                    right: 10
-                  })
-                  .fontSize(12)
-                  .backgroundColor(this.isWorkspaceToolActive(tool) ? '#0F172A' : '#FFFFFF')
-                  .fontColor(this.isWorkspaceToolActive(tool) ? '#FFFFFF' : '#475569')
+                Button() {
+                  this.buildWorkspaceImageInsertIcon(this.getWorkspaceToolIconTone(false))
+                }
+                  .width(WORKSPACE_TOOL_BUTTON_SIZE)
+                  .height(WORKSPACE_TOOL_BUTTON_SIZE)
+                  .padding(0)
+                  .backgroundColor(this.getWorkspaceToolButtonBackgroundColor(false))
                   .borderRadius(10)
                   .border({
-                    width: 1,
-                    color: this.isWorkspaceToolActive(tool) ? '#0F172A' : '#CBD5E1'
+                    width: 0,
+                    color: TRANSPARENT_BACKGROUND
                   })
-                  .enabled(!this.isCanvasLoading)
+                  .enabled(!this.isCanvasLoading && !this.isImportingImage)
                   .onClick(() => {
-                    this.handleWorkspaceToolButtonClick(tool);
+                    void this.handleImageInsertRequest();
                   })
-              }, (tool: ToolType): string => tool)
 
-              Button('Image')
-                .height(32)
-                .padding({
-                  left: 10,
-                  right: 10
-                })
-                .fontSize(12)
-                .backgroundColor('#FFFFFF')
-                .fontColor('#475569')
-                .borderRadius(10)
-                .border({
-                  width: 1,
-                  color: '#CBD5E1'
-                })
-                .enabled(!this.isCanvasLoading && !this.isImportingImage)
-                .onClick(() => {
-                  void this.handleImageInsertRequest();
-                })
+                this.buildPageTemplateToolbarButton()
 
-              this.buildPageTemplateToolbarButton()
-
-              this.buildInputModeToggleButton()
+                this.buildInputModeToggleButton()
+              }
+              .alignItems(VerticalAlign.Center)
             }
-            .alignItems(VerticalAlign.Center)
+            .layoutWeight(1)
+            .height(40)
+            .scrollable(ScrollDirection.Horizontal)
+            .scrollBar(BarState.Off)
 
-            Blank()
-              .layoutWeight(1)
-
-            Row({ space: 8 }) {
-              Button() {
-                if (this.editorSnapshot.undoDepth > 0 && !this.isCanvasLoading) {
-                  Image($r('app.media.undo_white'))
-                    .width(18)
-                    .height(18)
-                } else {
-                  Image($r('app.media.undo'))
-                    .width(18)
-                    .height(18)
-                    .opacity(0.45)
-                }
-              }
-                .width(40)
-                .height(40)
-                .enabled(this.editorSnapshot.undoDepth > 0 && !this.isCanvasLoading)
-                .backgroundColor(this.editorSnapshot.undoDepth > 0 && !this.isCanvasLoading ?
-                  $r('app.color.primary_text') : $r('app.color.app_background'))
-                .borderRadius(12)
-                .onClick(() => {
-                  this.closeTransientDropdowns();
-                  void this.handleUndo();
-                })
-
-              Button() {
-                if (this.editorSnapshot.redoDepth > 0 && !this.isCanvasLoading) {
-                  Image($r('app.media.redo_white'))
-                    .width(18)
-                    .height(18)
-                } else {
-                  Image($r('app.media.redo'))
-                    .width(18)
-                    .height(18)
-                    .opacity(0.45)
-                }
-              }
-                .width(40)
-                .height(40)
-                .enabled(this.editorSnapshot.redoDepth > 0 && !this.isCanvasLoading)
-                .backgroundColor(this.editorSnapshot.redoDepth > 0 && !this.isCanvasLoading ?
-                  $r('app.color.primary_text') : $r('app.color.app_background'))
-                .borderRadius(12)
-                .onClick(() => {
-                  this.closeTransientDropdowns();
-                  void this.handleRedo();
-                })
-
-              Button() {
-                if (this.editorSnapshot.strokeCount > 0 && !this.isCanvasLoading) {
-                  Image($r('app.media.clear_white'))
-                    .width(18)
-                    .height(18)
-                } else {
-                  Image($r('app.media.clear'))
-                    .width(18)
-                    .height(18)
-                    .opacity(0.45)
-                }
-              }
-                .width(40)
-                .height(40)
-                .enabled(this.editorSnapshot.strokeCount > 0 && !this.isCanvasLoading)
-                .backgroundColor(this.editorSnapshot.strokeCount > 0 && !this.isCanvasLoading ?
-                  $r('app.color.danger_text') : $r('app.color.danger_surface'))
-                .borderRadius(12)
-                .onClick(() => {
-                  this.closeTransientDropdowns();
-                  void this.handleClear();
-                })
-
-              Button() {
-                Image($r('app.media.page'))
-                  .width(18)
-                  .height(18)
-              }
-                .width(40)
-                .height(40)
-                .backgroundColor('#fff3f3f3')
-                .enabled(!this.isCreatingPage && !this.isDeletingPage && !this.isReorderingPages &&
-                  !this.isUpdatingPageTemplate)
-                .borderRadius(12)
-                .onClick(() => {
-                  this.closeToolDropdown();
-                  this.closeShapeDropdown();
-                  this.closePageTemplateDropdown();
-                  this.togglePageActionMenu(this.activePageId);
-                })
-
-              this.buildDocumentZoomToolbar()
-
-              Text(this.getActivePageIndexText())
-                .fontSize($r('app.float.caption_text_size'))
-                .fontColor($r('app.color.editor_accent'))
-                .padding({
-                  left: 12,
-                  right: 12,
-                  top: 6,
-                  bottom: 6
-                })
-                .backgroundColor($r('app.color.editor_accent_soft'))
-                .borderRadius(999)
-            }
-            .alignItems(VerticalAlign.Center)
+            this.buildFixedWorkspaceToolbar()
           }
+          .width('100%')
+          .height(48)
+          .alignItems(VerticalAlign.Center)
+          .padding({
+            left: 8,
+            right: 8,
+            top: 4,
+            bottom: 4
+          })
+          .backgroundColor($r('app.color.editor_toolbar_background'))
+          .zIndex(10)
         }
-        .width('100%')
-        .alignItems(VerticalAlign.Center)
-        .zIndex(10)
 
         this.buildWorkspaceSurface()
       }
@@ -829,10 +811,6 @@ struct EditorPage {
         this.closeToolDropdown();
         this.closeShapeDropdown();
       })
-
-      if (this.activePageId.length > 0 && this.isPageActionMenuVisible(this.activePageId)) {
-        this.buildPageActionMenu()
-      }
 
       if (this.isToolDropdownVisible) {
         this.buildToolDropdown()
@@ -848,13 +826,221 @@ struct EditorPage {
     }
     .layoutWeight(1)
     .height('100%')
-    .padding(18)
     .backgroundColor($r('app.color.editor_toolbar_background'))
-    .borderRadius(28)
+    .borderRadius(0)
     .border({
       width: 1,
       color: $r('app.color.editor_toolbar_border')
     })
+    .onAreaChange((_oldValue: Area, newValue: Area) => {
+      this.workspaceContainerWindowX = this.resolveAreaPosition(newValue.globalPosition.x);
+      this.workspaceContainerWindowY = this.resolveAreaPosition(newValue.globalPosition.y);
+      this.workspaceContainerWidth = this.resolveAreaWidth(newValue);
+      this.workspaceContainerHeight = this.resolveAreaHeight(newValue);
+    })
+  }
+
+  @Builder
+  private buildFixedWorkspaceToolbar(): void {
+    Row({ space: 8 }) {
+      Button() {
+        if (this.editorSnapshot.undoDepth > 0 && !this.isCanvasLoading) {
+          Image($rawfile('icons/editor_undo_white.svg'))
+            .width(20)
+            .height(20)
+            .objectFit(ImageFit.Contain)
+        } else {
+          Image($rawfile('icons/editor_undo_black.svg'))
+            .width(20)
+            .height(20)
+            .objectFit(ImageFit.Contain)
+            .opacity(0.45)
+        }
+      }
+      .width(40)
+      .height(40)
+      .enabled(this.editorSnapshot.undoDepth > 0 && !this.isCanvasLoading)
+      .backgroundColor(this.editorSnapshot.undoDepth > 0 && !this.isCanvasLoading ?
+        $r('app.color.primary_text') : $r('app.color.app_background'))
+      .borderRadius(12)
+      .onClick(() => {
+        this.closeTransientDropdowns();
+        void this.handleUndo();
+      })
+
+      Button() {
+        if (this.editorSnapshot.redoDepth > 0 && !this.isCanvasLoading) {
+          Image($rawfile('icons/editor_redo_white.svg'))
+            .width(20)
+            .height(20)
+            .objectFit(ImageFit.Contain)
+        } else {
+          Image($rawfile('icons/editor_redo_black.svg'))
+            .width(20)
+            .height(20)
+            .objectFit(ImageFit.Contain)
+            .opacity(0.45)
+        }
+      }
+      .width(40)
+      .height(40)
+      .enabled(this.editorSnapshot.redoDepth > 0 && !this.isCanvasLoading)
+      .backgroundColor(this.editorSnapshot.redoDepth > 0 && !this.isCanvasLoading ?
+        $r('app.color.primary_text') : $r('app.color.app_background'))
+      .borderRadius(12)
+      .onClick(() => {
+        this.closeTransientDropdowns();
+        void this.handleRedo();
+      })
+
+      Button() {
+        if (this.editorSnapshot.strokeCount > 0 && !this.isCanvasLoading) {
+          Image($rawfile('icons/editor_clear_white.svg'))
+            .width(20)
+            .height(20)
+            .objectFit(ImageFit.Contain)
+        } else {
+          Image($rawfile('icons/editor_clear_black.svg'))
+            .width(20)
+            .height(20)
+            .objectFit(ImageFit.Contain)
+            .opacity(0.45)
+        }
+      }
+      .width(40)
+      .height(40)
+      .enabled(this.editorSnapshot.strokeCount > 0 && !this.isCanvasLoading)
+      .backgroundColor(this.editorSnapshot.strokeCount > 0 && !this.isCanvasLoading ?
+        $r('app.color.danger_text') : $r('app.color.danger_surface'))
+      .borderRadius(12)
+      .onClick(() => {
+        this.closeTransientDropdowns();
+        void this.handleClear();
+      })
+
+      this.buildDocumentZoomToolbar()
+    }
+    .alignItems(VerticalAlign.Center)
+  }
+
+  @Builder
+  private buildWorkspaceToolIcon(tool: ToolType, tone: string): void {
+    if (tool === 'pen') {
+      this.buildWorkspacePenIcon(tone)
+    } else if (tool === 'pencil') {
+      this.buildWorkspacePencilIcon(tone)
+    } else if (tool === 'highlighter') {
+      this.buildWorkspaceHighlighterIcon(tone)
+    } else if (tool === 'eraser') {
+      this.buildWorkspaceEraserIcon(tone)
+    } else if (tool === 'lasso') {
+      this.buildWorkspaceLassoIcon(tone)
+    } else if (tool === 'text') {
+      this.buildWorkspaceTextIcon(tone)
+    } else if (tool === 'shape') {
+      this.buildWorkspaceShapeIcon(tone)
+    } else {
+      this.buildWorkspaceSelectIcon(tone)
+    }
+  }
+
+  @Builder
+  private buildWorkspacePenIcon(tone: string): void {
+    if (tone === 'white') {
+      Image($rawfile('icons/editor_pen_white.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else if (tone === 'theme') {
+      Image($rawfile('icons/editor_pen_theme.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else {
+      Image($rawfile('icons/editor_pen_black.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    }
+  }
+
+  @Builder
+  private buildWorkspacePencilIcon(tone: string): void {
+    if (tone === 'white') {
+      Image($rawfile('icons/editor_pencil_white.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else if (tone === 'theme') {
+      Image($rawfile('icons/editor_pencil_theme.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else {
+      Image($rawfile('icons/editor_pencil_black.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    }
+  }
+
+  @Builder
+  private buildWorkspaceHighlighterIcon(tone: string): void {
+    if (tone === 'white') {
+      Image($rawfile('icons/editor_highlighter_white.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else if (tone === 'theme') {
+      Image($rawfile('icons/editor_highlighter_theme.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else {
+      Image($rawfile('icons/editor_highlighter_black.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    }
+  }
+
+  @Builder
+  private buildWorkspaceEraserIcon(tone: string): void {
+    if (tone === 'white') {
+      Image($rawfile('icons/editor_eraser_white.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else if (tone === 'theme') {
+      Image($rawfile('icons/editor_eraser_theme.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else {
+      Image($rawfile('icons/editor_eraser_black.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    }
+  }
+
+  @Builder
+  private buildWorkspaceLassoIcon(tone: string): void {
+    if (tone === 'white') {
+      Image($rawfile('icons/editor_lasso_white.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else if (tone === 'theme') {
+      Image($rawfile('icons/editor_lasso_theme.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else {
+      Image($rawfile('icons/editor_lasso_black.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    }
+  }
+
+  @Builder
+  private buildWorkspaceTextIcon(tone: string): void {
+    if (tone === 'white') {
+      Image($rawfile('icons/editor_text_white.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else if (tone === 'theme') {
+      Image($rawfile('icons/editor_text_theme.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else {
+      Image($rawfile('icons/editor_text_black.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    }
+  }
+
+  @Builder
+  private buildWorkspaceShapeIcon(tone: string): void {
+    if (tone === 'white') {
+      Image($rawfile('icons/editor_shape_white.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else if (tone === 'theme') {
+      Image($rawfile('icons/editor_shape_theme.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else {
+      Image($rawfile('icons/editor_shape_black.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    }
+  }
+
+  @Builder
+  private buildWorkspaceSelectIcon(tone: string): void {
+    if (tone === 'white') {
+      Image($rawfile('icons/editor_select_white.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else if (tone === 'theme') {
+      Image($rawfile('icons/editor_select_theme.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else {
+      Image($rawfile('icons/editor_select_black.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    }
+  }
+
+  @Builder
+  private buildWorkspaceImageInsertIcon(tone: string): void {
+    if (tone === 'white') {
+      Image($rawfile('icons/editor_image_plus_white.svg')).width(21).height(21).objectFit(ImageFit.Contain)
+    } else if (tone === 'theme') {
+      Image($rawfile('icons/editor_image_plus_theme.svg')).width(21).height(21).objectFit(ImageFit.Contain)
+    } else {
+      Image($rawfile('icons/editor_image_plus_black.svg')).width(21).height(21).objectFit(ImageFit.Contain)
+    }
   }
 
   @Builder
@@ -864,7 +1050,6 @@ struct EditorPage {
         .width('100%')
         .height('100%')
         .backgroundColor($r('app.color.editor_workspace_background'))
-        .borderRadius(32)
 
       if (this.notebookPageList.length === 0) {
         this.buildWorkspaceEmptyState()
@@ -980,12 +1165,16 @@ struct EditorPage {
       })
       .width(276)
     }
-    .width('100%')
-    .margin({
-      top: 52
-    })
+    .width(TOOL_DROPDOWN_WIDTH)
+    .position(this.getToolDropdownPosition(TOOL_DROPDOWN_WIDTH))
+    .zIndex(30)
     .justifyContent(FlexAlign.Start)
     .alignItems(VerticalAlign.Top)
+    .onTouch((event?: TouchEvent) => {
+      if (event !== undefined) {
+        event.stopPropagation();
+      }
+    })
   }
 
   @Builder
@@ -1011,12 +1200,16 @@ struct EditorPage {
         color: '#E2E8F0'
       })
     }
-    .width('100%')
-    .margin({
-      top: 52
-    })
+    .width(SHAPE_DROPDOWN_WIDTH)
+    .position(this.getToolDropdownPosition(SHAPE_DROPDOWN_WIDTH))
+    .zIndex(30)
     .justifyContent(FlexAlign.Start)
     .alignItems(VerticalAlign.Top)
+    .onTouch((event?: TouchEvent) => {
+      if (event !== undefined) {
+        event.stopPropagation();
+      }
+    })
   }
 
   @Builder
@@ -1126,13 +1319,16 @@ struct EditorPage {
       }
       .alignItems(VerticalAlign.Top)
     }
-    .width('100%')
-    .margin({
-      top: 52,
-      left: PAGE_TEMPLATE_DROPDOWN_LEFT
-    })
+    .width(PAGE_TEMPLATE_DROPDOWN_WIDTH)
+    .position(this.getPageTemplateDropdownPosition())
+    .zIndex(30)
     .justifyContent(FlexAlign.Start)
     .alignItems(VerticalAlign.Top)
+    .onTouch((event?: TouchEvent) => {
+      if (event !== undefined) {
+        event.stopPropagation();
+      }
+    })
   }
 
   @Builder
@@ -1148,8 +1344,8 @@ struct EditorPage {
   private buildPaperSurface(): void {
     Stack({ alignContent: Alignment.TopStart }) {
       Column({ space: DOCUMENT_PAGE_GAP }) {
-        ForEach(this.notebookPageList, (page: NotebookPage, index: number) => {
-          this.buildDocumentPageSurface(page, index);
+        ForEach(this.notebookPageList, (page: NotebookPage) => {
+          this.buildDocumentPageSurface(page);
         }, (page: NotebookPage): string => this.getDocumentPageRenderKey(page))
       }
       .width(this.getDocumentContentWidth())
@@ -1177,61 +1373,20 @@ struct EditorPage {
     .layoutWeight(1)
     .height('100%')
     .backgroundColor($r('app.color.editor_workspace_background'))
-    .borderRadius(30)
     .clip(true)
-    .border({
-      width: 1,
-      color: $r('app.color.editor_paper_border')
-    })
     .onTouch((event: TouchEvent) => {
       this.handleDocumentSurfaceTouch(event);
     })
   }
 
   @Builder
-  private buildDocumentPageSurface(page: NotebookPage, pageIndex: number): void {
-    Column({ space: 10 }) {
-      Row({ space: 8 }) {
-        Text(this.getPageOrderText(page.id, pageIndex))
-          .fontSize(12)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.isPageVisuallySelected(page.id) ? '#FFFFFF' : '#475569')
-          .padding({
-            left: 10,
-            right: 10,
-            top: 5,
-            bottom: 5
-          })
-          .backgroundColor(this.isPageVisuallySelected(page.id) ? $r('app.color.editor_accent') : '#FFFFFF')
-          .borderRadius(999)
-
-        Text('Current')
-          .fontSize(11)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.editor_accent'))
-          .padding({
-            left: 8,
-            right: 8,
-            top: 4,
-            bottom: 4
-          })
-          .backgroundColor($r('app.color.editor_accent_soft'))
-          .borderRadius(999)
-          .opacity(this.isPageVisuallySelected(page.id) ? 1 : 0)
-
-        Blank()
-          .layoutWeight(1)
-      }
-      .width('100%')
-      .alignItems(VerticalAlign.Center)
-      .height(DOCUMENT_PAGE_HEADER_HEIGHT)
-
+  private buildDocumentPageSurface(page: NotebookPage): void {
+    Column({ space: 0 }) {
       Stack() {
         Column()
           .width('100%')
           .height('100%')
           .backgroundColor(this.getPageFrameBackgroundColor(page.id))
-          .borderRadius(24)
 
         if (this.shouldRenderDocumentPagePreviewBacking(page.id)) {
           PageThumbnailCanvas({
@@ -1316,17 +1471,11 @@ struct EditorPage {
       }
       .width(this.getDocumentPageSurfaceWidth())
       .height(this.getDocumentPageSurfaceHeightForPage(page.id))
-      .borderRadius(24)
+      .borderRadius(0)
       .clip(true)
       .border({
-        width: 2,
-        color: this.isPageVisuallySelected(page.id) ? $r('app.color.editor_accent') : $r('app.color.editor_paper_border')
-      })
-      .shadow({
-        radius: 18,
-        color: '#14000000',
-        offsetX: 0,
-        offsetY: 6
+        width: 1,
+        color: $r('app.color.editor_paper_border')
       })
     }
     .width('100%')
@@ -1334,81 +1483,41 @@ struct EditorPage {
   }
 
   @Builder
-  private buildPageActionMenu(): void {
-    Column({ space: 6 }) {
-      Button($r('app.string.editor_page_move_up'))
-        .width('100%')
-        .height(34)
-        .backgroundColor($r('app.color.app_background'))
-        .fontColor($r('app.color.primary_text'))
-        .enabled(this.canMoveActivePageUp() && !this.isReorderingPages && !this.isUpdatingPageTemplate)
-        .onClick(() => {
-          this.closeToolDropdown();
-          const activePage: NotebookPage | null = this.getActivePage();
-          if (activePage !== null) {
-            this.moveNotebookPageByOffset(activePage, -1);
-          }
-        })
-
-      Button($r('app.string.editor_page_move_down'))
-        .width('100%')
-        .height(34)
-        .backgroundColor($r('app.color.app_background'))
-        .fontColor($r('app.color.primary_text'))
-        .enabled(this.canMoveActivePageDown() && !this.isReorderingPages && !this.isUpdatingPageTemplate)
-        .onClick(() => {
-          this.closeToolDropdown();
-          const activePage: NotebookPage | null = this.getActivePage();
-          if (activePage !== null) {
-            this.moveNotebookPageByOffset(activePage, 1);
-          }
-        })
-
-      Button($r('app.string.editor_page_delete_menu'))
-        .width('100%')
-        .height(34)
-        .backgroundColor($r('app.color.danger_surface'))
-        .fontColor($r('app.color.danger_text'))
-        .enabled(!this.isDeletingPage && !this.isUpdatingPageTemplate)
-        .onClick(() => {
-          this.closeToolDropdown();
-          const activePage: NotebookPage | null = this.getActivePage();
-          if (activePage !== null) {
-            this.openDeletePageDialog(activePage);
-          }
-        })
+  private buildPageTemplateToolbarButton(): void {
+    if (this.isPageTemplateDropdownVisible) {
+      this.buildPageTemplateToolbarButtonForState(true)
+    } else {
+      this.buildPageTemplateToolbarButtonForState(false)
     }
-    .width(156)
-    .padding(12)
-    .margin({
-      top: 48,
-      right: 12
-    })
-    .backgroundColor($r('app.color.surface_background'))
-    .borderRadius(16)
-    .border({
-      width: 1,
-      color: $r('app.color.editor_sidebar_border')
-    })
   }
 
   @Builder
-  private buildPageTemplateToolbarButton(): void {
-    Button('Template')
-    .height(32)
-    .padding({
-      left: 10,
-      right: 10
-    })
-    .fontSize(12)
-    .backgroundColor(this.isPageTemplateDropdownVisible ? '#0F172A' : '#FFFFFF')
-    .fontColor(this.isPageTemplateDropdownVisible ? '#FFFFFF' : '#475569')
+  private buildPageTemplateToolbarButtonForState(isSelected: boolean): void {
+    Button() {
+      this.buildWorkspaceTemplateIcon(this.getWorkspaceToolIconTone(isSelected))
+    }
+    .width(WORKSPACE_TOOL_BUTTON_SIZE)
+    .height(WORKSPACE_TOOL_BUTTON_SIZE)
+    .padding(0)
+    .backgroundColor(this.getWorkspaceToolButtonBackgroundColor(isSelected))
     .borderRadius(10)
     .border({
-      width: 1,
-      color: this.isPageTemplateDropdownVisible ? '#0F172A' : '#CBD5E1'
+      width: this.shouldUseLightWorkspaceToolbarTheme() && isSelected ? 1 : 0,
+      color: this.shouldUseLightWorkspaceToolbarTheme() && isSelected ?
+        WORKSPACE_TOOL_SELECTED_DARK_BACKGROUND : TRANSPARENT_BACKGROUND
     })
     .enabled(!this.isUpdatingPageTemplate && !this.isCanvasLoading)
+    .onAreaChange((_oldValue: Area, newValue: Area) => {
+      this.updateWorkspaceMenuAnchor(this.getPageTemplateMenuKey(), newValue);
+    })
+    .onTouch((event?: TouchEvent) => {
+      if (event !== undefined) {
+        if (event.type === TouchType.Down) {
+          this.updateWorkspaceMenuAnchor(this.getPageTemplateMenuKey(), event.target.area);
+        }
+        event.stopPropagation();
+      }
+    })
     .onClick(() => {
       this.togglePageTemplateDropdown();
     })
@@ -1416,19 +1525,27 @@ struct EditorPage {
 
   @Builder
   private buildInputModeToggleButton(): void {
-    Button(this.getInputModeButtonLabel())
-    .height(32)
-    .padding({
-      left: 10,
-      right: 10
-    })
-    .fontSize(12)
-    .backgroundColor(this.canvasInputMode === 'touch' ? '#0F172A' : '#FFFFFF')
-    .fontColor(this.canvasInputMode === 'touch' ? '#FFFFFF' : '#475569')
+    if (this.canvasInputMode === 'touch') {
+      this.buildInputModeToggleButtonForState(true)
+    } else {
+      this.buildInputModeToggleButtonForState(false)
+    }
+  }
+
+  @Builder
+  private buildInputModeToggleButtonForState(isSelected: boolean): void {
+    Button() {
+      this.buildWorkspaceHandIcon(this.getWorkspaceToolIconTone(isSelected))
+    }
+    .width(WORKSPACE_TOOL_BUTTON_SIZE)
+    .height(WORKSPACE_TOOL_BUTTON_SIZE)
+    .padding(0)
+    .backgroundColor(this.getWorkspaceToolButtonBackgroundColor(isSelected))
     .borderRadius(10)
     .border({
-      width: 1,
-      color: this.canvasInputMode === 'touch' ? '#0F172A' : '#CBD5E1'
+      width: this.shouldUseLightWorkspaceToolbarTheme() && isSelected ? 1 : 0,
+      color: this.shouldUseLightWorkspaceToolbarTheme() && isSelected ?
+        WORKSPACE_TOOL_SELECTED_DARK_BACKGROUND : TRANSPARENT_BACKGROUND
     })
     .enabled(!this.isCanvasLoading)
     .onClick(() => {
@@ -1449,7 +1566,7 @@ struct EditorPage {
           .layoutWeight(1)
           .textAlign(TextAlign.Start)
 
-        Text(this.isActivePageTemplate(templateType) ? '✓' : '')
+        Text(this.isActivePageTemplate(templateType) ? 'OK' : '')
           .fontSize(13)
           .fontWeight(FontWeight.Bold)
           .fontColor('#FFFFFF')
@@ -1500,7 +1617,7 @@ struct EditorPage {
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start)
 
-        Text(this.isActivePaperSizeTemplate(option) ? '✓' : '')
+        Text(this.isActivePaperSizeTemplate(option) ? 'OK' : '')
           .fontSize(13)
           .fontWeight(FontWeight.Bold)
           .fontColor('#FFFFFF')
@@ -1704,7 +1821,7 @@ struct EditorPage {
   private buildExportFailureDialog(): void {
     Column() {
       Column({ space: 16 }) {
-        Text('导出未完成')
+        Text('Export Failed')
           .fontSize($r('app.float.section_title_size'))
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.primary_text'))
@@ -1713,7 +1830,7 @@ struct EditorPage {
           .fontSize($r('app.float.body_text_size'))
           .fontColor($r('app.color.secondary_text'))
 
-        Button('知道了')
+        Button('Close')
           .width('100%')
           .height($r('app.float.button_height'))
           .backgroundColor($r('app.color.editor_accent'))
@@ -1763,7 +1880,7 @@ struct EditorPage {
           .textAlign(TextAlign.Center)
 
         Row({ space: 10 }) {
-          Button('取消')
+          Button('鍙栨秷')
             .layoutWeight(1)
             .height(38)
             .enabled(!this.isDeletingPage)
@@ -1946,6 +2063,7 @@ struct EditorPage {
       }
 
       this.notebookId = notebookId;
+      this.resetToolSettingMemory();
       const notebook: Notebook | null = await this.ensureViewModel().loadNotebook(notebookId);
       if (notebook === null) {
         this.resetState();
@@ -1984,9 +2102,9 @@ struct EditorPage {
     this.activePageCanvas = null;
     this.pageCanvasMetadataMap.clear();
     this.pageCanvasRenderSizeMap.clear();
+    this.resetToolSettingMemory();
     this.isCanvasLoading = false;
     this.isUpdatingPageTemplate = false;
-    this.pageActionMenuPageId = '';
     this.isPageTemplateDropdownVisible = false;
     this.canvasInputMode = 'stylus';
     this.isDocumentTouchNavigationActive = false;
@@ -2081,9 +2199,7 @@ struct EditorPage {
       this.notebookPageList = cachedNotebookPageList;
       this.retainThumbnailPages();
       this.syncActivePageId();
-      this.closePageActionMenu();
-
-      if (notebookPage !== null) {
+    if (notebookPage !== null) {
         this.activePageId = notebookPage.id;
         this.focusedPageId = notebookPage.id;
         this.retainEditableDocumentPage(notebookPage.id);
@@ -2105,7 +2221,6 @@ struct EditorPage {
     }
 
     if (page.id === this.activePageId) {
-      this.closePageActionMenu();
       return;
     }
 
@@ -2114,7 +2229,6 @@ struct EditorPage {
     this.retainEditableDocumentPage(page.id);
     this.syncNotebookLastEditedPage(page.id);
     this.requestDocumentViewportForPage(page.id);
-    this.closePageActionMenu();
     await this.loadActivePageCanvas();
   }
 
@@ -2137,7 +2251,6 @@ struct EditorPage {
       this.syncNotebookLastEditedPage(pageId);
       this.activePageCanvas = this.getCachedPageCanvas(pageId);
       this.pendingDocumentViewportPageId = '';
-      this.closePageActionMenu();
       this.scheduleActivePageCanvasLoad(pageId);
     }
 
@@ -2156,7 +2269,6 @@ struct EditorPage {
     this.deleteTargetPageId = page.id;
     this.deleteTargetPageLabel = this.getPageLabel(page.order);
     this.deleteTargetPageOrder = page.order;
-    this.closePageActionMenu();
     this.isDeletePageDialogVisible = true;
   }
 
@@ -2200,7 +2312,6 @@ struct EditorPage {
 
       this.notebookPageList = cachedNotebookPageList;
       this.retainThumbnailPages();
-      this.closePageActionMenu();
       if (wasActivePage) {
         this.focusPageAfterDeletion(deletedPageOrder);
       } else {
@@ -2421,6 +2532,7 @@ struct EditorPage {
   ): void {
     const targetViewModel: DrawingEditorViewModel | null = viewModel ?? this.drawingViewModel;
     const targetPageId: string = pageId ?? this.currentDrawingPageId;
+    this.rememberCurrentToolSetting();
 
     if (targetViewModel === null || targetPageId.length === 0) {
       this.editorSnapshot = this.buildEmptySnapshot(targetPageId);
@@ -2633,6 +2745,130 @@ struct EditorPage {
     this.restorePendingDocumentViewportIfReady();
   }
 
+  @Builder
+  private buildWorkspaceTemplateIcon(tone: string): void {
+    if (tone === 'white') {
+      Image($rawfile('icons/editor_template_white.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else if (tone === 'theme') {
+      Image($rawfile('icons/editor_template_theme.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else {
+      Image($rawfile('icons/editor_template_black.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    }
+  }
+
+  @Builder
+  private buildWorkspaceHandIcon(tone: string): void {
+    if (tone === 'white') {
+      Image($rawfile('icons/editor_hand_white.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else if (tone === 'theme') {
+      Image($rawfile('icons/editor_hand_theme.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    } else {
+      Image($rawfile('icons/editor_hand_black.svg')).width(20).height(20).objectFit(ImageFit.Contain)
+    }
+  }
+
+  private updateWorkspaceMenuAnchor(key: string, area: Area): void {
+    const left: number = this.resolveAreaPosition(area.globalPosition.x) - this.workspaceContainerWindowX;
+    const top: number = this.resolveAreaPosition(area.globalPosition.y) - this.workspaceContainerWindowY;
+    const width: number = this.resolveAreaWidth(area);
+    const height: number = this.resolveAreaHeight(area);
+    let targetAnchor: WorkspaceMenuAnchor | undefined = undefined;
+    for (const anchor of this.workspaceMenuAnchors) {
+      if (anchor.key === key) {
+        targetAnchor = anchor;
+        break;
+      }
+    }
+
+    if (targetAnchor === undefined) {
+      const createdAnchor: WorkspaceMenuAnchor = new WorkspaceMenuAnchor();
+      createdAnchor.key = key;
+      createdAnchor.left = left;
+      createdAnchor.top = top;
+      createdAnchor.width = width;
+      createdAnchor.height = height;
+      this.workspaceMenuAnchors.push(createdAnchor);
+      return;
+    }
+
+    if (targetAnchor.left === left && targetAnchor.top === top &&
+      targetAnchor.width === width && targetAnchor.height === height) {
+      return;
+    }
+
+    targetAnchor.left = left;
+    targetAnchor.top = top;
+    targetAnchor.width = width;
+    targetAnchor.height = height;
+  }
+
+  private getActiveWorkspaceToolAnchor(): WorkspaceMenuAnchor | undefined {
+    const key: string = this.getWorkspaceToolMenuKey(this.toolSetting.tool);
+    for (const anchor of this.workspaceMenuAnchors) {
+      if (anchor.key === key) {
+        return anchor;
+      }
+    }
+    return undefined;
+  }
+
+  private getWorkspaceMenuAnchor(key: string): WorkspaceMenuAnchor | undefined {
+    for (const anchor of this.workspaceMenuAnchors) {
+      if (anchor.key === key) {
+        return anchor;
+      }
+    }
+    return undefined;
+  }
+
+  private getToolDropdownPosition(menuWidth: number): Position {
+    const position: MenuPosition = new MenuPosition();
+    const anchor: WorkspaceMenuAnchor | undefined = this.getActiveWorkspaceToolAnchor();
+    if (anchor === undefined || this.workspaceContainerWidth <= 0) {
+      position.x = 8;
+      position.y = WORKSPACE_TOOL_DROPDOWN_TOP;
+      return position;
+    }
+
+    const availableWidth: number = this.workspaceContainerWidth > 0 ? this.workspaceContainerWidth :
+      DOCUMENT_PAGE_SURFACE_MAX_WIDTH;
+    let menuLeft: number = anchor.left + Math.round(anchor.width / 2) - Math.round(menuWidth / 2);
+    if (menuLeft < 0) {
+      menuLeft = 0;
+    }
+    if (menuLeft + menuWidth > availableWidth) {
+      menuLeft = Math.max(availableWidth - menuWidth - 8, 0);
+    }
+
+    position.x = menuLeft;
+    position.y = anchor.top + anchor.height + WORKSPACE_TOOL_DROPDOWN_GAP;
+    return position;
+  }
+
+  private getPageTemplateDropdownPosition(): Position {
+    const position: MenuPosition = new MenuPosition();
+    const anchor: WorkspaceMenuAnchor | undefined = this.getWorkspaceMenuAnchor(this.getPageTemplateMenuKey());
+    if (anchor === undefined || this.workspaceContainerWidth <= 0) {
+      position.x = PAGE_TEMPLATE_DROPDOWN_LEFT;
+      position.y = WORKSPACE_TOOL_DROPDOWN_TOP;
+      return position;
+    }
+
+    const availableWidth: number = this.workspaceContainerWidth > 0 ? this.workspaceContainerWidth :
+      DOCUMENT_PAGE_SURFACE_MAX_WIDTH;
+    let menuLeft: number = anchor.left + Math.round(anchor.width / 2) - Math.round(PAGE_TEMPLATE_DROPDOWN_WIDTH / 2);
+    if (menuLeft < 0) {
+      menuLeft = 0;
+    }
+    if (menuLeft + PAGE_TEMPLATE_DROPDOWN_WIDTH > availableWidth) {
+      menuLeft = Math.max(availableWidth - PAGE_TEMPLATE_DROPDOWN_WIDTH - 8, 0);
+    }
+
+    position.x = menuLeft;
+    position.y = anchor.top + anchor.height + WORKSPACE_TOOL_DROPDOWN_GAP;
+    return position;
+  }
+
   private isWorkspaceViewportReady(): boolean {
     return this.hasWorkspaceViewport && this.workspaceViewportWidth > 0 && this.workspaceViewportHeight > 0;
   }
@@ -2708,7 +2944,7 @@ struct EditorPage {
   }
 
   private getDocumentPageAnchorContentYForScale(pageId: string, pageUnitY: number, scale: number): number {
-    const pageContentTop = this.getDocumentPageBlockTop(pageId) + DOCUMENT_PAGE_HEADER_HEIGHT + 10;
+    const pageContentTop = this.getDocumentPageBlockTop(pageId);
     const pageSurfaceHeight = this.getDocumentPageSurfaceHeightForPage(pageId);
     return Math.round((pageContentTop + this.clampUnit(pageUnitY) * pageSurfaceHeight) * scale);
   }
@@ -2823,7 +3059,6 @@ struct EditorPage {
     this.activePageId = pageId;
     this.activePageCanvas = this.getCachedPageCanvas(pageId);
     this.pendingDocumentViewportPageId = '';
-    this.closePageActionMenu();
 
     const existingSession = EditorSessionRegistry.get(pageId);
     if (existingSession !== null && existingSession.isLoadedForPage(pageId)) {
@@ -3132,7 +3367,7 @@ struct EditorPage {
   }
 
   private getDocumentPageBlockHeight(pageId: string): number {
-    return DOCUMENT_PAGE_HEADER_HEIGHT + 10 + this.getDocumentPageSurfaceHeightForPage(pageId);
+    return this.getDocumentPageSurfaceHeightForPage(pageId);
   }
 
   private scrollDocumentToPage(pageId: string): void {
@@ -3390,8 +3625,7 @@ struct EditorPage {
     let fallbackDistance = Number.MAX_VALUE;
 
     for (const page of this.notebookPageList) {
-      const pageTop = this.getDocumentPageBlockTopForScale(page.id, scale) +
-        Math.round((DOCUMENT_PAGE_HEADER_HEIGHT + 10) * scale);
+      const pageTop = this.getDocumentPageBlockTopForScale(page.id, scale);
       const pageHeight = this.getDocumentPageSurfaceHeightForScale(page.id, scale);
       const distance = this.getDistanceToRange(contentY, pageTop, pageTop + pageHeight);
       if (distance < fallbackDistance) {
@@ -3409,9 +3643,7 @@ struct EditorPage {
       }
     }
 
-    const fallbackTop =
-      this.getDocumentPageBlockTopForScale(fallbackPage.id, scale) +
-        Math.round((DOCUMENT_PAGE_HEADER_HEIGHT + 10) * scale);
+    const fallbackTop = this.getDocumentPageBlockTopForScale(fallbackPage.id, scale);
     const fallbackHeight = this.getDocumentPageSurfaceHeightForScale(fallbackPage.id, scale);
     return {
       pageId: fallbackPage.id,
@@ -3729,42 +3961,61 @@ struct EditorPage {
     this.endDocumentViewportGesture();
     this.resetPendingDocumentSingleFingerPan();
     this.isDocumentTouchNavigationActive = false;
-    if (tool === 'text') {
+
+    if (!isCurrentTool) {
       this.handleWorkspaceToolChange(tool);
       this.closeTransientDropdowns();
       return;
     }
 
-    if (tool === 'shape') {
-      this.handleWorkspaceToolChange(tool);
-      this.closePageActionMenu();
-      this.closeToolDropdown();
-      this.closePageTemplateDropdown();
-      this.isShapeDropdownVisible = isCurrentTool ? !this.isShapeDropdownVisible : true;
-      return;
-    }
-
-    if (tool === 'edit' || tool === 'lasso') {
-      this.handleWorkspaceToolChange(tool);
-      this.closeTransientDropdowns();
-      return;
-    }
-
-    this.handleWorkspaceToolChange(tool);
-    this.closePageActionMenu();
     this.closePageTemplateDropdown();
-    this.closeShapeDropdown();
-
-    if (isCurrentTool) {
-      this.isToolDropdownVisible = !this.isToolDropdownVisible;
+    if (tool === 'shape') {
+      this.closeToolDropdown();
+      this.isShapeDropdownVisible = true;
       return;
     }
 
+    this.closeShapeDropdown();
     this.isToolDropdownVisible = true;
   }
 
   private isWorkspaceToolActive(tool: ToolType): boolean {
     return this.toolSetting.tool === tool;
+  }
+
+  private applyWorkspaceToolSetting(nextSetting: ToolSetting): void {
+    const normalizedSetting = this.normalizeToolSetting(nextSetting);
+    this.toolSetting = this.cloneToolSetting(normalizedSetting);
+    this.rememberToolSetting(normalizedSetting);
+    EditorSessionRegistry.updateToolSettingForAll(normalizedSetting);
+
+    if (this.drawingViewModel !== null) {
+      this.syncDrawingSnapshot(false, this.drawingViewModel, this.currentDrawingPageId);
+    }
+  }
+
+  private getRememberedToolSetting(tool: ToolType): ToolSetting {
+    const rememberedSetting = this.toolSettingByTool.get(tool);
+    if (rememberedSetting !== undefined) {
+      return this.cloneToolSetting(rememberedSetting);
+    }
+
+    return this.buildDefaultToolSettingForTool(tool);
+  }
+
+  private rememberCurrentToolSetting(): void {
+    this.rememberToolSetting(this.toolSetting);
+  }
+
+  private rememberToolSetting(toolSetting: ToolSetting): void {
+    this.toolSettingByTool.set(toolSetting.tool, this.cloneToolSetting(toolSetting));
+  }
+
+  private resetToolSettingMemory(): void {
+    this.toolSettingByTool.clear();
+    this.toolSetting = this.buildDefaultToolSetting();
+    this.lastWritingTool = 'pen';
+    this.rememberToolSetting(this.toolSetting);
   }
 
   private toggleCanvasInputMode(): void {
@@ -3776,33 +4027,13 @@ struct EditorPage {
     this.isDocumentTouchNavigationActive = false;
   }
 
-  private getInputModeButtonLabel(): string {
-    return this.canvasInputMode === 'stylus' ? 'Input: Pen' : 'Input: Finger';
-  }
-
   private handleWorkspaceToolChange(tool: ToolType): void {
+    this.rememberCurrentToolSetting();
     if (this.isWritingTool(tool)) {
       this.lastWritingTool = tool;
     }
 
-    const nextSetting: ToolSetting = {
-      tool,
-      color: this.toolSetting.color,
-      width: this.toolSetting.width,
-      opacity: tool === 'eraser' ? 1 : this.toolSetting.opacity
-    };
-
-    this.toolSetting = {
-      tool: nextSetting.tool,
-      color: nextSetting.color,
-      width: nextSetting.width,
-      opacity: nextSetting.opacity
-    };
-    EditorSessionRegistry.updateToolSettingForAll(nextSetting);
-
-    if (this.drawingViewModel !== null) {
-      this.syncDrawingSnapshot(false, this.drawingViewModel, this.currentDrawingPageId);
-    }
+    this.applyWorkspaceToolSetting(this.getRememberedToolSetting(tool));
   }
 
   private restoreWritingToolAfterOneShotElementInsertion(): void {
@@ -3810,54 +4041,71 @@ struct EditorPage {
       return;
     }
 
+    this.rememberCurrentToolSetting();
     const nextTool: ToolType = this.isWritingTool(this.lastWritingTool) ? this.lastWritingTool : 'pen';
-    const nextSetting: ToolSetting = {
-      tool: nextTool,
-      color: this.toolSetting.color,
-      width: this.toolSetting.width,
-      opacity: this.toolSetting.opacity
-    };
-
-    this.toolSetting = {
-      tool: nextSetting.tool,
-      color: nextSetting.color,
-      width: nextSetting.width,
-      opacity: nextSetting.opacity
-    };
+    const nextSetting: ToolSetting = this.getRememberedToolSetting(nextTool);
+    this.applyWorkspaceToolSetting(nextSetting);
     this.isToolDropdownVisible = false;
     this.isShapeDropdownVisible = false;
-    EditorSessionRegistry.updateToolSettingForAll(nextSetting);
-
-    if (this.drawingViewModel !== null) {
-      this.syncDrawingSnapshot(false, this.drawingViewModel, this.currentDrawingPageId);
-    }
   }
 
   private isWritingTool(tool: ToolType): boolean {
     return tool === 'pen' || tool === 'pencil' || tool === 'highlighter';
   }
 
-  private getWorkspaceToolLabel(tool: ToolType): string {
-    switch (tool) {
-      case 'pen':
-        return 'Pen';
-      case 'pencil':
-        return 'Pencil';
-      case 'highlighter':
-        return 'Highlight';
-      case 'eraser':
-        return 'Eraser';
-      case 'lasso':
-        return 'Lasso';
-      case 'text':
-        return 'Text';
-      case 'shape':
-        return 'Shape';
-      case 'edit':
-        return 'Edit';
-      default:
-        return tool;
+  private getWorkspaceToolMenuKey(tool: ToolType): string {
+    return `tool:${tool}`;
+  }
+
+  private getPageTemplateMenuKey(): string {
+    return 'toolbar:template';
+  }
+
+  private getWorkspaceToolRenderKey(tool: ToolType): string {
+    return `${tool}_${this.isWorkspaceToolActive(tool) ? 'selected' : 'idle'}_${this.shouldUseLightWorkspaceToolbarTheme() ?
+      'light' : 'tinted'}`;
+  }
+
+  private getWorkspaceToolButtonBackgroundColor(isSelected: boolean): ResourceColor {
+    if (this.shouldUseLightWorkspaceToolbarTheme()) {
+      return isSelected ? WORKSPACE_TOOL_SELECTED_DARK_BACKGROUND : WORKSPACE_TOOL_LIGHT_BACKGROUND;
     }
+
+    return isSelected ? WORKSPACE_TOOL_LIGHT_BACKGROUND : TRANSPARENT_BACKGROUND;
+  }
+
+  private getWorkspaceToolIconTone(isSelected: boolean): string {
+    if (this.shouldUseLightWorkspaceToolbarTheme()) {
+      return isSelected ? 'white' : 'black';
+    }
+
+    return isSelected ? 'theme' : 'white';
+  }
+
+  private shouldUseLightWorkspaceToolbarTheme(): boolean {
+    return this.isNearWhiteColor(WORKSPACE_TOOLBAR_THEME_COLOR);
+  }
+
+  private isNearWhiteColor(color: string): boolean {
+    const normalizedColor: string = color.trim().toUpperCase();
+    if (!normalizedColor.startsWith('#')) {
+      return false;
+    }
+
+    const hexColor: string = normalizedColor.substring(1);
+    const rgbHex: string = hexColor.length === 8 ? hexColor.substring(2) : hexColor;
+    if (rgbHex.length !== 6) {
+      return false;
+    }
+
+    const red: number = Number.parseInt(rgbHex.substring(0, 2), 16);
+    const green: number = Number.parseInt(rgbHex.substring(2, 4), 16);
+    const blue: number = Number.parseInt(rgbHex.substring(4, 6), 16);
+    if (!Number.isFinite(red) || !Number.isFinite(green) || !Number.isFinite(blue)) {
+      return false;
+    }
+
+    return red >= 245 && green >= 245 && blue >= 245;
   }
 
   private getShapeLabel(shapeType: ShapeType): string {
@@ -3933,7 +4181,7 @@ struct EditorPage {
         this.exportFailureMessage = exportResult.message;
       }
     } catch (_error) {
-      this.exportFailureMessage = '导出失败，请重新选择保存位置后再试。';
+      this.exportFailureMessage = 'Export failed. Please choose a save location and try again.';
     } finally {
       this.isExportingNotebook = false;
     }
@@ -4038,10 +4286,10 @@ struct EditorPage {
 
   private getNotebookExportPageRangeMessage(): string {
     if (normalizeNotebookExportScope(this.draftExportScope) !== 'range') {
-      return '当前没有可导出的页面。';
+      return 'There are no pages available to export.';
     }
     const rangeResult: NotebookExportPageRangeResult = this.parseNotebookExportPageRange();
-    return rangeResult.message.length > 0 ? rangeResult.message : '请先输入有效的导出页码范围。';
+    return rangeResult.message.length > 0 ? rangeResult.message : 'Enter a valid export page range.';
   }
 
   private parseNotebookExportPageRange(): NotebookExportPageRangeResult {
@@ -4050,13 +4298,13 @@ struct EditorPage {
     if (rawRange.length === 0) {
       return {
         pageIds: [],
-        message: '请输入导出页码范围。'
+        message: 'Enter an export page range.'
       };
     }
     if (pageCount === 0) {
       return {
         pageIds: [],
-        message: '当前笔记本没有可导出的页面。'
+        message: 'There are no pages available to export.'
       };
     }
 
@@ -4078,7 +4326,7 @@ struct EditorPage {
           startPage > endPage || endPage > pageCount) {
           return {
             pageIds: [],
-            message: `页码范围无效：${normalizedSegment}`
+            message: `Invalid page range: ${normalizedSegment}`
           };
         }
         for (let pageNumber: number = startPage; pageNumber <= endPage; pageNumber += 1) {
@@ -4091,7 +4339,7 @@ struct EditorPage {
       if (!Number.isFinite(pageNumber) || pageNumber <= 0 || pageNumber > pageCount) {
         return {
           pageIds: [],
-          message: `页码无效：${normalizedSegment}`
+          message: `Invalid page number: ${normalizedSegment}`
         };
       }
       this.appendExportPageIndex(pageIndexes, pageNumber - 1);
@@ -4100,7 +4348,7 @@ struct EditorPage {
     if (pageIndexes.length === 0) {
       return {
         pageIds: [],
-        message: '请输入导出页码范围。'
+        message: 'Enter an export page range.'
       };
     }
 
@@ -4140,10 +4388,6 @@ struct EditorPage {
     this.exportFailureMessage = '';
   }
 
-  private closePageActionMenu(): void {
-    this.pageActionMenuPageId = '';
-  }
-
   private closeToolDropdown(): void {
     this.isToolDropdownVisible = false;
   }
@@ -4157,24 +4401,9 @@ struct EditorPage {
   }
 
   private closeTransientDropdowns(): void {
-    this.closePageActionMenu();
     this.closeToolDropdown();
     this.closeShapeDropdown();
     this.closePageTemplateDropdown();
-  }
-
-  private togglePageActionMenu(pageId: string): void {
-    if (this.isLoading || this.isCreatingPage || this.isDeletingPage || this.isReorderingPages ||
-      this.isUpdatingPageTemplate) {
-      return;
-    }
-
-    if (this.pageActionMenuPageId === pageId) {
-      this.pageActionMenuPageId = '';
-      return;
-    }
-
-    this.pageActionMenuPageId = pageId;
   }
 
   private togglePageTemplateDropdown(): void {
@@ -4185,41 +4414,16 @@ struct EditorPage {
 
     this.closeToolDropdown();
     this.closeShapeDropdown();
-    this.closePageActionMenu();
     this.isPageTemplateDropdownVisible = !this.isPageTemplateDropdownVisible;
   }
 
-  private isPageActionMenuVisible(pageId: string): boolean {
-    return this.pageActionMenuPageId === pageId;
-  }
-
-  private canMovePageUp(page: NotebookPage): boolean {
-    return page.order > 0;
-  }
-
-  private canMovePageDown(page: NotebookPage): boolean {
-    return page.order < this.notebookPageList.length - 1;
-  }
-
-  private canMoveActivePageUp(): boolean {
-    const activePage: NotebookPage | null = this.getActivePage();
-    return activePage !== null && this.canMovePageUp(activePage);
-  }
-
-  private canMoveActivePageDown(): boolean {
-    const activePage: NotebookPage | null = this.getActivePage();
-    return activePage !== null && this.canMovePageDown(activePage);
+  private isPageActionButtonVisible(pageId: string): boolean {
+    return pageId.length > 0 && pageId === this.activePageId;
   }
 
   private canDragReorderPages(): boolean {
     return !this.isLoading && !this.isCreatingPage && !this.isDeletingPage && !this.isReorderingPages &&
       !this.isUpdatingPageTemplate && this.notebookId.length > 0 && this.notebookPageList.length > 1;
-  }
-
-  private moveNotebookPageByOffset(page: NotebookPage, offset: number): void {
-    const targetIndex: number = page.order + offset;
-    this.closePageActionMenu();
-    this.moveNotebookPageByIndex(page.order, targetIndex);
   }
 
   private handlePageListItemMove(fromIndex: number, toIndex: number): void {
@@ -4472,7 +4676,6 @@ struct EditorPage {
 
     this.isUpdatingPageTemplate = true;
     this.closeToolDropdown();
-    this.closePageActionMenu();
     this.applyActivePageCanvasSizeLocally(activePage, targetSize.width, targetSize.height);
     this.bumpCanvasVersionForPage(pageId);
     this.documentViewportRefreshVersion += 1;
@@ -4537,7 +4740,6 @@ struct EditorPage {
 
     this.isUpdatingPageTemplate = true;
     this.closeToolDropdown();
-    this.closePageActionMenu();
 
     if (!this.applyNotebookPageTemplateLocally(pageId, templateType)) {
       this.isUpdatingPageTemplate = false;
@@ -4779,32 +4981,6 @@ struct EditorPage {
     return `${this.notebookPageList.length} pages`;
   }
 
-  private getNotebookSummaryText(): string {
-    const visualPage: NotebookPage | null = this.getVisualPage();
-    if (visualPage === null) {
-      return this.getPageCountText();
-    }
-
-    return `${this.getPageCountText()} | Current ${this.getPageLabel(visualPage.order)}`;
-  }
-
-  private getActivePageLabel(): string {
-    const visualPage: NotebookPage | null = this.getVisualPage();
-    if (visualPage === null) {
-      return 'Page';
-    }
-    return this.getPageLabel(visualPage.order);
-  }
-
-  private getActivePageIndexText(): string {
-    const visualPage: NotebookPage | null = this.getVisualPage();
-    if (visualPage === null) {
-      return this.getPageCountText();
-    }
-
-    return `${visualPage.order + 1}/${this.notebookPageList.length}`;
-  }
-
   private getActivePageCanvasForPage(pageId: string): NotebookPageCanvas | null {
     if (this.activePageCanvas !== null && this.activePageCanvas.pageId === pageId) {
       return this.activePageCanvas;
@@ -4857,6 +5033,25 @@ struct EditorPage {
       color: '#111827',
       width: 4,
       opacity: 1
+    };
+  }
+
+  private buildDefaultToolSettingForTool(tool: ToolType): ToolSetting {
+    const defaultSetting = this.buildDefaultToolSetting();
+    return this.normalizeToolSetting({
+      tool,
+      color: defaultSetting.color,
+      width: defaultSetting.width,
+      opacity: defaultSetting.opacity
+    });
+  }
+
+  private normalizeToolSetting(toolSetting: ToolSetting): ToolSetting {
+    return {
+      tool: toolSetting.tool,
+      color: toolSetting.color,
+      width: toolSetting.width,
+      opacity: toolSetting.tool === 'eraser' ? 1 : toolSetting.opacity
     };
   }
 
