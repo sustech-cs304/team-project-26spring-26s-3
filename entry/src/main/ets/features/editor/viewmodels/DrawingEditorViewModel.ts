@@ -381,7 +381,7 @@ export class DrawingEditorViewModel {
     this.clearStrokeSelection();
     this.lassoDraftPath = [];
     this.strokeSpatialIndex.upsertStroke(completedStroke);
-    this.undoRedoController.recordAppendStroke(completedStroke);
+    this.undoRedoController.recordAppendStroke(completedStroke, nextStrokes.length - 1);
     this.changeSequence += 1;
     this.persistenceStatus = 'pending stroke save';
     this.appendDebugEvent('finishStroke', `queuedSave count=${nextStrokes.length} stroke=${this.describeStroke(completedStroke)}`);
@@ -545,14 +545,7 @@ export class DrawingEditorViewModel {
       beforeSelection,
       this.getCurrentSelectionSnapshot()
     );
-    this.markPartialRenderInvalidation(
-      'clear',
-      sourceSnapshot.map((stroke: Stroke, index: number): IndexedStrokeRecord => ({
-        index,
-        stroke: this.cloneStroke(stroke)
-      })),
-      []
-    );
+    this.markFullRenderInvalidation('clear');
     this.changeSequence += 1;
     this.persistenceStatus = 'pending clear save';
     this.schedulePersistCurrentStrokes('clear', INTERACTION_SAVE_DEBOUNCE_MS);

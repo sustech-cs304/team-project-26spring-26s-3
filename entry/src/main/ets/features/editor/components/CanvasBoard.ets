@@ -149,8 +149,12 @@ function createEmptyImageWarmPreviewElement(): ImageCanvasElement {
 
 const COMMITTED_TILE_SIZE = 256;
 const PARTIAL_REDRAW_OVERDRAW_VIEWPORT_PX = 2;
+// Draw partial regions into a slightly larger offscreen buffer so stroke antialiasing is not clipped at bitmap edges.
+const PARTIAL_REDRAW_BUFFER_GUTTER_VIEWPORT_PX = 8;
 const RECENT_COMMITTED_STROKE_LIMIT = 6;
 const RECENT_COMMITTED_IDLE_FLUSH_DELAY_MS = 420;
+const WHOLE_STROKE_PREVIEW_POINT_LIMIT = 16;
+const FAST_COMMITTED_APPEND_POINT_LIMIT = 480;
 type StrokeResizeUiMode = 'none' | 'ready' | 'resizing' | 'moving';
 type ElementStylePanelMode = 'none' | 'fill' | 'textColor' | 'background' | 'fontSize' | 'outline' | 'layer';
 const DEFAULT_VIEWPORT_WIDTH = 1600;
@@ -2188,7 +2192,7 @@ export struct CanvasBoard {
       this.scheduleSelectionOverlayResume();
       this.syncEditorSnapshot();
       this.finishSelectionMovePreview(didMove);
-      this.onContentChanged(didMove, 'element');
+      this.onContentChanged(didMove, this.getSelectionMoveContentChangeKind(viewModel));
       return;
     }
 
@@ -2320,7 +2324,7 @@ export struct CanvasBoard {
   private beginSelectionMovePreview(): void {
     this.stabilizeCommittedLayersForEdit('selectionMoveStart');
     this.hiddenStrokeIdsDuringSelectionMove.clear();
-    for (const target of this.selectedStrokeTargets) {
+    for (const target of this.getCurrentSelectedStrokeTargets()) {
       if (target.kind !== 'strokeGroup') {
         continue;
       }
@@ -2333,6 +2337,19 @@ export struct CanvasBoard {
     if (this.hiddenStrokeIdsDuringSelectionMove.size > 0) {
       this.repaintSelectedStrokeTargetRegions();
     }
+  }
+
+  private getCurrentSelectedStrokeTargets(): SelectionTarget[] {
+    const viewModel = this.getRenderingViewModel();
+    if (viewModel === null) {
+      return this.selectedStrokeTargets;
+    }
+
+    return viewModel.getSelectedStrokeTargets();
+  }
+
+  private getSelectionMoveContentChangeKind(viewModel: DrawingEditorViewModel): CanvasBoardContentChangeKind {
+    return viewModel.getSelectedElementIds().length > 0 ? 'element' : 'stroke';
   }
 
   private finishSelectionMovePreview(didMove: boolean): void {
@@ -2431,8 +2448,9 @@ export struct CanvasBoard {
       }
     } else if (completedStroke !== null && this.areCommittedLayersReady()) {
       this.appendRenderedStroke(completedStroke);
+      const useFastCommittedAppend = this.shouldUseFastCommittedAppend(completedStroke);
       if (this.canAppendToRecentCommittedLayer()) {
-        this.drawStrokeOnViewport(this.recentCommittedContext2D, completedStroke);
+        this.drawStrokeOnViewport(this.recentCommittedContext2D, completedStroke, useFastCommittedAppend);
         this.scheduleRecentCommittedIdleFlush();
       } else if (this.trimRecentCommittedLayerIntoBase()) {
         this.redrawRecentCommittedLayer(false);
@@ -4228,17 +4246,21 @@ export struct CanvasBoard {
       return;
     }
 
-    StrokeRenderer.drawStroke(context, stroke);
+    StrokeRenderer.drawStrokeBalanced(context, stroke);
   }
 
-  private drawStrokeOnViewport(context: CanvasRenderingContext2D, stroke: Stroke): void {
+  private drawStrokeOnViewport(
+    context: CanvasRenderingContext2D,
+    stroke: Stroke,
+    useFastRendering: boolean = false
+  ): void {
     const size = this.getCanvasSize(context);
     const transform = this.getPageViewportTransform(size);
     const visibleRegion = this.getVisiblePageRegion(transform);
     if (visibleRegion !== null && this.isStrokeVisible(stroke, visibleRegion)) {
       context.save();
       this.applyPageTransformAndClip(context, transform);
-      this.drawStroke(context, stroke);
+      this.drawStroke(context, stroke, useFastRendering);
       context.restore();
     }
   }
@@ -4718,6 +4740,11 @@ export struct CanvasBoard {
   private drawPreviewStrokeOnViewport(context: CanvasRenderingContext2D, stroke: Stroke): void {
     const size = this.getCanvasSize(context);
     const transform = this.getPageViewportTransform(size);
+    const visibleRegion = this.getVisiblePageRegion(transform);
+    if (visibleRegion === null || !this.isStrokeVisible(stroke, visibleRegion)) {
+      return;
+    }
+
     context.save();
     this.applyPageTransformAndClip(context, transform);
     this.drawPreviewStroke(context, stroke);
@@ -4792,8 +4819,22 @@ export struct CanvasBoard {
     this.activePreviewSession = null;
   }
 
+  private canContinueActivePreviewSession(stroke: Stroke): boolean {
+    if (this.activePreviewSession === null) {
+      return false;
+    }
+
+    return this.activePreviewSession.strokeId === stroke.id &&
+      this.activePreviewSession.processedPointCount <= stroke.points.length;
+  }
+
   private shouldUseWholeStrokePreviewRebuild(stroke: Stroke): boolean {
-    return stroke.style.tool === 'highlighter' || stroke.style.tool === 'pencil';
+    return stroke.style.tool === 'highlighter' &&
+      stroke.points.length <= WHOLE_STROKE_PREVIEW_POINT_LIMIT;
+  }
+
+  private shouldUseFastCommittedAppend(stroke: Stroke): boolean {
+    return stroke.points.length >= FAST_COMMITTED_APPEND_POINT_LIMIT;
   }
 
   private consumeLatestRenderInvalidationSequence(): void {
@@ -4806,15 +4847,6 @@ export struct CanvasBoard {
     if (invalidation !== null) {
       this.lastAppliedRenderInvalidationSequence = invalidation.sequence;
     }
-  }
-
-  private canContinueActivePreviewSession(stroke: Stroke): boolean {
-    if (this.activePreviewSession === null) {
-      return false;
-    }
-
-    return this.activePreviewSession.strokeId === stroke.id &&
-      this.activePreviewSession.processedPointCount <= stroke.points.length;
   }
 
   private tryApplyLatestRenderInvalidation(): boolean {
@@ -4847,19 +4879,9 @@ export struct CanvasBoard {
 
   private applyPartialRenderInvalidation(invalidation: RenderInvalidation): boolean {
     const redrawStartedAt = Date.now();
-    const shouldKeepStableCommittedLayer = this.shouldStabilizeBeforeRenderInvalidation(invalidation);
-    if (shouldKeepStableCommittedLayer && !this.flushRecentCommittedLayerIntoBase(`invalidation:${invalidation.reason}`)) {
-      return false;
-    }
-
     const previousRecentStrokeIds = this.getRecentCommittedStrokeIdSet();
-    this.applyRenderedStrokeMutation(invalidation);
-    if (shouldKeepStableCommittedLayer) {
-      this.clearRecentCommittedLayer();
-      this.flattenedCommittedStrokeCount = this.renderedStrokeOrder.length;
-    }
-
     if (this.canUseRecentCommittedFastPath(invalidation, previousRecentStrokeIds)) {
+      this.applyRenderedStrokeMutation(invalidation);
       this.redrawRecentCommittedLayer(false);
       EditorPerformanceTrace.record(
         'committed.partialRedraw',
@@ -4868,6 +4890,17 @@ export struct CanvasBoard {
         8
       );
       return true;
+    }
+
+    const shouldKeepStableCommittedLayer = this.shouldStabilizeBeforeRenderInvalidation(invalidation);
+    if (shouldKeepStableCommittedLayer && !this.flushRecentCommittedLayerIntoBase(`invalidation:${invalidation.reason}`)) {
+      return false;
+    }
+
+    this.applyRenderedStrokeMutation(invalidation);
+    if (shouldKeepStableCommittedLayer) {
+      this.clearRecentCommittedLayer();
+      this.flattenedCommittedStrokeCount = this.renderedStrokeOrder.length;
     }
 
     if (this.requiresFullCommittedRedrawWithRecentLayer(invalidation, previousRecentStrokeIds)) {
@@ -5055,7 +5088,7 @@ export struct CanvasBoard {
   }
 
   private clearCommittedRegion(region: BoundingBox, transform: PageViewportTransform): void {
-    const viewportRegion = this.toViewportBoundingBox(region, transform);
+    const viewportRegion = this.toPixelAlignedViewportRegion(region, transform);
     if (viewportRegion === null) {
       return;
     }
@@ -5233,13 +5266,14 @@ export struct CanvasBoard {
     redrawRegion: BoundingBox,
     transform: PageViewportTransform
   ): string[] {
-    const candidateStrokeIds = this.strokeSpatialIndex.queryStrokeIds(redrawRegion)
+    const alignedRedrawRegion = this.toPixelAlignedPageRegion(redrawRegion, transform) ?? redrawRegion;
+    const candidateStrokeIds = this.strokeSpatialIndex.queryStrokeIds(alignedRedrawRegion)
       .sort((left: string, right: string) => this.getRenderedStrokeIndex(left) - this.getRenderedStrokeIndex(right));
 
-    if (!this.repaintCommittedBaseRegionWithBuffer(redrawRegion, transform, candidateStrokeIds)) {
-      this.clearCommittedRegion(redrawRegion, transform);
+    if (!this.repaintCommittedBaseRegionWithBuffer(alignedRedrawRegion, transform, candidateStrokeIds)) {
+      this.clearCommittedRegion(alignedRedrawRegion, transform);
     }
-    this.repaintRecentCommittedRegionWithBuffer(redrawRegion, transform, candidateStrokeIds);
+    this.repaintRecentCommittedRegionWithBuffer(alignedRedrawRegion, transform, candidateStrokeIds);
     return candidateStrokeIds;
   }
 
@@ -5259,11 +5293,16 @@ export struct CanvasBoard {
       return true;
     }
 
-    const offscreenCanvas = new OffscreenCanvas(width, height);
+    const bufferViewportRegion = this.expandPartialRedrawBufferViewportRegion(viewportRegion, transform);
+    const bufferWidth = bufferViewportRegion.maxX - bufferViewportRegion.minX;
+    const bufferHeight = bufferViewportRegion.maxY - bufferViewportRegion.minY;
+    const sourceX = viewportRegion.minX - bufferViewportRegion.minX;
+    const sourceY = viewportRegion.minY - bufferViewportRegion.minY;
+    const offscreenCanvas = new OffscreenCanvas(bufferWidth, bufferHeight);
     const offscreenContext = offscreenCanvas.getContext('2d', this.committedRenderingSettings);
-    offscreenContext.clearRect(0, 0, width, height);
+    offscreenContext.clearRect(0, 0, bufferWidth, bufferHeight);
     offscreenContext.save();
-    offscreenContext.translate(-viewportRegion.minX, -viewportRegion.minY);
+    offscreenContext.translate(-bufferViewportRegion.minX, -bufferViewportRegion.minY);
     this.applyPageTransformAndClip(offscreenContext, transform);
     for (const strokeId of candidateStrokeIds) {
       if (this.hiddenStrokeIdsDuringSelectionMove.has(strokeId)) {
@@ -5288,7 +5327,17 @@ export struct CanvasBoard {
     offscreenContext.restore();
     const bitmap = offscreenCanvas.transferToImageBitmap();
     this.committedContext2D.clearRect(viewportRegion.minX, viewportRegion.minY, width, height);
-    this.committedContext2D.drawImage(bitmap, viewportRegion.minX, viewportRegion.minY, width, height);
+    this.committedContext2D.drawImage(
+      bitmap,
+      sourceX,
+      sourceY,
+      width,
+      height,
+      viewportRegion.minX,
+      viewportRegion.minY,
+      width,
+      height
+    );
     bitmap.close();
     return true;
   }
@@ -5319,20 +5368,17 @@ export struct CanvasBoard {
       return true;
     }
 
-    const offscreenCanvas = new OffscreenCanvas(width, height);
+    const bufferViewportRegion = this.expandPartialRedrawBufferViewportRegion(viewportRegion, transform);
+    const bufferWidth = bufferViewportRegion.maxX - bufferViewportRegion.minX;
+    const bufferHeight = bufferViewportRegion.maxY - bufferViewportRegion.minY;
+    const sourceX = viewportRegion.minX - bufferViewportRegion.minX;
+    const sourceY = viewportRegion.minY - bufferViewportRegion.minY;
+    const offscreenCanvas = new OffscreenCanvas(bufferWidth, bufferHeight);
     const offscreenContext = offscreenCanvas.getContext('2d', this.recentCommittedRenderingSettings);
-    offscreenContext.clearRect(0, 0, width, height);
+    offscreenContext.clearRect(0, 0, bufferWidth, bufferHeight);
     offscreenContext.save();
-    offscreenContext.translate(-viewportRegion.minX, -viewportRegion.minY);
+    offscreenContext.translate(-bufferViewportRegion.minX, -bufferViewportRegion.minY);
     this.applyPageTransformAndClip(offscreenContext, transform);
-    offscreenContext.beginPath();
-    offscreenContext.rect(
-      redrawRegion.minX,
-      redrawRegion.minY,
-      redrawRegion.maxX - redrawRegion.minX,
-      redrawRegion.maxY - redrawRegion.minY
-    );
-    offscreenContext.clip();
 
     for (const strokeId of candidateStrokeIds) {
       if (this.hiddenStrokeIdsDuringSelectionMove.has(strokeId)) {
@@ -5356,7 +5402,17 @@ export struct CanvasBoard {
 
     offscreenContext.restore();
     const bitmap = offscreenCanvas.transferToImageBitmap();
-    this.recentCommittedContext2D.drawImage(bitmap, viewportRegion.minX, viewportRegion.minY, width, height);
+    this.recentCommittedContext2D.drawImage(
+      bitmap,
+      sourceX,
+      sourceY,
+      width,
+      height,
+      viewportRegion.minX,
+      viewportRegion.minY,
+      width,
+      height
+    );
     bitmap.close();
     return true;
   }
@@ -5407,7 +5463,7 @@ export struct CanvasBoard {
   private clearPageRegionFromContext(context: CanvasRenderingContext2D, region: BoundingBox): void {
     const size = this.getCanvasSize(context);
     const transform = this.getPageViewportTransform(size);
-    const viewportRegion = this.toViewportBoundingBox(region, transform);
+    const viewportRegion = this.toPixelAlignedViewportRegion(region, transform);
     if (viewportRegion === null) {
       return;
     }
@@ -5900,6 +5956,28 @@ export struct CanvasBoard {
     return clampBoundingBox(pixelRegion, transform.viewportWidth, transform.viewportHeight);
   }
 
+  private toPixelAlignedPageRegion(region: BoundingBox, transform: PageViewportTransform): BoundingBox | null {
+    const viewportRegion = this.toPixelAlignedViewportRegion(region, transform);
+    if (viewportRegion === null) {
+      return null;
+    }
+
+    return this.toPageBoundingBox(viewportRegion, transform);
+  }
+
+  private expandPartialRedrawBufferViewportRegion(
+    viewportRegion: BoundingBox,
+    transform: PageViewportTransform
+  ): BoundingBox {
+    const gutter = PARTIAL_REDRAW_BUFFER_GUTTER_VIEWPORT_PX;
+    return {
+      minX: Math.max(0, Math.floor(viewportRegion.minX - gutter)),
+      minY: Math.max(0, Math.floor(viewportRegion.minY - gutter)),
+      maxX: Math.min(transform.viewportWidth, Math.ceil(viewportRegion.maxX + gutter)),
+      maxY: Math.min(transform.viewportHeight, Math.ceil(viewportRegion.maxY + gutter))
+    };
+  }
+
   private expandCommittedTileRegion(region: BoundingBox, transform: PageViewportTransform): BoundingBox {
     const pagePadding = Math.max(1, PARTIAL_REDRAW_OVERDRAW_VIEWPORT_PX / Math.max(0.01, transform.scale));
     const expandedRegion = expandBoundingBox(region, pagePadding);
@@ -5913,6 +5991,16 @@ export struct CanvasBoard {
       maxX: bounds.maxX * transform.scale + transform.offsetX,
       maxY: bounds.maxY * transform.scale + transform.offsetY
     }, transform.viewportWidth, transform.viewportHeight);
+  }
+
+  private toPageBoundingBox(bounds: BoundingBox, transform: PageViewportTransform): BoundingBox | null {
+    const safeScale = Math.max(0.01, transform.scale);
+    return clampBoundingBox({
+      minX: (bounds.minX - transform.offsetX) / safeScale,
+      minY: (bounds.minY - transform.offsetY) / safeScale,
+      maxX: (bounds.maxX - transform.offsetX) / safeScale,
+      maxY: (bounds.maxY - transform.offsetY) / safeScale
+    }, transform.pageWidth, transform.pageHeight);
   }
 
   private intersectBoundingBoxes(left: BoundingBox, right: BoundingBox): BoundingBox | null {
