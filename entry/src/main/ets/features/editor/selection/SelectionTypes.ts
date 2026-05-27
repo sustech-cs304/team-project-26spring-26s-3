@@ -12,6 +12,7 @@ export type SelectionAction =
   'formula' |
   'fill' |
   'background' |
+  'fontSize' |
   'outline' |
   'layer' |
   LayerOrderAction;

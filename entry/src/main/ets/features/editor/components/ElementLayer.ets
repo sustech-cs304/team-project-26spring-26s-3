@@ -122,7 +122,7 @@ export struct ElementLayer {
     }
 
     const textElement = element as TextCanvasElement;
-    return `${element.id}_${element.updatedAt}_${geometryKey}_${textElement.backgroundColor}_${textElement.outline.lineStyle}_${textElement.outline.color}_${textElement.outline.width}`;
+    return `${element.id}_${element.updatedAt}_${geometryKey}_${textElement.color}_${textElement.fontSize}_${textElement.backgroundColor}_${textElement.outline.lineStyle}_${textElement.outline.color}_${textElement.outline.width}`;
   }
 
   private getImageElementRenderKey(element: ImageCanvasElement): string {
