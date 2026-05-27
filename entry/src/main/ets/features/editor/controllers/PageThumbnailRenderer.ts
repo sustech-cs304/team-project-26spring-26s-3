@@ -1,6 +1,9 @@
 import {
   CanvasElement,
-  DEFAULT_STROKE_LAYER_Z_INDEX
+  DEFAULT_STROKE_LAYER_Z_INDEX,
+  ImageCanvasElement,
+  ShapeCanvasElement,
+  TextCanvasElement
 } from '../../../domain/entities/CanvasElement';
 import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
@@ -83,12 +86,76 @@ export class PageThumbnailRenderer {
       Math.round(snapshot.canvasWidth),
       Math.round(snapshot.canvasHeight),
       snapshot.contentVersion,
+      this.getElementsRenderVersion(snapshot.elements),
       snapshot.activeStrokeVersion,
       snapshot.strokeLayerZIndex,
       snapshot.isLoading ? 'loading' : 'ready',
       Math.round(viewportSize.width),
       Math.round(viewportSize.height)
     ].join('|');
+  }
+
+  private static getElementsRenderVersion(elements: CanvasElement[]): string {
+    if (elements.length === 0) {
+      return '';
+    }
+
+    return elements.map((element: CanvasElement): string => {
+      const frameKey = [
+        Math.round(element.x * 10),
+        Math.round(element.y * 10),
+        Math.round(element.width * 10),
+        Math.round(element.height * 10),
+        Math.round(element.zIndex)
+      ].join(',');
+      if (element.type === 'text') {
+        const textElement = element as TextCanvasElement;
+        const outline = textElement.outline;
+        return [
+          't',
+          textElement.id,
+          textElement.updatedAt,
+          frameKey,
+          textElement.content.length,
+          Math.round(textElement.fontSize * 10),
+          textElement.color,
+          textElement.backgroundColor,
+          outline.lineStyle,
+          outline.color,
+          Math.round(outline.width * 10)
+        ].join(':');
+      }
+
+      if (element.type === 'shape') {
+        const shapeElement = element as ShapeCanvasElement;
+        const outline = shapeElement.outline;
+        return [
+          's',
+          shapeElement.id,
+          shapeElement.updatedAt,
+          frameKey,
+          shapeElement.shapeType,
+          shapeElement.fillColor,
+          outline.lineStyle,
+          outline.color,
+          Math.round(outline.width * 10)
+        ].join(':');
+      }
+
+      const imageElement = element as ImageCanvasElement;
+      const outline = imageElement.outline;
+      return [
+        'i',
+        imageElement.id,
+        imageElement.updatedAt,
+        frameKey,
+        imageElement.uri,
+        Math.round(imageElement.opacity * 1000),
+        outline.lineStyle,
+        outline.color,
+        Math.round(outline.width * 10)
+      ].join(':');
+    }).join('|');
   }
 
   static draw(
