@@ -3,7 +3,10 @@ import picker from '@ohos.file.picker';
 import router from '@ohos.router';
 
 import { AppRouter, RouterParams } from '../../../app/AppRouter';
+import { StorageKeys } from '../../../common/constants/StorageKeys';
+import { AppTheme } from '../../../common/theme/AppTheme';
 import { ImageAssetDataSource, ImportedImageAsset } from '../../../data/sources/local/ImageAssetDataSource';
+import { PreferencesDataSource } from '../../../data/sources/local/PreferencesDataSource';
 import { Notebook } from '../../../domain/entities/Notebook';
 import { NotebookPage, NotebookPageTemplateType } from '../../../domain/entities/NotebookPage';
 import { ShapeType } from '../../../domain/entities/CanvasElement';
@@ -31,6 +34,13 @@ import { EditorViewModel } from '../viewmodels/EditorViewModel';
 import { PageThumbnailStore } from '../viewmodels/PageThumbnailStore';
 
 interface PageCanvasRenderSize {
+  width: number;
+  height: number;
+}
+
+interface DocumentPageVisibleBounds {
+  left: number;
+  top: number;
   width: number;
   height: number;
 }
@@ -86,9 +96,6 @@ const WORKSPACE_TOOL_DROPDOWN_GAP = 4;
 const TOOL_DROPDOWN_WIDTH = 276;
 const SHAPE_DROPDOWN_WIDTH = 204;
 const PAGE_TEMPLATE_DROPDOWN_WIDTH = 444;
-const WORKSPACE_TOOLBAR_THEME_COLOR = '#FCFDFE';
-const WORKSPACE_TOOL_SELECTED_DARK_BACKGROUND = '#0F172A';
-const WORKSPACE_TOOL_LIGHT_BACKGROUND = '#FFFFFF';
 const WORKSPACE_TOOL_DARK_ICON = '#111827';
 const WORKSPACE_TOOL_LIGHT_ICON = '#FFFFFF';
 const TRANSPARENT_BACKGROUND = '#00FFFFFF';
@@ -188,6 +195,7 @@ struct EditorPage {
   @State private draftExportPageRange: string = '';
   @State private hasMissingNotebookId: boolean = false;
   @State private isNotebookMissing: boolean = false;
+  @StorageLink('storage.app.theme.color') private themeColor: string = AppTheme.DEFAULT_COLOR;
   @State private toolSetting: ToolSetting = this.buildDefaultToolSetting();
   @State private canvasInputMode: CanvasInputMode = 'stylus';
   @State private focusedPageId: string = '';
@@ -253,6 +261,7 @@ struct EditorPage {
   private documentViewportGestureStartWorkspaceX: number = 0;
   private documentViewportGestureStartWorkspaceY: number = 0;
   private notebookExportService?: NotebookExportService;
+  private themePreferencesDataSource?: PreferencesDataSource;
   private lastDocumentTouchSignature: string = '';
   private pendingDocumentViewportPageId: string = '';
   private editorViewModel?: EditorViewModel;
@@ -260,8 +269,10 @@ struct EditorPage {
   private drawingViewModel: DrawingEditorViewModel | null = null;
   private currentDrawingPageId: string = '';
   private lastSyncedNotebookEditedPageId: string = '';
+  private pendingNotebookLastEditedPageSync: Promise<void> | null = null;
 
   aboutToAppear(): void {
+    void this.loadThemeColor();
     void this.loadEditorState();
   }
 
@@ -310,7 +321,7 @@ struct EditorPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor($r('app.color.app_background'))
+    .backgroundColor(this.getThemeShellBackgroundColor())
   }
 
   @Builder
@@ -465,7 +476,7 @@ struct EditorPage {
       Text(this.notebookTitle)
         .fontSize($r('app.float.section_title_size'))
         .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.primary_text'))
+        .fontColor(this.getThemeTopBarTextColor())
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .textAlign(TextAlign.Center)
@@ -478,11 +489,11 @@ struct EditorPage {
       top: 10,
       bottom: 10
     })
-    .backgroundColor($r('app.color.editor_toolbar_background'))
+    .backgroundColor(this.getThemeTopBarBackgroundColor())
     .borderRadius(0)
     .border({
       width: 1,
-      color: $r('app.color.editor_toolbar_border')
+      color: this.getThemeBorderColor()
     })
     .onClick(() => {
       this.closeToolDropdown();
@@ -503,14 +514,14 @@ struct EditorPage {
 
           Text(this.getPageCountText())
             .fontSize($r('app.float.caption_text_size'))
-            .fontColor($r('app.color.editor_accent'))
+            .fontColor(this.getThemeColor())
             .padding({
               left: 12,
               right: 12,
               top: 6,
               bottom: 6
             })
-            .backgroundColor($r('app.color.editor_accent_soft'))
+            .backgroundColor(this.getThemeSoftColor())
             .borderRadius(999)
         }
 
@@ -598,11 +609,11 @@ struct EditorPage {
     .width(this.isPagePreviewCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH)
     .height('100%')
     .padding(this.isPagePreviewCollapsed ? 10 : SIDEBAR_EXPANDED_PADDING)
-    .backgroundColor($r('app.color.editor_sidebar_background'))
+    .backgroundColor(this.getThemeSidebarBackgroundColor())
     .borderRadius(0)
     .border({
       width: 1,
-      color: $r('app.color.editor_sidebar_border')
+      color: this.getThemeBorderColor()
     })
     .onClick(() => {
       this.closeToolDropdown();
@@ -658,7 +669,7 @@ struct EditorPage {
         .borderRadius(18)
         .border({
           width: 1,
-          color: this.isPageVisuallySelected(page.id) ? $r('app.color.editor_accent') :
+          color: this.isPageVisuallySelected(page.id) ? this.getThemeColor() :
             $r('app.color.editor_paper_border')
         })
         .onClick(() => {
@@ -695,7 +706,7 @@ struct EditorPage {
             .width(24)
             .height(24)
             .textAlign(TextAlign.Center)
-            .backgroundColor(this.isPageVisuallySelected(page.id) ? $r('app.color.editor_accent') : '#FFFFFF')
+            .backgroundColor(this.isPageVisuallySelected(page.id) ? this.getThemeColor() : '#FFFFFF')
             .borderRadius(6)
         }
         .alignItems(VerticalAlign.Center)
@@ -741,7 +752,7 @@ struct EditorPage {
                     .border({
                       width: this.shouldUseLightWorkspaceToolbarTheme() && this.isWorkspaceToolActive(tool) ? 1 : 0,
                       color: this.shouldUseLightWorkspaceToolbarTheme() && this.isWorkspaceToolActive(tool) ?
-                        WORKSPACE_TOOL_SELECTED_DARK_BACKGROUND : TRANSPARENT_BACKGROUND
+                        this.getThemeColor() : TRANSPARENT_BACKGROUND
                     })
                     .enabled(!this.isCanvasLoading)
                     .onAreaChange((_oldValue: Area, newValue: Area) => {
@@ -799,7 +810,7 @@ struct EditorPage {
             top: 4,
             bottom: 4
           })
-          .backgroundColor($r('app.color.editor_toolbar_background'))
+          .backgroundColor(this.getThemeSidebarBackgroundColor())
           .zIndex(10)
         }
 
@@ -826,11 +837,11 @@ struct EditorPage {
     }
     .layoutWeight(1)
     .height('100%')
-    .backgroundColor($r('app.color.editor_toolbar_background'))
+    .backgroundColor(this.getThemeSidebarBackgroundColor())
     .borderRadius(0)
     .border({
       width: 1,
-      color: $r('app.color.editor_toolbar_border')
+      color: this.getThemeBorderColor()
     })
     .onAreaChange((_oldValue: Area, newValue: Area) => {
       this.workspaceContainerWindowX = this.resolveAreaPosition(newValue.globalPosition.x);
@@ -1416,6 +1427,11 @@ struct EditorPage {
             inputMode: this.canvasInputMode,
             isActivePage: this.isDocumentPageActive(page.id),
             autoLoadSession: this.shouldAutoLoadDocumentPageSession(page.id),
+            viewportUiScale: this.getDocumentVisualScale(),
+            viewportClipLeft: this.getDocumentPageVisibleLeft(page.id),
+            viewportClipTop: this.getDocumentPageVisibleTop(page.id),
+            viewportClipWidth: this.getDocumentPageVisibleWidth(page.id),
+            viewportClipHeight: this.getDocumentPageVisibleHeight(page.id),
             editorSnapshot: $editorSnapshot,
             onPageInteractionStart: (pageId: string): void => {
               this.activateDocumentPageForInteraction(pageId);
@@ -1504,7 +1520,7 @@ struct EditorPage {
     .border({
       width: this.shouldUseLightWorkspaceToolbarTheme() && isSelected ? 1 : 0,
       color: this.shouldUseLightWorkspaceToolbarTheme() && isSelected ?
-        WORKSPACE_TOOL_SELECTED_DARK_BACKGROUND : TRANSPARENT_BACKGROUND
+        this.getThemeColor() : TRANSPARENT_BACKGROUND
     })
     .enabled(!this.isUpdatingPageTemplate && !this.isCanvasLoading)
     .onAreaChange((_oldValue: Area, newValue: Area) => {
@@ -1545,7 +1561,7 @@ struct EditorPage {
     .border({
       width: this.shouldUseLightWorkspaceToolbarTheme() && isSelected ? 1 : 0,
       color: this.shouldUseLightWorkspaceToolbarTheme() && isSelected ?
-        WORKSPACE_TOOL_SELECTED_DARK_BACKGROUND : TRANSPARENT_BACKGROUND
+        this.getThemeColor() : TRANSPARENT_BACKGROUND
     })
     .enabled(!this.isCanvasLoading)
     .onClick(() => {
@@ -1833,7 +1849,7 @@ struct EditorPage {
         Button('Close')
           .width('100%')
           .height($r('app.float.button_height'))
-          .backgroundColor($r('app.color.editor_accent'))
+          .backgroundColor(this.getThemeColor())
           .fontColor($r('app.color.inverse_text'))
           .onClick(() => {
             this.closeExportFailureMessage();
@@ -1880,7 +1896,7 @@ struct EditorPage {
           .textAlign(TextAlign.Center)
 
         Row({ space: 10 }) {
-          Button('鍙栨秷')
+          Button('取消')
             .layoutWeight(1)
             .height(38)
             .enabled(!this.isDeletingPage)
@@ -1948,6 +1964,52 @@ struct EditorPage {
     }
 
     return this.notebookExportService as NotebookExportService;
+  }
+
+  private ensureThemePreferencesDataSource(): PreferencesDataSource {
+    if (this.themePreferencesDataSource === undefined) {
+      const hostContext: common.Context | undefined = this.getUIContext().getHostContext() as common.Context | undefined;
+      if (hostContext === undefined) {
+        throw new Error('Host context is unavailable.');
+      }
+      this.themePreferencesDataSource = new PreferencesDataSource(hostContext);
+    }
+
+    return this.themePreferencesDataSource as PreferencesDataSource;
+  }
+
+  private async loadThemeColor(): Promise<void> {
+    const storedColor: string =
+      await this.ensureThemePreferencesDataSource().getString(StorageKeys.THEME_COLOR, AppTheme.DEFAULT_COLOR);
+    this.themeColor = AppTheme.normalizeThemeColor(storedColor);
+  }
+
+  private getThemeColor(): string {
+    return AppTheme.getAccentColor(this.themeColor);
+  }
+
+  private getThemeSoftColor(): string {
+    return AppTheme.getSoftColor(this.themeColor);
+  }
+
+  private getThemeShellBackgroundColor(): string {
+    return AppTheme.getShellBackgroundColor(this.themeColor);
+  }
+
+  private getThemeTopBarBackgroundColor(): string {
+    return AppTheme.getTopBarBackgroundColor(this.themeColor);
+  }
+
+  private getThemeTopBarTextColor(): string {
+    return AppTheme.getTopBarTextColor(this.themeColor);
+  }
+
+  private getThemeSidebarBackgroundColor(): string {
+    return AppTheme.getSidebarBackgroundColor(this.themeColor);
+  }
+
+  private getThemeBorderColor(): string {
+    return AppTheme.getBorderColor(this.themeColor);
   }
 
   private buildPageThumbnailSnapshot(page: NotebookPage): PageThumbnailRenderSnapshot {
@@ -2169,12 +2231,32 @@ struct EditorPage {
     }
 
     this.lastSyncedNotebookEditedPageId = pageId;
-    void this.ensureViewModel().updateNotebookLastEditedPage(this.notebookId, pageId);
+    const previousSync: Promise<void> | null = this.pendingNotebookLastEditedPageSync;
+    const syncStart: Promise<void> = previousSync === null ? Promise.resolve() : previousSync;
+    this.pendingNotebookLastEditedPageSync = syncStart
+      .then((): Promise<Notebook | null> => {
+        return this.ensureViewModel().updateNotebookLastEditedPage(this.notebookId, pageId);
+      })
+      .then((_notebook: Notebook | null): void => {
+      })
+      .catch((): void => {
+      });
+  }
+
+  private async flushNotebookLastEditedPageSync(): Promise<void> {
+    const pendingSync: Promise<void> | null = this.pendingNotebookLastEditedPageSync;
+    if (pendingSync === null) {
+      return;
+    }
+
+    this.pendingNotebookLastEditedPageSync = null;
+    await pendingSync;
   }
 
   private async returnToPreviousPage(): Promise<void> {
     this.closeTransientDropdowns();
     this.syncNotebookLastEditedPage(this.activePageId);
+    await this.flushNotebookLastEditedPageSync();
     await this.flushActiveDrawingSession();
     AppRouter.back();
   }
@@ -2900,6 +2982,14 @@ struct EditorPage {
     return 0;
   }
 
+  private clampNumber(value: number, minValue: number, maxValue: number): number {
+    if (!Number.isFinite(value)) {
+      return minValue;
+    }
+
+    return Math.max(minValue, Math.min(maxValue, value));
+  }
+
   private getDocumentPageSurfaceWidth(): number {
     return this.getDocumentPageSurfaceBaseWidth();
   }
@@ -2928,6 +3018,66 @@ struct EditorPage {
 
   private getDocumentPageSurfaceHeightForScale(pageId: string, scale: number): number {
     return Math.round(this.getDocumentPageSurfaceHeightForPage(pageId) * scale);
+  }
+
+  private getDocumentPageVisibleLeft(pageId: string): number {
+    return this.getDocumentPageVisibleBounds(pageId).left;
+  }
+
+  private getDocumentPageVisibleTop(pageId: string): number {
+    return this.getDocumentPageVisibleBounds(pageId).top;
+  }
+
+  private getDocumentPageVisibleWidth(pageId: string): number {
+    return this.getDocumentPageVisibleBounds(pageId).width;
+  }
+
+  private getDocumentPageVisibleHeight(pageId: string): number {
+    return this.getDocumentPageVisibleBounds(pageId).height;
+  }
+
+  private getDocumentPageVisibleBounds(pageId: string): DocumentPageVisibleBounds {
+    const scale: number = Math.max(0.01, this.getDocumentVisualScale());
+    const pageWidth: number = this.getDocumentPageSurfaceWidth();
+    const pageHeight: number = this.getDocumentPageSurfaceHeightForPage(pageId);
+    const viewportWidth: number = this.workspaceViewportWidth > 0
+      ? this.workspaceViewportWidth
+      : pageWidth * scale;
+    const viewportHeight: number = this.workspaceViewportHeight > 0
+      ? this.workspaceViewportHeight
+      : pageHeight * scale;
+    const pageLeftInContent: number = DOCUMENT_PAGE_HORIZONTAL_PADDING;
+    const pageTopInContent: number = this.getDocumentPageBlockTop(pageId);
+
+    const visibleLeft: number = this.clampNumber(
+      (0 - this.getDocumentVisualOffsetX()) / scale - pageLeftInContent,
+      0,
+      pageWidth
+    );
+    const visibleRight: number = this.clampNumber(
+      (viewportWidth - this.getDocumentVisualOffsetX()) / scale - pageLeftInContent,
+      0,
+      pageWidth
+    );
+    const visibleTop: number = this.clampNumber(
+      (0 - this.getDocumentContentOffsetY()) / scale - pageTopInContent,
+      0,
+      pageHeight
+    );
+    const visibleBottom: number = this.clampNumber(
+      (viewportHeight - this.getDocumentContentOffsetY()) / scale - pageTopInContent,
+      0,
+      pageHeight
+    );
+    const left: number = Math.min(visibleLeft, visibleRight);
+    const top: number = Math.min(visibleTop, visibleBottom);
+
+    return {
+      left: left,
+      top: top,
+      width: Math.max(0, Math.max(visibleLeft, visibleRight) - left),
+      height: Math.max(0, Math.max(visibleTop, visibleBottom) - top)
+    };
   }
 
   private getDocumentPageBlockTopForScale(pageId: string, scale: number): number {
@@ -4063,49 +4213,19 @@ struct EditorPage {
 
   private getWorkspaceToolRenderKey(tool: ToolType): string {
     return `${tool}_${this.isWorkspaceToolActive(tool) ? 'selected' : 'idle'}_${this.shouldUseLightWorkspaceToolbarTheme() ?
-      'light' : 'tinted'}`;
+      'light' : 'tinted'}_${this.getThemeColor()}`;
   }
 
   private getWorkspaceToolButtonBackgroundColor(isSelected: boolean): ResourceColor {
-    if (this.shouldUseLightWorkspaceToolbarTheme()) {
-      return isSelected ? WORKSPACE_TOOL_SELECTED_DARK_BACKGROUND : WORKSPACE_TOOL_LIGHT_BACKGROUND;
-    }
-
-    return isSelected ? WORKSPACE_TOOL_LIGHT_BACKGROUND : TRANSPARENT_BACKGROUND;
+    return isSelected ? this.getThemeColor() : TRANSPARENT_BACKGROUND;
   }
 
   private getWorkspaceToolIconTone(isSelected: boolean): string {
-    if (this.shouldUseLightWorkspaceToolbarTheme()) {
-      return isSelected ? 'white' : 'black';
-    }
-
-    return isSelected ? 'theme' : 'white';
+    return isSelected ? 'white' : 'black';
   }
 
   private shouldUseLightWorkspaceToolbarTheme(): boolean {
-    return this.isNearWhiteColor(WORKSPACE_TOOLBAR_THEME_COLOR);
-  }
-
-  private isNearWhiteColor(color: string): boolean {
-    const normalizedColor: string = color.trim().toUpperCase();
-    if (!normalizedColor.startsWith('#')) {
-      return false;
-    }
-
-    const hexColor: string = normalizedColor.substring(1);
-    const rgbHex: string = hexColor.length === 8 ? hexColor.substring(2) : hexColor;
-    if (rgbHex.length !== 6) {
-      return false;
-    }
-
-    const red: number = Number.parseInt(rgbHex.substring(0, 2), 16);
-    const green: number = Number.parseInt(rgbHex.substring(2, 4), 16);
-    const blue: number = Number.parseInt(rgbHex.substring(4, 6), 16);
-    if (!Number.isFinite(red) || !Number.isFinite(green) || !Number.isFinite(blue)) {
-      return false;
-    }
-
-    return red >= 245 && green >= 245 && blue >= 245;
+    return AppTheme.isWhiteTheme(this.themeColor);
   }
 
   private getShapeLabel(shapeType: ShapeType): string {
@@ -4967,7 +5087,7 @@ struct EditorPage {
 
   private getPageThumbnailBorderColor(page: NotebookPage): ResourceColor {
     if (this.isPageVisuallySelected(page.id)) {
-      return $r('app.color.editor_accent');
+      return this.getThemeColor();
     }
 
     return $r('app.color.editor_sidebar_border');

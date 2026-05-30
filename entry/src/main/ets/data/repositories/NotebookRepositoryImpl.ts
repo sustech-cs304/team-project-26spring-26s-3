@@ -344,7 +344,7 @@ export class NotebookRepositoryImpl implements NotebookRepository {
       title: notebook.title,
       folderId: notebook.folderId,
       createdAt: notebook.createdAt,
-      updatedAt: TimeUtil.now(),
+      updatedAt: notebook.updatedAt,
       coverColor: NotebookEntity.normalizeCoverColor(notebook.coverColor),
       coverImageUri: NotebookEntity.normalizeCoverImageUri(notebook.coverImageUri),
       pageCount: NotebookEntity.normalizePageCount(notebook.pageCount),
@@ -947,7 +947,7 @@ export class NotebookRepositoryImpl implements NotebookRepository {
           isDeleted: notebook.isDeleted === true,
           deletedAt: this.normalizeTimestamp(notebook.deletedAt),
           lastOpenedAt: this.normalizeTimestamp(notebook.lastOpenedAt),
-          lastEditedPageId: NotebookEntity.normalizeLastEditedPageId(notebook.lastEditedPageId)
+          lastEditedPageId: pageId
         };
         await this.persistNotebookList(notebookList);
         return true;

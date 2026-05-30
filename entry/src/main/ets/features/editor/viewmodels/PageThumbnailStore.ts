@@ -47,6 +47,18 @@ export class PageThumbnailStore {
       return false;
     }
 
+    return this.loadPageContent(pageId);
+  }
+
+  async refreshPageContent(pageId: string): Promise<boolean> {
+    if (pageId.length === 0 || this.loadingPageIds.has(pageId)) {
+      return false;
+    }
+
+    return this.loadPageContent(pageId);
+  }
+
+  private async loadPageContent(pageId: string): Promise<boolean> {
     this.loadingPageIds.add(pageId);
     try {
       const pageContent: PageCanvasContent = await this.repository.getPageContent(pageId);
