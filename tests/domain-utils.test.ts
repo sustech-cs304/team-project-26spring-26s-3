@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { clampElementFrameToBounds } from '../entry/src/main/ets/common/utils/ElementBoundsUtil';
 import { createId, IdUtil } from '../entry/src/main/ets/common/utils/IdUtil';
 import { now, TimeUtil } from '../entry/src/main/ets/common/utils/TimeUtil';
+import { AppTheme } from '../entry/src/main/ets/common/theme/AppTheme';
 import { NotebookEntity } from '../entry/src/main/ets/domain/entities/Notebook';
 import { getStrokeRenderKey, type Stroke, type StrokePoint } from '../entry/src/main/ets/domain/entities/Stroke';
 import { isDrawableToolType, isToolType } from '../entry/src/main/ets/domain/entities/ToolSetting';
@@ -75,13 +76,39 @@ describe('TimeUtil', () => {
   });
 });
 
+describe('AppTheme', () => {
+  it('derives shell colors from the selected theme color', () => {
+    expect(AppTheme.getShellBackgroundColor('#2E6BFF')).toBe('#F5F8FF');
+    expect(AppTheme.getPanelBackgroundColor('#2E6BFF')).toBe('#EEF3FF');
+    expect(AppTheme.getTopBarBackgroundColor('#2E6BFF')).toBe('#2550BA');
+    expect(AppTheme.getSidebarBackgroundColor('#2E6BFF')).toBe('#EAF0FF');
+    expect(AppTheme.getBorderColor('#2E6BFF')).toBe('#B9C9ED');
+    expect(AppTheme.getTopBarTextColor('#2E6BFF')).toBe('#FFFFFF');
+  });
+
+  it('uses the old neutral chrome with blue accents for the white theme', () => {
+    expect(AppTheme.getAccentColor('#FFFFFF')).toBe(AppTheme.DEFAULT_COLOR);
+    expect(AppTheme.getShellBackgroundColor('#FFFFFF')).toBe('#F3F5FA');
+    expect(AppTheme.getTopBarBackgroundColor('#FFFFFF')).toBe('#FAFBFF');
+    expect(AppTheme.getSidebarBackgroundColor('#FFFFFF')).toBe('#F8FAFF');
+    expect(AppTheme.getBorderColor('#FFFFFF')).toBe('#D8DEE9');
+    expect(AppTheme.getTintColor('#FFFFFF')).toBe('#332E6BFF');
+    expect(AppTheme.getTopBarTextColor('#FFFFFF')).toBe('#0F172A');
+  });
+
+  it('falls back to the default theme for invalid colors', () => {
+    expect(AppTheme.getTopBarBackgroundColor('bad-color')).toBe('#2550BA');
+  });
+});
+
 describe('NotebookEntity', () => {
   it('normalizes duplicate notebook titles with numeric suffixes', () => {
     expect(NotebookEntity.createUniqueTitle('Math', [])).toBe('Math');
-    expect(NotebookEntity.createUniqueTitle('Math', ['Math'])).toBe('Math (2)');
-    expect(NotebookEntity.createUniqueTitle('Math', ['Math', 'Math (2)'])).toBe('Math (3)');
-    expect(NotebookEntity.createUniqueTitle(' math  ', ['Math'])).toBe('math (2)');
-    expect(NotebookEntity.createUniqueTitle('', ['Untitled Notebook'])).toBe('Untitled Notebook (2)');
+    expect(NotebookEntity.createUniqueTitle('Math', ['Math'])).toBe('Math（1）');
+    expect(NotebookEntity.createUniqueTitle('Math', ['Math', 'Math（1）'])).toBe('Math（2）');
+    expect(NotebookEntity.createUniqueTitle(' math  ', ['Math'])).toBe('math（1）');
+    expect(NotebookEntity.createUniqueTitle('', ['Untitled Notebook'])).toBe('Untitled Notebook（1）');
+    expect(NotebookEntity.createUniqueTitle('Math', ['Math', 'Math (1)', 'Math（2）'])).toBe('Math（3）');
   });
 });
 

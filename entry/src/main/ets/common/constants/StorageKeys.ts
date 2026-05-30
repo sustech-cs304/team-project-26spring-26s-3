@@ -4,4 +4,5 @@ export class StorageKeys {
   static readonly NOTEBOOK_FOLDER_LIST: string = 'storage.notebook.folder_list';
   static readonly NOTEBOOK_SORT_TYPE: string = 'storage.notebook.sort_type';
   static readonly LAST_OPENED_NOTEBOOK_ID: string = 'storage.notebook.last_opened_id';
+  static readonly THEME_COLOR: string = 'storage.app.theme.color';
 }

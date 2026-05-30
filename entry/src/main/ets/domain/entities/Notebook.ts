@@ -63,19 +63,22 @@ export class NotebookEntity {
       return baseTitle;
     }
 
-    const suffixLimit: number = existingTitleKeyList.length + 2;
-    for (let suffix: number = 2; suffix <= suffixLimit; suffix += 1) {
-      const candidateTitle: string = `${baseTitle} (${suffix})`;
+    const suffixLimit: number = existingTitleKeyList.length + 1;
+    for (let suffix: number = 1; suffix <= suffixLimit; suffix += 1) {
+      const candidateTitle: string = `${baseTitle}（${suffix}）`;
       if (!existingTitleKeyList.includes(NotebookEntity.normalizeTitleKey(candidateTitle))) {
         return candidateTitle;
       }
     }
 
-    return `${baseTitle} (${suffixLimit + 1})`;
+    return `${baseTitle}（${suffixLimit + 1}）`;
   }
 
   static normalizeTitleKey(title: string): string {
-    return NotebookEntity.normalizeTitle(title).replace(/\s+/g, ' ').toLowerCase();
+    return NotebookEntity.normalizeTitle(title)
+      .replace(/\s+/g, ' ')
+      .replace(/\s*[(（](\d+)[)）]$/, '（$1）')
+      .toLowerCase();
   }
 
   static normalizeFolderId(folderId?: string): string {

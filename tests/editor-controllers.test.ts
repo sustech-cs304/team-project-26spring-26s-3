@@ -53,7 +53,12 @@ function textElement(id: string, content: string = 'note'): TextCanvasElement {
     content,
     color: '#000000',
     fontSize: 18,
-    backgroundColor: '#00FFFFFF'
+    backgroundColor: '#00FFFFFF',
+    outline: {
+      lineStyle: 'none',
+      color: '#222222',
+      width: 0
+    }
   };
 }
 

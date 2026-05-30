@@ -7,6 +7,7 @@ import {
   normalizeNotebookExportFormat,
   normalizeNotebookExportScope
 } from '../models/NotebookExportOptions';
+import { AppTheme } from '../../../common/theme/AppTheme';
 
 @Component
 export struct NotebookExportDialog {
@@ -19,6 +20,9 @@ export struct NotebookExportDialog {
   @Prop isChoosingPath: boolean = false;
   @Prop isExporting: boolean = false;
   @Prop showScopeOptions: boolean = true;
+  @Prop isBatchMode: boolean = false;
+  @Prop batchItemCount: number = 0;
+  @StorageLink('storage.app.theme.color') private themeColor: string = AppTheme.DEFAULT_COLOR;
   onCancel: () => void = (): void => {};
   onChoosePath: () => void = (): void => {};
   onConfirm: () => void = (): void => {};
@@ -34,7 +38,8 @@ export struct NotebookExportDialog {
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.primary_text'))
 
-        Text(this.notebookTitle.length > 0 ? `笔记本：${this.notebookTitle}` : '选择导出参数。')
+        Text(this.isBatchMode ? `将分别导出 ${this.batchItemCount} 个笔记本` :
+          (this.notebookTitle.length > 0 ? `笔记本：${this.notebookTitle}` : '选择导出参数。'))
           .fontSize($r('app.float.caption_text_size'))
           .fontColor($r('app.color.secondary_text'))
           .maxLines(2)
@@ -43,28 +48,30 @@ export struct NotebookExportDialog {
       .width('100%')
       .alignItems(HorizontalAlign.Start)
 
-      Column({ space: 8 }) {
-        Text('文件名')
-          .fontSize(13)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.primary_text'))
+      if (!this.isBatchMode) {
+        Column({ space: 8 }) {
+          Text('文件名')
+            .fontSize(13)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.primary_text'))
 
-        TextInput({
-          placeholder: '输入导出文件名',
-          text: this.fileName
-        })
-          .width('100%')
-          .height($r('app.float.button_height'))
-          .fontSize($r('app.float.body_text_size'))
-          .backgroundColor($r('app.color.app_background'))
-          .borderRadius(14)
-          .padding({ left: 16, right: 16 })
-          .onChange((value: string) => {
-            this.fileName = value;
+          TextInput({
+            placeholder: '输入导出文件名',
+            text: this.fileName
           })
+            .width('100%')
+            .height($r('app.float.button_height'))
+            .fontSize($r('app.float.body_text_size'))
+            .backgroundColor($r('app.color.app_background'))
+            .borderRadius(14)
+            .padding({ left: 16, right: 16 })
+            .onChange((value: string) => {
+              this.fileName = value;
+            })
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
       }
-      .width('100%')
-      .alignItems(HorizontalAlign.Start)
 
       Column({ space: 8 }) {
         Text('导出格式')
@@ -145,7 +152,7 @@ export struct NotebookExportDialog {
             .padding({ left: 14, right: 14 })
             .fontSize(13)
             .enabled(!this.isDialogBusy())
-            .backgroundColor($r('app.color.primary_text'))
+            .backgroundColor(this.getThemeColor())
             .fontColor($r('app.color.inverse_text'))
             .borderRadius(14)
             .onClick(() => {
@@ -160,10 +167,17 @@ export struct NotebookExportDialog {
       .width('100%')
       .alignItems(HorizontalAlign.Start)
 
-      Text(`预览文件：${this.getPreviewFileName()}`)
-        .width('100%')
-        .fontSize($r('app.float.caption_text_size'))
-        .fontColor($r('app.color.secondary_text'))
+      if (this.isBatchMode) {
+        Text('将使用每个笔记本名称分别生成导出文件。')
+          .width('100%')
+          .fontSize($r('app.float.caption_text_size'))
+          .fontColor($r('app.color.secondary_text'))
+      } else {
+        Text(`预览文件：${this.getPreviewFileName()}`)
+          .width('100%')
+          .fontSize($r('app.float.caption_text_size'))
+          .fontColor($r('app.color.secondary_text'))
+      }
 
       Text('PDF 会导出为单个文件，图片格式会按页面导出。')
         .width('100%')
@@ -187,7 +201,7 @@ export struct NotebookExportDialog {
           .layoutWeight(1)
           .height($r('app.float.button_height'))
           .enabled(!this.isDialogBusy())
-          .backgroundColor($r('app.color.primary_text'))
+          .backgroundColor(this.getThemeColor())
           .fontColor($r('app.color.inverse_text'))
           .onClick(() => {
             if (!this.isDialogBusy()) {
@@ -229,11 +243,11 @@ export struct NotebookExportDialog {
     .height(62)
     .padding(0)
     .enabled(!this.isDialogBusy())
-    .backgroundColor(this.isFormatSelected(option.format) ? $r('app.color.editor_accent') : $r('app.color.app_background'))
+    .backgroundColor(this.isFormatSelected(option.format) ? this.getThemeColor() : $r('app.color.app_background'))
     .borderRadius(14)
     .border({
       width: 1,
-      color: this.isFormatSelected(option.format) ? $r('app.color.editor_accent') : $r('app.color.card_border')
+      color: this.isFormatSelected(option.format) ? this.getThemeColor() : $r('app.color.card_border')
     })
     .onClick(() => {
       if (!this.isDialogBusy()) {
@@ -266,11 +280,11 @@ export struct NotebookExportDialog {
     .height(62)
     .padding(0)
     .enabled(!this.isDialogBusy())
-    .backgroundColor(this.isScopeSelected(option.scope) ? $r('app.color.editor_accent') : $r('app.color.app_background'))
+    .backgroundColor(this.isScopeSelected(option.scope) ? this.getThemeColor() : $r('app.color.app_background'))
     .borderRadius(14)
     .border({
       width: 1,
-      color: this.isScopeSelected(option.scope) ? $r('app.color.editor_accent') : $r('app.color.card_border')
+      color: this.isScopeSelected(option.scope) ? this.getThemeColor() : $r('app.color.card_border')
     })
     .onClick(() => {
       if (!this.isDialogBusy()) {
@@ -297,6 +311,10 @@ export struct NotebookExportDialog {
 
   private isDialogBusy(): boolean {
     return this.isChoosingPath || this.isExporting;
+  }
+
+  private getThemeColor(): string {
+    return AppTheme.getAccentColor(this.themeColor);
   }
 
   private getPreviewFileName(): string {

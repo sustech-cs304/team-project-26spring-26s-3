@@ -1,4 +1,5 @@
 import { NotebookFolder } from '../../../domain/entities/NotebookFolder';
+import { AppTheme } from '../../../common/theme/AppTheme';
 
 @Component
 export struct MoveNotebookDialog {
@@ -6,6 +7,8 @@ export struct MoveNotebookDialog {
   @Prop notebookTitle: string = '';
   @Prop folderList: NotebookFolder[] = [];
   @Prop isSubmitting: boolean = false;
+  @StorageLink('storage.app.theme.color') private themeColor: string = AppTheme.DEFAULT_COLOR;
+  @State private searchText: string = '';
   onCancel: () => void = (): void => {};
   onConfirm: () => void = (): void => {};
 
@@ -24,16 +27,34 @@ export struct MoveNotebookDialog {
       .width('100%')
       .alignItems(HorizontalAlign.Start)
 
-      Column({ space: 8 }) {
-        this.buildFolderOption('', '未归类')
+      TextInput({
+        placeholder: '搜索文件夹',
+        text: this.searchText
+      })
+        .width('100%')
+        .height($r('app.float.button_height'))
+        .fontSize($r('app.float.body_text_size'))
+        .backgroundColor($r('app.color.app_background'))
+        .borderRadius(12)
+        .border({ width: 1, color: this.getThemeBorderColor() })
+        .padding({ left: 14, right: 14 })
+        .enabled(!this.isSubmitting)
+        .onChange((value: string) => {
+          this.searchText = value;
+        })
 
-        if (this.folderList.length === 0) {
+      Column({ space: 8 }) {
+        if (this.shouldShowUngroupedOption()) {
+          this.buildFolderOption('', '未归类')
+        }
+
+        if (this.getFilteredFolderList().length === 0 && !this.shouldShowUngroupedOption()) {
           Text($r('app.string.folder_move_empty_desc'))
             .width('100%')
             .fontSize($r('app.float.caption_text_size'))
             .fontColor($r('app.color.secondary_text'))
         } else {
-          ForEach(this.folderList, (folder: NotebookFolder) => {
+          ForEach(this.getFilteredFolderList(), (folder: NotebookFolder) => {
             this.buildFolderOption(folder.id, folder.title)
           }, (folder: NotebookFolder): string => folder.id)
         }
@@ -56,7 +77,7 @@ export struct MoveNotebookDialog {
         Button(this.isSubmitting ? $r('app.string.folder_moving') : $r('app.string.folder_move_confirm'))
           .layoutWeight(1)
           .height($r('app.float.button_height'))
-          .backgroundColor($r('app.color.primary_text'))
+          .backgroundColor(this.getThemeColor())
           .fontColor($r('app.color.inverse_text'))
           .onClick(() => {
             if (!this.isSubmitting) {
@@ -83,17 +104,49 @@ export struct MoveNotebookDialog {
     Button(title)
       .width('100%')
       .height($r('app.float.button_height'))
-      .backgroundColor(this.selectedFolderId === folderId ? $r('app.color.primary_text') : $r('app.color.app_background'))
+      .backgroundColor(this.selectedFolderId === folderId ? this.getThemeColor() : $r('app.color.app_background'))
       .fontColor(this.selectedFolderId === folderId ? $r('app.color.inverse_text') : $r('app.color.primary_text'))
       .border({
         width: 1,
-        color: this.selectedFolderId === folderId ? $r('app.color.primary_text') : $r('app.color.card_border')
+        color: this.selectedFolderId === folderId ? this.getThemeColor() : $r('app.color.card_border')
       })
       .onClick(() => {
         if (!this.isSubmitting) {
           this.selectedFolderId = folderId;
         }
       })
+  }
+
+  private getThemeColor(): string {
+    return AppTheme.getAccentColor(this.themeColor);
+  }
+
+  private getThemeBorderColor(): string {
+    return AppTheme.getBorderColor(this.themeColor);
+  }
+
+  private normalizeSearchQuery(value: string): string {
+    return value.trim().replace(/\s+/g, ' ').toLowerCase();
+  }
+
+  private shouldShowUngroupedOption(): boolean {
+    const query: string = this.normalizeSearchQuery(this.searchText);
+    return query.length === 0 || '未归类'.toLowerCase().includes(query);
+  }
+
+  private getFilteredFolderList(): NotebookFolder[] {
+    const query: string = this.normalizeSearchQuery(this.searchText);
+    if (query.length === 0) {
+      return this.folderList;
+    }
+
+    const result: NotebookFolder[] = [];
+    for (const folder of this.folderList) {
+      if (folder.title.toLowerCase().includes(query)) {
+        result.push(folder);
+      }
+    }
+    return result;
   }
 
   private getNotebookText(): string {

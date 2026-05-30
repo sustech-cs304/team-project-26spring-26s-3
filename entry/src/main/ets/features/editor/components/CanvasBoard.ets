@@ -264,6 +264,16 @@ export struct CanvasBoard {
   @Prop backgroundImageUri: string = '';
   @Watch('onAutoLoadSessionChanged')
   @Prop autoLoadSession: boolean = true;
+  @Watch('onViewportUiScaleChanged')
+  @Prop viewportUiScale: number = 1;
+  @Watch('onViewportUiBoundsChanged')
+  @Prop viewportClipLeft: number = 0;
+  @Watch('onViewportUiBoundsChanged')
+  @Prop viewportClipTop: number = 0;
+  @Watch('onViewportUiBoundsChanged')
+  @Prop viewportClipWidth: number = 0;
+  @Watch('onViewportUiBoundsChanged')
+  @Prop viewportClipHeight: number = 0;
   @Prop elementVersion: number = 0;
   @Prop selectedShapeType: ShapeType = 'rectangle';
   @Link editorSnapshot: EditorDebugSnapshot;
@@ -1009,6 +1019,12 @@ export struct CanvasBoard {
         x: this.selectionContextMenuX,
         y: this.selectionContextMenuY
       })
+      .scale({
+        x: this.getSelectionContextMenuInverseScale(),
+        y: this.getSelectionContextMenuInverseScale(),
+        centerX: 0,
+        centerY: 0
+      })
       .zIndex(20)
   }
 
@@ -1524,6 +1540,18 @@ export struct CanvasBoard {
 
   private onViewportRefreshVersionChanged(): void {
     this.requestViewportRedraw();
+  }
+
+  private onViewportUiScaleChanged(): void {
+    if (this.isSelectionContextMenuVisible) {
+      this.clampSelectionContextMenuToCanvas();
+    }
+  }
+
+  private onViewportUiBoundsChanged(): void {
+    if (this.isSelectionContextMenuVisible) {
+      this.clampSelectionContextMenuToCanvas();
+    }
   }
 
   private handleTouch(event: TouchEvent): void {
@@ -2804,21 +2832,11 @@ export struct CanvasBoard {
     this.elementStylePanelMode = 'none';
     this.clearImageWarmPreview();
     this.resetLayerActionAvailability();
-    const menuHeight = this.getSelectionContextMenuHeight();
     const size = this.getCanvasSize(this.overlayContext2D);
     const transform = this.getPageViewportTransform(size);
     const screenX = transform.offsetX + this.selectionMoveStartPageX * transform.scale;
     const screenY = transform.offsetY + this.selectionMoveStartPageY * transform.scale;
-    this.selectionContextMenuX = this.clamp(
-      screenX + SELECTION_CONTEXT_MENU_OFFSET,
-      4,
-      Math.max(4, size.width - this.getSelectionContextMenuWidth() - 4)
-    );
-    this.selectionContextMenuY = this.clamp(
-      screenY - menuHeight - SELECTION_CONTEXT_MENU_OFFSET,
-      4,
-      Math.max(4, size.height - menuHeight - 4)
-    );
+    this.placeSelectionContextMenu(screenX, screenY);
     this.isSelectionContextMenuVisible = true;
   }
 
@@ -2837,20 +2855,9 @@ export struct CanvasBoard {
       this.clearImageWarmPreview();
     }
     this.syncLayerActionAvailability();
-    const menuHeight = this.getSelectionContextMenuHeight();
-    const menuWidth = this.getSelectionContextMenuWidth();
     const screenX = transform.offsetX + (element.x + element.width) * transform.scale;
     const screenY = transform.offsetY + element.y * transform.scale;
-    this.selectionContextMenuX = this.clamp(
-      screenX + SELECTION_CONTEXT_MENU_OFFSET,
-      4,
-      Math.max(4, size.width - menuWidth - 4)
-    );
-    this.selectionContextMenuY = this.clamp(
-      screenY - menuHeight - SELECTION_CONTEXT_MENU_OFFSET,
-      4,
-      Math.max(4, size.height - menuHeight - 4)
-    );
+    this.placeSelectionContextMenu(screenX, screenY);
     this.isSelectionContextMenuVisible = true;
   }
 
@@ -2916,6 +2923,72 @@ export struct CanvasBoard {
 
   private getSelectionContextMenuWidth(): number {
     return this.elementStylePanelMode === 'none' ? SELECTION_CONTEXT_MENU_WIDTH : ELEMENT_STYLE_PANEL_WIDTH;
+  }
+
+  private placeSelectionContextMenu(anchorX: number, anchorY: number): void {
+    const offset: number = this.getFixedScreenLengthInCanvas(SELECTION_CONTEXT_MENU_OFFSET);
+    const menuHeight: number = this.getSelectionContextMenuHeightInCanvas();
+
+    this.selectionContextMenuX = anchorX + offset;
+    this.selectionContextMenuY = anchorY - menuHeight - offset;
+    this.clampSelectionContextMenuToCanvas();
+  }
+
+  private getViewportUiScale(): number {
+    if (!Number.isFinite(this.viewportUiScale) || this.viewportUiScale <= 0) {
+      return 1;
+    }
+
+    return Math.max(0.01, this.viewportUiScale);
+  }
+
+  private getSelectionContextMenuInverseScale(): number {
+    return 1 / this.getViewportUiScale();
+  }
+
+  private getFixedScreenLengthInCanvas(length: number): number {
+    return length / this.getViewportUiScale();
+  }
+
+  private getSelectionContextMenuWidthInCanvas(): number {
+    return this.getFixedScreenLengthInCanvas(this.getSelectionContextMenuWidth());
+  }
+
+  private getSelectionContextMenuHeightInCanvas(): number {
+    return this.getFixedScreenLengthInCanvas(this.getSelectionContextMenuHeight());
+  }
+
+  private getSelectionContextMenuVisibleBounds(size: CanvasSize): BoundingBox {
+    const viewportWidth: number = Math.max(1, size.width);
+    const viewportHeight: number = Math.max(1, size.height);
+    const clipLeft: number = this.normalizeViewportClipStart(this.viewportClipLeft, viewportWidth);
+    const clipTop: number = this.normalizeViewportClipStart(this.viewportClipTop, viewportHeight);
+    const clipRight: number = this.normalizeViewportClipEnd(this.viewportClipLeft, this.viewportClipWidth, viewportWidth);
+    const clipBottom: number = this.normalizeViewportClipEnd(this.viewportClipTop, this.viewportClipHeight, viewportHeight);
+
+    return {
+      minX: Math.min(clipLeft, clipRight),
+      minY: Math.min(clipTop, clipBottom),
+      maxX: Math.max(clipLeft, clipRight),
+      maxY: Math.max(clipTop, clipBottom)
+    };
+  }
+
+  private normalizeViewportClipStart(value: number, maxValue: number): number {
+    if (!Number.isFinite(value)) {
+      return 0;
+    }
+
+    return this.clamp(value, 0, maxValue);
+  }
+
+  private normalizeViewportClipEnd(start: number, length: number, maxValue: number): number {
+    if (!Number.isFinite(length) || length <= 0) {
+      return maxValue;
+    }
+
+    const normalizedStart: number = Number.isFinite(start) ? start : 0;
+    return this.clamp(normalizedStart + length, 0, maxValue);
   }
 
   private handleSelectionContextMenuAction(action: SelectionAction): void {
@@ -3672,15 +3745,19 @@ export struct CanvasBoard {
 
   private clampSelectionContextMenuToCanvas(): void {
     const size = this.getCanvasSize(this.overlayContext2D);
+    const margin: number = this.getFixedScreenLengthInCanvas(4);
+    const visibleBounds: BoundingBox = this.getSelectionContextMenuVisibleBounds(size);
     this.selectionContextMenuX = this.clamp(
       this.selectionContextMenuX,
-      4,
-      Math.max(4, size.width - this.getSelectionContextMenuWidth() - 4)
+      visibleBounds.minX + margin,
+      Math.max(visibleBounds.minX + margin,
+        visibleBounds.maxX - this.getSelectionContextMenuWidthInCanvas() - margin)
     );
     this.selectionContextMenuY = this.clamp(
       this.selectionContextMenuY,
-      4,
-      Math.max(4, size.height - this.getSelectionContextMenuHeight() - 4)
+      visibleBounds.minY + margin,
+      Math.max(visibleBounds.minY + margin,
+        visibleBounds.maxY - this.getSelectionContextMenuHeightInCanvas() - margin)
     );
   }
 
