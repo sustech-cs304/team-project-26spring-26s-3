@@ -520,17 +520,27 @@ export class DrawingEditorViewModel {
     }
 
     this.cancelStroke();
+    this.cancelShapeDraft();
+    this.clearEraseState();
     const sourceSnapshot = this.cloneStrokes(this.strokes);
-    if (sourceSnapshot.length === 0) {
+    const sourceElementSnapshot = this.elements.map((element: CanvasElement, index: number): IndexedElementRecord => ({
+      index,
+      element: this.cloneElement(element)
+    }));
+    if (sourceSnapshot.length === 0 && sourceElementSnapshot.length === 0) {
       this.appendDebugEvent('clear', 'skipped empty');
       return;
     }
 
-    this.appendDebugEvent('clear', `requested count=${sourceSnapshot.length} history=${this.describeHistoryState()}`);
+    this.appendDebugEvent(
+      'clear',
+      `requested strokes=${sourceSnapshot.length} elements=${sourceElementSnapshot.length} history=${this.describeHistoryState()}`
+    );
     const applyStartedAt = Date.now();
     const beforeSelection = this.getCurrentSelectionSnapshot();
     this.strokes = [];
-    this.clearStrokeSelection();
+    this.elements = [];
+    this.clearSelectionState();
     this.lassoDraftPath = [];
     this.strokeSpatialIndex.clear();
     this.undoRedoController.recordDelta(
@@ -540,7 +550,7 @@ export class DrawingEditorViewModel {
       })),
       [],
       'clear',
-      [],
+      sourceElementSnapshot,
       [],
       beforeSelection,
       this.getCurrentSelectionSnapshot()
@@ -554,7 +564,7 @@ export class DrawingEditorViewModel {
     EditorPerformanceTrace.record(
       'clear.total',
       Date.now() - applyStartedAt,
-      `removed=${sourceSnapshot.length} removedPoints=${this.countStrokePoints(sourceSnapshot)} persistDelay=${INTERACTION_SAVE_DEBOUNCE_MS}`,
+      `removedStrokes=${sourceSnapshot.length} removedElements=${sourceElementSnapshot.length} removedPoints=${this.countStrokePoints(sourceSnapshot)} persistDelay=${INTERACTION_SAVE_DEBOUNCE_MS}`,
       8
     );
   }

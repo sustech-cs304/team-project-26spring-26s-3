@@ -905,7 +905,7 @@ struct EditorPage {
       })
 
       Button() {
-        if (this.editorSnapshot.strokeCount > 0 && !this.isCanvasLoading) {
+        if (this.hasClearableCanvasContent() && !this.isCanvasLoading) {
           Image($rawfile('icons/editor_clear_white.svg'))
             .width(20)
             .height(20)
@@ -920,8 +920,8 @@ struct EditorPage {
       }
       .width(40)
       .height(40)
-      .enabled(this.editorSnapshot.strokeCount > 0 && !this.isCanvasLoading)
-      .backgroundColor(this.editorSnapshot.strokeCount > 0 && !this.isCanvasLoading ?
+      .enabled(this.hasClearableCanvasContent() && !this.isCanvasLoading)
+      .backgroundColor(this.hasClearableCanvasContent() && !this.isCanvasLoading ?
         $r('app.color.danger_text') : $r('app.color.danger_surface'))
       .borderRadius(12)
       .onClick(() => {
@@ -4048,6 +4048,10 @@ struct EditorPage {
     const targetPageId: string = this.currentDrawingPageId;
     await this.drawingViewModel.clear();
     this.syncDrawingSnapshot(true, this.drawingViewModel, targetPageId, false);
+  }
+
+  private hasClearableCanvasContent(): boolean {
+    return this.editorSnapshot.strokeCount > 0 || this.editorSnapshot.elementCount > 0;
   }
 
   private async handleImageInsertRequest(): Promise<void> {
