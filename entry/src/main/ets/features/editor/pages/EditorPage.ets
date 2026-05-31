@@ -112,7 +112,7 @@ const DOCUMENT_GESTURE_PREVIEW_INTERVAL_MS = 16;
 const DOCUMENT_NAVIGATION_FOCUS_INTERVAL_MS = 48;
 const ACTIVE_PAGE_CANVAS_LOAD_DELAY_MS = 360;
 const DOCUMENT_SINGLE_FINGER_PAN_THRESHOLD_SCREEN_PX = 4;
-const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser', 'lasso', 'text', 'shape', 'edit'];
+const WORKSPACE_TOOL_OPTIONS: ToolType[] = ['pen', 'pencil', 'highlighter', 'eraser', 'lasso', 'text', 'shape'];
 const SHAPE_TOOL_OPTIONS: ShapeType[] = ['rectangle', 'circle', 'line'];
 const PAGE_TEMPLATE_OPTIONS: NotebookPageTemplateType[] = [
   NotebookPageTemplateType.BLANK,
@@ -948,10 +948,8 @@ struct EditorPage {
       this.buildWorkspaceLassoIcon(tone)
     } else if (tool === 'text') {
       this.buildWorkspaceTextIcon(tone)
-    } else if (tool === 'shape') {
-      this.buildWorkspaceShapeIcon(tone)
     } else {
-      this.buildWorkspaceSelectIcon(tone)
+      this.buildWorkspaceShapeIcon(tone)
     }
   }
 
@@ -1029,17 +1027,6 @@ struct EditorPage {
       Image($rawfile('icons/editor_shape_theme.svg')).width(20).height(20).objectFit(ImageFit.Contain)
     } else {
       Image($rawfile('icons/editor_shape_black.svg')).width(20).height(20).objectFit(ImageFit.Contain)
-    }
-  }
-
-  @Builder
-  private buildWorkspaceSelectIcon(tone: string): void {
-    if (tone === 'white') {
-      Image($rawfile('icons/editor_select_white.svg')).width(20).height(20).objectFit(ImageFit.Contain)
-    } else if (tone === 'theme') {
-      Image($rawfile('icons/editor_select_theme.svg')).width(20).height(20).objectFit(ImageFit.Contain)
-    } else {
-      Image($rawfile('icons/editor_select_black.svg')).width(20).height(20).objectFit(ImageFit.Contain)
     }
   }
 

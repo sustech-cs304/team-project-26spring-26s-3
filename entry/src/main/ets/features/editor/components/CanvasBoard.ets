@@ -159,8 +159,6 @@ type StrokeResizeUiMode = 'none' | 'ready' | 'resizing' | 'moving';
 type ElementStylePanelMode = 'none' | 'fill' | 'textColor' | 'background' | 'fontSize' | 'outline' | 'layer';
 const DEFAULT_VIEWPORT_WIDTH = 1600;
 const DEFAULT_VIEWPORT_HEIGHT = 900;
-const TEXT_EDIT_DOUBLE_TAP_MS = 360;
-const TEXT_EDIT_DOUBLE_TAP_DISTANCE = 18;
 const INLINE_TEXT_LINE_HEIGHT_FACTOR = 1.35;
 const INLINE_TEXT_MAX_LINES = 1000;
 const EDIT_HANDLE_HIT_TOLERANCE_SCREEN_PX = 18;
@@ -317,6 +315,7 @@ export struct CanvasBoard {
   private isElementEditPending: boolean = false;
   private isElementEditGestureActive: boolean = false;
   private pendingElementContextMenuCandidate: CanvasElement | null = null;
+  private pendingInlineTextEditElementId: string = '';
   private elementEditStartScreenX: number = 0;
   private elementEditStartScreenY: number = 0;
   private elementEditStartPageX: number = 0;
@@ -328,10 +327,7 @@ export struct CanvasBoard {
   private lassoStartScreenX: number = 0;
   private lassoStartScreenY: number = 0;
   private shouldClearSelectionOnLassoTap: boolean = false;
-  private lastEditTapTime: number = 0;
-  private lastEditTapElementId: string = '';
-  private lastEditTapX: number = 0;
-  private lastEditTapY: number = 0;
+  private lastTextSelectionTapElementId: string = '';
   private lastSelectionVersion: number = -1;
   private lastLassoOverlayRedrawTime: number = 0;
   private lastSelectionMoveRedrawTime: number = 0;
@@ -1612,97 +1608,12 @@ export struct CanvasBoard {
       return;
     }
 
-    if (event.type === TouchType.Down && this.isStrokeInputTool(activeTool) && !this.shouldAcceptStrokeInput(event)) {
-      return;
-    }
-
     if (this.isStrokeResizeModeVisible() && this.handleStrokeResizeTouch(event, touch, viewModel)) {
       return;
     }
 
-    if (event.type === TouchType.Down && activeTool !== 'lasso') {
-      this.hideSelectionContextMenu();
-    }
-
-    if (activeTool === 'edit') {
-      const point = this.buildPoint(touch, event.type !== TouchType.Down);
-      const pageBounds = this.getPageBounds();
-      const hitTolerance = this.getEditHitToleranceInPage();
-
-      if (event.type === TouchType.Down) {
-        this.resetPendingElementEditGesture();
-        viewModel.cancelElementEditGesture();
-        if (point === null) {
-          this.commitInlineTextEdit(true);
-          viewModel.clearElementSelection();
-        } else {
-          if (this.inlineTextEditElement !== null && !this.isPointInsideTextElement(point, this.inlineTextEditElement)) {
-            this.commitInlineTextEdit(true);
-          }
-
-          const selectedElement = viewModel.getSelectedElement();
-          if (this.shouldBeginInlineTextEdit(point, selectedElement, hitTolerance)) {
-            const textElement = selectedElement as TextCanvasElement;
-            if (textElement.recognition?.source === 'formula' && (textElement.recognition.latex?.trim().length ?? 0) > 0) {
-              this.clearLastEditTap();
-            } else {
-              this.beginInlineTextEdit(textElement);
-              this.syncEditorSnapshot();
-              this.onContentChanged(false, 'element');
-              return;
-            }
-          }
-
-          const contextMenuCandidate = viewModel.getElementContextMenuCandidate(point, hitTolerance);
-          this.beginPendingElementEditGesture(touch, point, contextMenuCandidate);
-        }
-
-        this.syncEditorSnapshot();
-        this.onContentChanged(false, 'element');
-        return;
-      }
-
-      if (event.type === TouchType.Move) {
-        if (this.isElementEditPending) {
-          if (!this.hasElementEditExceededStartThreshold(touch)) {
-            return;
-          }
-
-          this.startPendingElementEditMove(viewModel, pageBounds, hitTolerance);
-        }
-
-        if (this.isElementEditGestureActive) {
-          if (point !== null && viewModel.updateElementEditGesture(point, pageBounds)) {
-            this.hideSelectionContextMenu();
-            this.syncEditorSnapshot();
-            this.elementLayerLocalRefreshVersion += 1;
-            this.onContentChanged(false, 'element');
-          }
-        }
-        return;
-      }
-
-      if (event.type === TouchType.Up) {
-        if (this.isElementEditPending) {
-          this.finishPendingElementEditTap(viewModel);
-          return;
-        }
-
-        if (this.isElementEditGestureActive) {
-          if (point !== null) {
-            viewModel.updateElementEditGesture(point, pageBounds);
-          }
-          const editedElement = viewModel.finishElementEditGesture(pageBounds);
-          this.resetPendingElementEditGesture();
-          this.syncEditorSnapshot();
-          this.onContentChanged(editedElement !== null, 'element');
-        }
-        return;
-      }
-
-      if (event.type === TouchType.Cancel) {
-        this.cancelElementEditInteraction(viewModel);
-      }
+    if (this.shouldHandleFingerElementTouch(event, activeTool) &&
+      this.handleFingerElementTouch(event, touch, viewModel, activeTool)) {
       return;
     }
 
@@ -1711,6 +1622,9 @@ export struct CanvasBoard {
     }
 
     if (activeTool === 'lasso') {
+      if (!this.isStylusEvent(event)) {
+        return;
+      }
       this.handleLassoTouch(event, touch, viewModel);
       return;
     }
@@ -1722,6 +1636,8 @@ export struct CanvasBoard {
           return;
         }
 
+        this.hideSelectionContextMenu();
+        this.clearSelectionIfNeeded(viewModel);
         viewModel.appendDebugEvent('CanvasBoard', `insertText x=${Math.round(point.x)} y=${Math.round(point.y)}`);
         viewModel.insertTextElement(point, {
           width: this.getPageWidth(),
@@ -1741,6 +1657,8 @@ export struct CanvasBoard {
           return;
         }
 
+        this.hideSelectionContextMenu();
+        this.clearSelectionIfNeeded(viewModel);
         viewModel.appendDebugEvent(
           'CanvasBoard',
           `beginShape shape=${this.selectedShapeType} x=${Math.round(point.x)} y=${Math.round(point.y)}`
@@ -1796,6 +1714,10 @@ export struct CanvasBoard {
     }
 
     if (event.type === TouchType.Down) {
+      if (this.isStrokeInputTool(activeTool) && !this.isStylusEvent(event)) {
+        return;
+      }
+
       const point = this.buildPoint(touch, false);
       if (point === null) {
         return;
@@ -1805,6 +1727,8 @@ export struct CanvasBoard {
         'CanvasBoard',
         `touchDown tool=${toolSetting.tool} color=${toolSetting.color} width=${toolSetting.width} opacity=${toolSetting.opacity.toFixed(2)}`
       );
+      this.hideSelectionContextMenu();
+      this.clearSelectionIfNeeded(viewModel);
       if (activeTool === 'eraser') {
         this.stabilizeCommittedLayersForEdit('eraserStart');
       }
@@ -1969,11 +1893,15 @@ export struct CanvasBoard {
     return activeTool === 'pen' || activeTool === 'pencil' || activeTool === 'highlighter' || activeTool === 'eraser';
   }
 
-  private shouldAcceptStrokeInput(event: TouchEvent): boolean {
-    return this.shouldHandleCanvasTouch(event);
+  private isCreationTool(activeTool: string): boolean {
+    return activeTool === 'text' || activeTool === 'shape';
   }
 
   private shouldNotifyPageInteractionStart(event: TouchEvent, activeTool: string): boolean {
+    if (event.type === TouchType.Down && this.shouldHandleFingerElementTouch(event, activeTool)) {
+      return true;
+    }
+
     if (event.type === TouchType.Down) {
       return !this.shouldDeferTouchStrokeActivation(event, activeTool);
     }
@@ -1997,19 +1925,11 @@ export struct CanvasBoard {
   }
 
   private shouldRouteTouchToDocument(event: TouchEvent): boolean {
-    if (this.inputMode === 'stylus') {
-      return !this.isStylusEvent(event);
-    }
-
     return !this.isStylusEvent(event) && this.hasMultipleActiveTouches(event);
   }
 
   private shouldHandleCanvasTouch(event: TouchEvent): boolean {
-    if (this.inputMode === 'touch') {
-      return !this.isStylusEvent(event) && !this.hasMultipleActiveTouches(event);
-    }
-
-    return this.isStylusEvent(event);
+    return !this.hasMultipleActiveTouches(event);
   }
 
   private hasMultipleActiveTouches(event: TouchEvent): boolean {
@@ -2049,6 +1969,14 @@ export struct CanvasBoard {
     this.cancelSelectionMoveGesture(viewModel);
     this.cancelElementEditInteraction(viewModel);
     this.cancelActiveStrokeResizeGesture(viewModel);
+  }
+
+  private clearSelectionIfNeeded(viewModel: DrawingEditorViewModel): void {
+    if (viewModel.getSelectionTargets().length === 0 && viewModel.getSelectedElementIds().length === 0) {
+      return;
+    }
+
+    viewModel.clearSelection();
   }
 
   private handleStrokeResizeTouch(event: TouchEvent, touch: TouchObject, viewModel: DrawingEditorViewModel): boolean {
@@ -2261,14 +2189,145 @@ export struct CanvasBoard {
     return Math.sqrt(deltaX * deltaX + deltaY * deltaY) >= SELECTION_MOVE_START_THRESHOLD_SCREEN_PX;
   }
 
+  private shouldHandleFingerElementTouch(event: TouchEvent, activeTool: string): boolean {
+    return !this.isStylusEvent(event) &&
+      !this.hasMultipleActiveTouches(event) &&
+      !this.isCreationTool(activeTool);
+  }
+
+  private handleFingerElementTouch(
+    event: TouchEvent,
+    touch: TouchObject,
+    viewModel: DrawingEditorViewModel,
+    activeTool: string
+  ): boolean {
+    if (activeTool === 'lasso' && (this.isSelectionMovePending || this.isSelectionMoveGestureActive)) {
+      this.handleLassoTouch(event, touch, viewModel);
+      return true;
+    }
+
+    if (event.type === TouchType.Down && activeTool === 'lasso') {
+      const point = this.buildPoint(touch, false);
+      if (point !== null) {
+        const hitResult = viewModel.hitTestSelection(point, this.getSelectionMoveHitToleranceInPage());
+        if (hitResult.canMove && hitResult.target !== null) {
+          this.handleLassoTouch(event, touch, viewModel);
+          return true;
+        }
+      }
+    }
+
+    if (event.type === TouchType.Down) {
+      return this.beginFingerElementTouch(touch, viewModel);
+    }
+
+    if (event.type === TouchType.Move) {
+      return this.updateFingerElementTouch(touch, viewModel);
+    }
+
+    if (event.type === TouchType.Up) {
+      return this.finishFingerElementTouch(touch, viewModel);
+    }
+
+    if (event.type === TouchType.Cancel) {
+      this.cancelElementEditInteraction(viewModel);
+      return true;
+    }
+
+    return false;
+  }
+
+  private beginFingerElementTouch(touch: TouchObject, viewModel: DrawingEditorViewModel): boolean {
+    this.resetPendingElementEditGesture();
+    viewModel.cancelElementEditGesture();
+    const point = this.buildPoint(touch, false);
+    if (point === null) {
+      this.commitInlineTextEdit(true);
+      this.clearSelectionIfNeeded(viewModel);
+      this.hideSelectionContextMenu();
+      this.syncEditorSnapshot();
+      this.redrawOverlayLayer();
+      this.onContentChanged(false, 'element');
+      return true;
+    }
+
+    if (this.inlineTextEditElement !== null && !this.isPointInsideTextElement(point, this.inlineTextEditElement)) {
+      this.commitInlineTextEdit(true);
+    }
+
+    this.hideSelectionContextMenu();
+    const selectedElement = viewModel.getSelectedElement();
+    const inlineTextEditElementId = this.shouldBeginInlineTextEdit(point, selectedElement, this.getEditHitToleranceInPage()) &&
+      selectedElement !== null ? selectedElement.id : '';
+    const contextMenuCandidate = viewModel.getElementContextMenuCandidate(point, this.getEditHitToleranceInPage());
+    if (contextMenuCandidate !== null) {
+      viewModel.selectElement(contextMenuCandidate.id);
+    }
+
+    this.beginPendingElementEditGesture(touch, point, contextMenuCandidate, inlineTextEditElementId);
+    this.syncEditorSnapshot();
+    this.redrawOverlayLayer();
+    this.onContentChanged(false, 'element');
+    return true;
+  }
+
+  private updateFingerElementTouch(touch: TouchObject, viewModel: DrawingEditorViewModel): boolean {
+    if (!this.isElementEditPending && !this.isElementEditGestureActive) {
+      return false;
+    }
+
+    const point = this.buildPoint(touch, true);
+    const pageBounds = this.getPageBounds();
+    if (this.isElementEditPending) {
+      if (!this.hasElementEditExceededStartThreshold(touch)) {
+        return true;
+      }
+
+      this.startPendingElementEditMove(viewModel, pageBounds, this.getEditHitToleranceInPage());
+    }
+
+    if (this.isElementEditGestureActive && point !== null &&
+      viewModel.updateElementEditGesture(point, pageBounds)) {
+      this.hideSelectionContextMenu();
+      this.syncEditorSnapshot();
+      this.elementLayerLocalRefreshVersion += 1;
+      this.onContentChanged(false, 'element');
+    }
+    return true;
+  }
+
+  private finishFingerElementTouch(touch: TouchObject, viewModel: DrawingEditorViewModel): boolean {
+    const point = this.buildPoint(touch, true);
+    const pageBounds = this.getPageBounds();
+    if (this.isElementEditPending) {
+      this.finishPendingElementEditTap(viewModel);
+      return true;
+    }
+
+    if (this.isElementEditGestureActive) {
+      if (point !== null) {
+        viewModel.updateElementEditGesture(point, pageBounds);
+      }
+      const editedElement = viewModel.finishElementEditGesture(pageBounds);
+      this.resetPendingElementEditGesture();
+      this.syncEditorSnapshot();
+      this.onContentChanged(editedElement !== null, 'element');
+      return true;
+    }
+
+    return false;
+  }
+
   private beginPendingElementEditGesture(
     touch: TouchObject,
     point: StrokePoint,
-    contextMenuCandidate: CanvasElement | null
+    contextMenuCandidate: CanvasElement | null,
+    inlineTextEditElementId: string = ''
   ): void {
     this.isElementEditPending = true;
     this.isElementEditGestureActive = false;
     this.pendingElementContextMenuCandidate = contextMenuCandidate;
+    this.pendingInlineTextEditElementId = inlineTextEditElementId;
     this.elementEditStartScreenX = touch.x;
     this.elementEditStartScreenY = touch.y;
     this.elementEditStartPageX = point.x;
@@ -2294,6 +2353,8 @@ export struct CanvasBoard {
     const didBegin = viewModel.beginElementEditGesture(startPoint, pageBounds, hitTolerance);
     this.isElementEditPending = false;
     this.pendingElementContextMenuCandidate = null;
+    this.pendingInlineTextEditElementId = '';
+    this.clearLastTextSelectionTap();
     if (!didBegin) {
       this.isElementEditGestureActive = false;
       this.syncEditorSnapshot();
@@ -2313,14 +2374,31 @@ export struct CanvasBoard {
       t: Date.now()
     };
     const candidate = this.pendingElementContextMenuCandidate;
+    const inlineTextEditElementId = this.pendingInlineTextEditElementId;
     this.resetPendingElementEditGesture();
+    if (inlineTextEditElementId.length > 0) {
+      const element = viewModel.getElementForRendering(inlineTextEditElementId);
+      if (element !== null && element.type === 'text') {
+        const textElement = element as TextCanvasElement;
+        if (textElement.recognition?.source === 'formula' && (textElement.recognition.latex?.trim().length ?? 0) > 0) {
+          this.clearLastTextSelectionTap();
+        } else {
+          this.hideSelectionContextMenu();
+          this.beginInlineTextEdit(textElement);
+          this.syncEditorSnapshot();
+          this.onContentChanged(false, 'element');
+          return;
+        }
+      }
+    }
+
     if (candidate !== null) {
       const selectedElement = viewModel.selectElement(candidate.id) ?? candidate;
       this.showElementContextMenu(selectedElement);
-      this.recordEditTap(tapPoint, selectedElement);
+      this.recordTextSelectionTap(selectedElement);
     } else {
       const selectedElement = viewModel.selectElementAt(tapPoint);
-      this.recordEditTap(tapPoint, selectedElement);
+      this.recordTextSelectionTap(selectedElement);
     }
 
     this.syncEditorSnapshot();
@@ -2343,6 +2421,7 @@ export struct CanvasBoard {
     this.isElementEditPending = false;
     this.isElementEditGestureActive = false;
     this.pendingElementContextMenuCandidate = null;
+    this.pendingInlineTextEditElementId = '';
     this.elementEditStartScreenX = 0;
     this.elementEditStartScreenY = 0;
     this.elementEditStartPageX = 0;
@@ -4046,7 +4125,7 @@ export struct CanvasBoard {
     this.inlineTextEditHeight = element.height;
     this.inlineTextEditContent = element.content;
     this.clampInlineTextEditFrameToBounds();
-    this.clearLastEditTap();
+    this.clearLastTextSelectionTap();
   }
 
   private commitInlineTextEdit(refreshThumbnail: boolean): void {
@@ -4065,7 +4144,7 @@ export struct CanvasBoard {
     this.inlineTextEditElement = null;
     this.inlineTextEditContent = '';
     this.resetInlineTextEditFrame();
-    this.clearLastEditTap();
+    this.clearLastTextSelectionTap();
 
     const viewModel = this.getRenderingViewModel();
     if (viewModel === null) {
@@ -4211,35 +4290,20 @@ export struct CanvasBoard {
       return false;
     }
 
-    if (this.lastEditTapElementId !== selectedElement.id) {
-      return false;
-    }
-
-    const elapsedTime = Date.now() - this.lastEditTapTime;
-    const deltaX = point.x - this.lastEditTapX;
-    const deltaY = point.y - this.lastEditTapY;
-    const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-    return elapsedTime >= 0 && elapsedTime <= TEXT_EDIT_DOUBLE_TAP_MS &&
-      distance <= Math.max(hitTolerance * 2, TEXT_EDIT_DOUBLE_TAP_DISTANCE);
+    return this.lastTextSelectionTapElementId === selectedElement.id;
   }
 
-  private recordEditTap(point: StrokePoint, element: CanvasElement | null): void {
+  private recordTextSelectionTap(element: CanvasElement | null): void {
     if (element === null || element.type !== 'text') {
-      this.clearLastEditTap();
+      this.clearLastTextSelectionTap();
       return;
     }
 
-    this.lastEditTapTime = Date.now();
-    this.lastEditTapElementId = element.id;
-    this.lastEditTapX = point.x;
-    this.lastEditTapY = point.y;
+    this.lastTextSelectionTapElementId = element.id;
   }
 
-  private clearLastEditTap(): void {
-    this.lastEditTapTime = 0;
-    this.lastEditTapElementId = '';
-    this.lastEditTapX = 0;
-    this.lastEditTapY = 0;
+  private clearLastTextSelectionTap(): void {
+    this.lastTextSelectionTapElementId = '';
   }
 
   private isPointInsideTextElement(point: StrokePoint, element: TextCanvasElement): boolean {
@@ -6321,7 +6385,7 @@ export struct CanvasBoard {
     this.inlineTextEditElement = null;
     this.inlineTextEditContent = '';
     this.resetInlineTextEditFrame();
-    this.clearLastEditTap();
+    this.clearLastTextSelectionTap();
     this.hideSelectionContextMenu();
     this.selectedStrokeTargets = [];
     this.strokeResizeBounds = null;
@@ -6351,9 +6415,7 @@ export struct CanvasBoard {
     if (!this.isRecentCommittedWritingTool(activeTool)) {
       this.stabilizeCommittedLayersForEdit(`tool:${activeTool}`);
     }
-    if (activeTool !== 'edit') {
-      this.commitInlineTextEdit(true);
-    }
+    this.commitInlineTextEdit(true);
     const viewModel = this.peekViewModel();
     if (viewModel !== null) {
       this.syncViewModelToolSetting(viewModel);
@@ -6364,7 +6426,7 @@ export struct CanvasBoard {
     if (viewModel !== null && activeTool !== 'lasso') {
       this.cancelSelectionMoveGesture(viewModel);
     }
-    if (viewModel !== null && activeTool !== 'edit') {
+    if (viewModel !== null) {
       this.cancelElementEditInteraction(viewModel);
     }
   }

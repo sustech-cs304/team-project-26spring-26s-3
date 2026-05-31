@@ -574,8 +574,8 @@ export class DrawingEditorViewModel {
     this.cancelLassoSelection();
     this.cancelSelectionMove();
     this.cancelStrokeResize();
-    if (nextSetting.tool !== 'edit') {
-      this.clearElementSelection();
+    if (this.toolSetting.tool === 'lasso' && nextSetting.tool !== 'lasso') {
+      this.clearSelection();
     }
 
     this.toolSetting = {
