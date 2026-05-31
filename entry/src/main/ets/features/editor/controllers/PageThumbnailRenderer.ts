@@ -9,6 +9,7 @@ import { NotebookPageTemplateType } from '../../../domain/entities/NotebookPage'
 import { Stroke, StrokePoint } from '../../../domain/entities/Stroke';
 import { CanvasDrawContext } from './CanvasDrawContext';
 import { CanvasElementRenderer } from './CanvasElementRenderer';
+import { CanvasImageRenderer } from './CanvasImageRenderer';
 import { PageTemplateRenderer } from './PageTemplateRenderer';
 
 export interface PageThumbnailViewportSize {
@@ -179,7 +180,14 @@ export class PageThumbnailRenderer {
     context.save();
     context.translate(offsetX, offsetY);
     context.scale(scale, scale);
-    const didDrawBackgroundImage = this.drawBackgroundImage(context, snapshot.backgroundImageUri, sourceSize);
+    const didDrawBackgroundImage = CanvasImageRenderer.drawImage(
+      context,
+      snapshot.backgroundImageUri,
+      0,
+      0,
+      sourceSize.width,
+      sourceSize.height
+    );
     PageTemplateRenderer.drawTemplateBackground(
       context,
       snapshot.templateType,
@@ -212,110 +220,8 @@ export class PageThumbnailRenderer {
     };
   }
 
-  private static drawBackgroundImage(
-    context: CanvasDrawContext,
-    backgroundImageUri: string,
-    sourceSize: PageThumbnailSourceSize
-  ): boolean {
-    const normalizedUri = this.resolveImageUri(backgroundImageUri);
-    if (normalizedUri.length === 0 || sourceSize.width <= 0 || sourceSize.height <= 0) {
-      return false;
-    }
-
-    const candidates = this.buildImageSourceCandidates(normalizedUri);
-    for (const candidate of candidates) {
-      let imageBitmap: ImageBitmap | undefined = undefined;
-      try {
-        imageBitmap = new ImageBitmap(candidate);
-        context.drawImage(imageBitmap, 0, 0, sourceSize.width, sourceSize.height);
-        return true;
-      } catch (_error) {
-      } finally {
-        if (imageBitmap !== undefined) {
-          try {
-            imageBitmap.close();
-          } catch (_closeError) {
-          }
-        }
-      }
-    }
-
-    return false;
-  }
-
-  private static resolveImageUri(uri: string): string {
-    if (typeof uri !== 'string') {
-      return '';
-    }
-
-    const normalizedUri = uri.trim();
-    if (normalizedUri.length === 0) {
-      return '';
-    }
-    if (normalizedUri.startsWith('file://')) {
-      if (normalizedUri.startsWith('file:///')) {
-        return normalizedUri;
-      }
-      const rawLocalPath = normalizedUri.substring('file://'.length);
-      return rawLocalPath.startsWith('/') ? `file://${rawLocalPath}` : `file:///${rawLocalPath}`;
-    }
-    if (normalizedUri.startsWith('http://') || normalizedUri.startsWith('https://')) {
-      return normalizedUri;
-    }
-    return `file://${normalizedUri}`;
-  }
-
-  private static buildImageSourceCandidates(uri: string): string[] {
-    const candidates: string[] = [];
-    this.appendImageSourceCandidate(candidates, uri);
-    const decodedUri = this.decodeUriSegment(uri);
-    if (decodedUri !== uri) {
-      this.appendImageSourceCandidate(candidates, decodedUri);
-    }
-
-    if (uri.startsWith('file://')) {
-      const rawLocalPath = uri.substring('file://'.length);
-      this.appendImageSourceCandidate(candidates, rawLocalPath);
-      if (!rawLocalPath.startsWith('/')) {
-        this.appendImageSourceCandidate(candidates, `/${rawLocalPath}`);
-      }
-      const decodedLocalPath = this.decodeUriSegment(rawLocalPath);
-      if (decodedLocalPath !== rawLocalPath) {
-        this.appendImageSourceCandidate(candidates, decodedLocalPath);
-        if (!decodedLocalPath.startsWith('/')) {
-          this.appendImageSourceCandidate(candidates, `/${decodedLocalPath}`);
-        }
-      }
-    }
-
-    if (decodedUri.startsWith('file://')) {
-      const decodedSchemePath = decodedUri.substring('file://'.length);
-      this.appendImageSourceCandidate(candidates, decodedSchemePath);
-      if (!decodedSchemePath.startsWith('/')) {
-        this.appendImageSourceCandidate(candidates, `/${decodedSchemePath}`);
-      }
-    }
-
-    return candidates;
-  }
-
   private static shouldFillTemplateBackground(backgroundImageUri: string, didDrawBackgroundImage: boolean): boolean {
-    return this.resolveImageUri(backgroundImageUri).length === 0 || !didDrawBackgroundImage;
-  }
-
-  private static appendImageSourceCandidate(candidates: string[], candidate: string): void {
-    if (candidate.length === 0 || candidates.includes(candidate)) {
-      return;
-    }
-    candidates.push(candidate);
-  }
-
-  private static decodeUriSegment(text: string): string {
-    try {
-      return decodeURIComponent(text);
-    } catch (_error) {
-      return text;
-    }
+    return !CanvasImageRenderer.hasImageSource(backgroundImageUri) || !didDrawBackgroundImage;
   }
 
   private static drawContent(

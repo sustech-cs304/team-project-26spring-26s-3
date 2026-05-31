@@ -6,6 +6,7 @@ import {
   TextCanvasElement
 } from '../../../domain/entities/CanvasElement';
 import { CanvasDrawContext } from './CanvasDrawContext';
+import { CanvasImageRenderer } from './CanvasImageRenderer';
 import { ShapeRenderer } from './ShapeRenderer';
 
 interface CanvasResolvedColor {
@@ -104,35 +105,18 @@ export class CanvasElementRenderer {
   }
 
   private static drawImageElement(context: CanvasDrawContext, element: ImageCanvasElement): void {
-    const candidates: string[] = CanvasElementRenderer.buildImageSourceCandidates(element.uri);
-    for (const candidate of candidates) {
-      let imageBitmap: ImageBitmap | undefined = undefined;
-      let hasSavedContext: boolean = false;
-      try {
-        imageBitmap = new ImageBitmap(candidate);
-        context.save();
-        hasSavedContext = true;
-        context.globalAlpha = Math.max(0, Math.min(1, element.opacity));
-        context.drawImage(imageBitmap, element.x, element.y, element.width, element.height);
-        context.restore();
-        hasSavedContext = false;
-        CanvasElementRenderer.drawImageOutline(context, element);
-        return;
-      } catch (_error) {
-        if (hasSavedContext) {
-          try {
-            context.restore();
-          } catch (_restoreError) {
-          }
-        }
-      } finally {
-        if (imageBitmap !== undefined) {
-          try {
-            imageBitmap.close();
-          } catch (_closeError) {
-          }
-        }
-      }
+    const didDrawImage = CanvasImageRenderer.drawImage(
+      context,
+      element.uri,
+      element.x,
+      element.y,
+      element.width,
+      element.height,
+      element.opacity
+    );
+    if (didDrawImage) {
+      CanvasElementRenderer.drawImageOutline(context, element);
+      return;
     }
 
     CanvasElementRenderer.drawImagePlaceholder(context, element);
@@ -184,59 +168,6 @@ export class CanvasElementRenderer {
       context.setLineDash([Math.max(1, lineWidth), Math.max(3, lineWidth * 2)]);
     } else {
       context.setLineDash([]);
-    }
-  }
-
-  private static buildImageSourceCandidates(path: string): string[] {
-    const candidates: string[] = [];
-    CanvasElementRenderer.appendImageSourceCandidate(candidates, path);
-    const decodedPath: string = CanvasElementRenderer.decodeUriSegment(path);
-    if (decodedPath !== path) {
-      CanvasElementRenderer.appendImageSourceCandidate(candidates, decodedPath);
-    }
-
-    if (path.startsWith('file://')) {
-      const rawLocalPath: string = path.substring('file://'.length);
-      CanvasElementRenderer.appendImageSourceCandidate(candidates, rawLocalPath);
-      if (!rawLocalPath.startsWith('/')) {
-        CanvasElementRenderer.appendImageSourceCandidate(candidates, `/${rawLocalPath}`);
-      }
-      const decodedLocalPath: string = CanvasElementRenderer.decodeUriSegment(rawLocalPath);
-      if (decodedLocalPath !== rawLocalPath) {
-        CanvasElementRenderer.appendImageSourceCandidate(candidates, decodedLocalPath);
-        if (!decodedLocalPath.startsWith('/')) {
-          CanvasElementRenderer.appendImageSourceCandidate(candidates, `/${decodedLocalPath}`);
-        }
-      }
-    } else if (!path.startsWith('http://') && !path.startsWith('https://')) {
-      CanvasElementRenderer.appendImageSourceCandidate(candidates, `file://${path}`);
-    }
-
-    if (decodedPath.startsWith('file://')) {
-      const decodedSchemePath: string = decodedPath.substring('file://'.length);
-      CanvasElementRenderer.appendImageSourceCandidate(candidates, decodedSchemePath);
-      if (!decodedSchemePath.startsWith('/')) {
-        CanvasElementRenderer.appendImageSourceCandidate(candidates, `/${decodedSchemePath}`);
-      }
-    }
-
-    return candidates;
-  }
-
-  private static appendImageSourceCandidate(candidates: string[], candidate: string): void {
-    if (candidate.length === 0) {
-      return;
-    }
-    if (!candidates.includes(candidate)) {
-      candidates.push(candidate);
-    }
-  }
-
-  private static decodeUriSegment(text: string): string {
-    try {
-      return decodeURIComponent(text);
-    } catch (_error) {
-      return text;
     }
   }
 
