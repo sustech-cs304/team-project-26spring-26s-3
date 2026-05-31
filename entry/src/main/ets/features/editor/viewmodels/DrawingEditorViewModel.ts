@@ -687,6 +687,21 @@ export class DrawingEditorViewModel {
     return hitElement === null ? null : this.cloneElement(hitElement);
   }
 
+  getSelectedElementEditCandidate(point: StrokePoint, hitTolerance: number): CanvasElement | null {
+    for (const selectedElement of this.getSelectedElementsInZOrderDescending()) {
+      if (this.hitTestElementEditHandle(point, selectedElement, hitTolerance) !== null) {
+        return this.cloneElement(selectedElement);
+      }
+    }
+
+    const hitElement = this.hitTestElement(point);
+    if (hitElement !== null && this.selectedElementIds.includes(hitElement.id)) {
+      return this.cloneElement(hitElement);
+    }
+
+    return null;
+  }
+
   selectElement(elementId: string): CanvasElement | null {
     if (elementId.length === 0) {
       this.clearElementSelection();

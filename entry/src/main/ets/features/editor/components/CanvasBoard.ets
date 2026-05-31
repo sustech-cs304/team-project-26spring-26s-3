@@ -316,6 +316,7 @@ export struct CanvasBoard {
   private isElementEditGestureActive: boolean = false;
   private pendingElementContextMenuCandidate: CanvasElement | null = null;
   private pendingInlineTextEditElementId: string = '';
+  private pendingElementEditAllowsDrag: boolean = true;
   private elementEditStartScreenX: number = 0;
   private elementEditStartScreenY: number = 0;
   private elementEditStartPageX: number = 0;
@@ -1609,11 +1610,20 @@ export struct CanvasBoard {
     }
 
     if (this.isStrokeResizeModeVisible() && this.handleStrokeResizeTouch(event, touch, viewModel)) {
+      event.stopPropagation();
       return;
     }
 
-    if (this.shouldHandleFingerElementTouch(event, activeTool) &&
+    if (this.shouldHandleDirectElementTouch(event, activeTool) &&
       this.handleFingerElementTouch(event, touch, viewModel, activeTool)) {
+      event.stopPropagation();
+      return;
+    }
+
+    if (this.shouldRouteSingleFingerTouchToDocument(event, activeTool)) {
+      this.onDocumentTouch(event);
+      this.cancelActiveCanvasGestures(viewModel);
+      this.updateDocumentTouchForwardingState(event);
       return;
     }
 
@@ -1622,10 +1632,12 @@ export struct CanvasBoard {
     }
 
     if (activeTool === 'lasso') {
-      if (!this.isStylusEvent(event)) {
-        return;
+      if (this.inputMode === 'touch') {
+        this.handleTouchModeLassoTouch(event, touch, viewModel);
+      } else {
+        this.handleLassoTouch(event, touch, viewModel);
       }
-      this.handleLassoTouch(event, touch, viewModel);
+      event.stopPropagation();
       return;
     }
 
@@ -1646,6 +1658,7 @@ export struct CanvasBoard {
         this.syncEditorSnapshot();
         this.onContentChanged(true, 'element');
       }
+      event.stopPropagation();
       return;
     }
 
@@ -1669,6 +1682,7 @@ export struct CanvasBoard {
         }, this.selectedShapeType);
         this.syncEditorSnapshot();
         this.redrawOverlayLayer();
+        event.stopPropagation();
         return;
       }
 
@@ -1682,6 +1696,7 @@ export struct CanvasBoard {
           height: this.getPageHeight()
         });
         this.redrawOverlayLayer();
+        event.stopPropagation();
         return;
       }
 
@@ -1702,6 +1717,7 @@ export struct CanvasBoard {
         if (createdElement !== null) {
           this.onContentChanged(true, 'element');
         }
+        event.stopPropagation();
         return;
       }
 
@@ -1709,12 +1725,13 @@ export struct CanvasBoard {
         viewModel.cancelShapeDraft();
         this.syncEditorSnapshot();
         this.redrawOverlayLayer();
+        event.stopPropagation();
       }
       return;
     }
 
     if (event.type === TouchType.Down) {
-      if (this.isStrokeInputTool(activeTool) && !this.isStylusEvent(event)) {
+      if (this.isStrokeInputTool(activeTool) && this.inputMode === 'stylus' && !this.isStylusEvent(event)) {
         return;
       }
 
@@ -1744,6 +1761,7 @@ export struct CanvasBoard {
       } else {
         this.redrawOverlayLayer();
       }
+      event.stopPropagation();
       return;
     }
 
@@ -1764,6 +1782,7 @@ export struct CanvasBoard {
       } else if (activeStroke !== null) {
         this.renderActiveStrokePreview(activeStroke);
       }
+      event.stopPropagation();
       return;
     }
 
@@ -1778,6 +1797,7 @@ export struct CanvasBoard {
         viewModel.appendPoint(point);
       }
       void this.finishStrokeAndRedraw(activeTool);
+      event.stopPropagation();
       return;
     }
   }
@@ -1889,6 +1909,134 @@ export struct CanvasBoard {
     }
   }
 
+  private handleTouchModeLassoTouch(event: TouchEvent, touch: TouchObject, viewModel: DrawingEditorViewModel): void {
+    if (this.isSelectionMovePending || this.isSelectionMoveGestureActive || this.isLassoGestureActive) {
+      this.handleLassoTouch(event, touch, viewModel);
+      return;
+    }
+
+    if (this.isElementEditPending || this.isElementEditGestureActive) {
+      if (event.type === TouchType.Move) {
+        if (this.isElementEditPending) {
+          if (!this.hasElementEditExceededStartThreshold(touch)) {
+            return;
+          }
+
+          if (!this.pendingElementEditAllowsDrag) {
+            this.beginLassoFromPendingElementTouch(viewModel);
+            this.handleLassoTouch(event, touch, viewModel);
+            return;
+          }
+
+          this.startPendingElementEditMove(viewModel, this.getPageBounds(), this.getEditHitToleranceInPage());
+        }
+
+        if (this.isElementEditGestureActive) {
+          const point = this.buildPoint(touch, true);
+          if (point !== null && viewModel.updateElementEditGesture(point, this.getPageBounds())) {
+            this.syncEditorSnapshot();
+            this.elementLayerLocalRefreshVersion += 1;
+            this.onContentChanged(false, 'element');
+          }
+        }
+        return;
+      }
+
+      if (event.type === TouchType.Up) {
+        if (this.isElementEditGestureActive) {
+          const point = this.buildPoint(touch, true);
+          if (point !== null) {
+            viewModel.updateElementEditGesture(point, this.getPageBounds());
+          }
+          const editedElement = viewModel.finishElementEditGesture(this.getPageBounds());
+          this.resetPendingElementEditGesture();
+          this.syncEditorSnapshot();
+          this.onContentChanged(editedElement !== null, 'element');
+        } else {
+          this.finishPendingElementEditTap(viewModel);
+        }
+        return;
+      }
+
+      if (event.type === TouchType.Cancel) {
+        this.cancelElementEditInteraction(viewModel);
+        return;
+      }
+
+      return;
+    }
+
+    if (event.type !== TouchType.Down) {
+      this.handleLassoTouch(event, touch, viewModel);
+      return;
+    }
+
+    const point = this.buildPoint(touch, false);
+    if (point === null) {
+      this.handleLassoTouch(event, touch, viewModel);
+      return;
+    }
+
+    const hitResult = viewModel.hitTestSelection(point, this.getSelectionMoveHitToleranceInPage());
+    if (hitResult.canMove && hitResult.target !== null) {
+      this.handleLassoTouch(event, touch, viewModel);
+      return;
+    }
+
+    const selectedEditCandidate = viewModel.getSelectedElementEditCandidate(point, this.getEditHitToleranceInPage());
+    if (selectedEditCandidate !== null) {
+      this.hideSelectionContextMenu();
+      this.resetPendingElementEditGesture();
+      viewModel.cancelElementEditGesture();
+      this.beginPendingElementEditGesture(touch, point, selectedEditCandidate, '', true);
+      this.syncEditorSnapshot();
+      this.redrawOverlayLayer();
+      this.onContentChanged(false, 'element');
+      return;
+    }
+
+    const contextMenuCandidate = viewModel.getElementContextMenuCandidate(point, this.getEditHitToleranceInPage());
+    if (contextMenuCandidate !== null) {
+      this.hideSelectionContextMenu();
+      this.resetPendingElementEditGesture();
+      viewModel.cancelElementEditGesture();
+      const wasAlreadySelected = viewModel.getSelectedElementIds().includes(contextMenuCandidate.id);
+      viewModel.selectElement(contextMenuCandidate.id);
+      this.beginPendingElementEditGesture(touch, point, contextMenuCandidate, '', wasAlreadySelected);
+      this.syncEditorSnapshot();
+      this.redrawOverlayLayer();
+      this.onContentChanged(false, 'element');
+      return;
+    }
+
+    this.handleLassoTouch(event, touch, viewModel);
+  }
+
+  private beginLassoFromPendingElementTouch(viewModel: DrawingEditorViewModel): void {
+    const point: StrokePoint = {
+      x: this.elementEditStartPageX,
+      y: this.elementEditStartPageY,
+      t: Date.now()
+    };
+    const startScreenX = this.elementEditStartScreenX;
+    const startScreenY = this.elementEditStartScreenY;
+    this.resetPendingElementEditGesture();
+    viewModel.cancelElementEditGesture();
+    this.hideSelectionContextMenu();
+    this.stabilizeCommittedLayersForEdit('lassoStart');
+    this.pendingSelectionHitResult = null;
+    this.lassoStartScreenX = startScreenX;
+    this.lassoStartScreenY = startScreenY;
+    viewModel.clearSelection();
+    this.shouldClearSelectionOnLassoTap = viewModel.getSelectionTargets().length > 0;
+    this.isLassoGestureActive = true;
+    this.pauseSelectionOverlay();
+    viewModel.beginLassoSelection(point);
+    this.syncEditorSnapshot();
+    this.requestLassoOverlayRedraw(true);
+    this.onContentChanged(false, 'element');
+  }
+
   private isStrokeInputTool(activeTool: string): boolean {
     return activeTool === 'pen' || activeTool === 'pencil' || activeTool === 'highlighter' || activeTool === 'eraser';
   }
@@ -1898,7 +2046,7 @@ export struct CanvasBoard {
   }
 
   private shouldNotifyPageInteractionStart(event: TouchEvent, activeTool: string): boolean {
-    if (event.type === TouchType.Down && this.shouldHandleFingerElementTouch(event, activeTool)) {
+    if (event.type === TouchType.Down && this.shouldHandleDirectElementTouch(event, activeTool)) {
       return true;
     }
 
@@ -1926,6 +2074,13 @@ export struct CanvasBoard {
 
   private shouldRouteTouchToDocument(event: TouchEvent): boolean {
     return !this.isStylusEvent(event) && this.hasMultipleActiveTouches(event);
+  }
+
+  private shouldRouteSingleFingerTouchToDocument(event: TouchEvent, activeTool: string): boolean {
+    return this.inputMode === 'stylus' &&
+      !this.isStylusEvent(event) &&
+      !this.hasMultipleActiveTouches(event) &&
+      !this.isCreationTool(activeTool);
   }
 
   private shouldHandleCanvasTouch(event: TouchEvent): boolean {
@@ -2189,8 +2344,9 @@ export struct CanvasBoard {
     return Math.sqrt(deltaX * deltaX + deltaY * deltaY) >= SELECTION_MOVE_START_THRESHOLD_SCREEN_PX;
   }
 
-  private shouldHandleFingerElementTouch(event: TouchEvent, activeTool: string): boolean {
-    return !this.isStylusEvent(event) &&
+  private shouldHandleDirectElementTouch(event: TouchEvent, activeTool: string): boolean {
+    return this.inputMode === 'stylus' &&
+      !this.isStylusEvent(event) &&
       !this.hasMultipleActiveTouches(event) &&
       !this.isCreationTool(activeTool);
   }
@@ -2260,6 +2416,11 @@ export struct CanvasBoard {
     const inlineTextEditElementId = this.shouldBeginInlineTextEdit(point, selectedElement, this.getEditHitToleranceInPage()) &&
       selectedElement !== null ? selectedElement.id : '';
     const contextMenuCandidate = viewModel.getElementContextMenuCandidate(point, this.getEditHitToleranceInPage());
+    if (contextMenuCandidate === null && selectedElement === null) {
+      this.clearSelectionIfNeeded(viewModel);
+      return false;
+    }
+
     if (contextMenuCandidate !== null) {
       viewModel.selectElement(contextMenuCandidate.id);
     }
@@ -2322,12 +2483,14 @@ export struct CanvasBoard {
     touch: TouchObject,
     point: StrokePoint,
     contextMenuCandidate: CanvasElement | null,
-    inlineTextEditElementId: string = ''
+    inlineTextEditElementId: string = '',
+    allowsDrag: boolean = true
   ): void {
     this.isElementEditPending = true;
     this.isElementEditGestureActive = false;
     this.pendingElementContextMenuCandidate = contextMenuCandidate;
     this.pendingInlineTextEditElementId = inlineTextEditElementId;
+    this.pendingElementEditAllowsDrag = allowsDrag;
     this.elementEditStartScreenX = touch.x;
     this.elementEditStartScreenY = touch.y;
     this.elementEditStartPageX = point.x;
@@ -2354,6 +2517,7 @@ export struct CanvasBoard {
     this.isElementEditPending = false;
     this.pendingElementContextMenuCandidate = null;
     this.pendingInlineTextEditElementId = '';
+    this.pendingElementEditAllowsDrag = true;
     this.clearLastTextSelectionTap();
     if (!didBegin) {
       this.isElementEditGestureActive = false;
@@ -2422,6 +2586,7 @@ export struct CanvasBoard {
     this.isElementEditGestureActive = false;
     this.pendingElementContextMenuCandidate = null;
     this.pendingInlineTextEditElementId = '';
+    this.pendingElementEditAllowsDrag = true;
     this.elementEditStartScreenX = 0;
     this.elementEditStartScreenY = 0;
     this.elementEditStartPageX = 0;

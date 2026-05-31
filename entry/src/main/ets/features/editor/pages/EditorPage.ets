@@ -3616,8 +3616,12 @@ struct EditorPage {
     }
 
     if (activeTouches.length === 1) {
-      this.resetPendingDocumentSingleFingerPan();
-      this.endDocumentPanGesture(false);
+      if (this.canvasInputMode === 'stylus') {
+        this.handleDocumentSingleFingerPanTouch(event, activeTouches[0]);
+      } else {
+        this.resetPendingDocumentSingleFingerPan();
+        this.endDocumentPanGesture(false);
+      }
       return;
     }
 
