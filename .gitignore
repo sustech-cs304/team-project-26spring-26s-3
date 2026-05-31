@@ -31,6 +31,7 @@ pnpm-debug.log*
 # Local machine configuration
 local.properties
 *.local
+build-profile.json5
 
 # Signing keys and certificates
 *.p12
