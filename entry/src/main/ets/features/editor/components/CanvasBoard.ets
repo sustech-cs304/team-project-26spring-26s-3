@@ -43,8 +43,6 @@ import { EditorDebugSnapshot } from '../viewmodels/EditorDebugSnapshot';
 import { DrawingEditorViewModel, ElementLayerChangePreview } from '../viewmodels/DrawingEditorViewModel';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
 import { RenderInvalidation } from '../viewmodels/RenderInvalidation';
-import { XFYUN_FORMULA_CONFIG } from '../services/XfyunFormulaConfig';
-import { XfyunFormulaService } from '../services/XfyunFormulaService';
 import { XFYUN_OCR_CONFIG } from '../services/XfyunOcrConfig';
 import { XfyunOcrService } from '../services/XfyunOcrService';
 import { EditorPerformanceTrace } from '../utils/EditorPerformanceTrace';
@@ -120,7 +118,6 @@ interface ExtendedTouchObject extends TouchObject {
 }
 
 type CanvasDrawContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
-type RecognitionExportMode = 'ocr' | 'formula';
 
 function createEmptyImageWarmPreviewElement(): ImageCanvasElement {
   return {
@@ -209,11 +206,6 @@ const DEFAULT_TEXT_OUTLINE: ElementOutlineStyle = {
   color: '#111827',
   width: 2
 };
-const FORMULA_EXPORT_PADDING = 36;
-const FORMULA_EXPORT_MIN_EDGE = 320;
-const FORMULA_EXPORT_SCALE = 3;
-const FORMULA_EXPORT_MIN_STROKE_WIDTH = 4;
-const FORMULA_EXPORT_STROKE_WIDTH_FACTOR = 1.25;
 const OCR_EXPORT_PADDING = 36;
 const OCR_EXPORT_SCALE = 3;
 const OCR_EXPORT_MIN_EDGE = 320;
@@ -392,7 +384,6 @@ export struct CanvasBoard {
   @State private selectionContextMenuX: number = 0;
   @State private selectionContextMenuY: number = 0;
   @State private isOcrRecognizing: boolean = false;
-  @State private isFormulaRecognizing: boolean = false;
   private isSelectionContextOutlineWidthDragging: boolean = false;
   private isSelectionContextFontSizeDragging: boolean = false;
 
@@ -963,20 +954,9 @@ export struct CanvasBoard {
           .fontSize(14)
           .fontColor('#111827')
           .backgroundColor('#00000000')
-          .enabled(!this.isOcrRecognizing && !this.isFormulaRecognizing)
+          .enabled(!this.isOcrRecognizing)
           .onClick(() => {
             this.handleSelectionContextMenuAction('ocr');
-          })
-
-        Button(this.isFormulaRecognizing ? '识别中...' : '公式识别')
-          .width('100%')
-          .height(SELECTION_CONTEXT_MENU_ITEM_HEIGHT)
-          .fontSize(14)
-          .fontColor('#111827')
-          .backgroundColor('#00000000')
-          .enabled(!this.isOcrRecognizing && !this.isFormulaRecognizing)
-          .onClick(() => {
-            this.handleSelectionContextMenuAction('formula');
           })
 
         Button('删除')
@@ -2544,15 +2524,11 @@ export struct CanvasBoard {
       const element = viewModel.getElementForRendering(inlineTextEditElementId);
       if (element !== null && element.type === 'text') {
         const textElement = element as TextCanvasElement;
-        if (textElement.recognition?.source === 'formula' && (textElement.recognition.latex?.trim().length ?? 0) > 0) {
-          this.clearLastTextSelectionTap();
-        } else {
-          this.hideSelectionContextMenu();
-          this.beginInlineTextEdit(textElement);
-          this.syncEditorSnapshot();
-          this.onContentChanged(false, 'element');
-          return;
-        }
+        this.hideSelectionContextMenu();
+        this.beginInlineTextEdit(textElement);
+        this.syncEditorSnapshot();
+        this.onContentChanged(false, 'element');
+        return;
       }
     }
 
@@ -3238,11 +3214,6 @@ export struct CanvasBoard {
   private handleSelectionContextMenuAction(action: SelectionAction): void {
     if (action === 'ocr') {
       void this.handleOcrRecognitionAction();
-      return;
-    }
-
-    if (action === 'formula') {
-      void this.handleFormulaRecognitionAction();
       return;
     }
 
@@ -4012,7 +3983,7 @@ export struct CanvasBoard {
       return;
     }
 
-    if (this.isOcrRecognizing || this.isFormulaRecognizing) {
+    if (this.isOcrRecognizing) {
       return;
     }
 
@@ -4021,7 +3992,7 @@ export struct CanvasBoard {
     try {
       viewModel.appendDebugEvent('ocrRecognition', 'start');
       this.editorSnapshot = viewModel.getDebugSnapshot();
-      const exportPayload = await this.exportRecognitionSelectionImage(viewModel, 'ocr');
+      const exportPayload = await this.exportRecognitionSelectionImage(viewModel);
       if (exportPayload === null) {
         throw new Error('No selectable lasso content was available for OCR recognition.');
       }
@@ -4031,7 +4002,7 @@ export struct CanvasBoard {
         `exportMeta size=${exportPayload.width}x${exportPayload.height} content=${exportPayload.contentWidth}x${exportPayload.contentHeight} scale=${exportPayload.scale} strokes=${exportPayload.strokeCount} elements=${exportPayload.elementCount}`
       );
       this.editorSnapshot = viewModel.getDebugSnapshot();
-      await this.persistRecognitionUploadImageForDebug(viewModel, 'ocr', exportPayload);
+      await this.persistRecognitionUploadImageForDebug(viewModel, exportPayload);
 
       const ocrService = new XfyunOcrService(XFYUN_OCR_CONFIG);
       const ocrResult = await ocrService.recognize(exportPayload.base64Image);
@@ -4070,80 +4041,6 @@ export struct CanvasBoard {
       this.redrawOverlayLayer();
     } finally {
       this.isOcrRecognizing = false;
-    }
-  }
-
-  private async handleFormulaRecognitionAction(): Promise<void> {
-    const viewModel = this.getViewModel();
-    if (viewModel === null) {
-      this.hideSelectionContextMenu();
-      return;
-    }
-
-    if (this.isOcrRecognizing || this.isFormulaRecognizing) {
-      return;
-    }
-
-    this.hideSelectionContextMenu();
-    this.isFormulaRecognizing = true;
-    try {
-      viewModel.appendDebugEvent('formulaRecognition', 'start');
-      this.editorSnapshot = viewModel.getDebugSnapshot();
-      const exportPayload = await this.exportRecognitionSelectionImage(viewModel, 'formula');
-      if (exportPayload === null) {
-        throw new Error('No selectable lasso content was available for formula recognition.');
-      }
-      viewModel.appendDebugEvent('formulaRecognition', `exported base64Length=${exportPayload.base64Image.length}`);
-      viewModel.appendDebugEvent(
-        'formulaRecognition',
-        `exportMeta size=${exportPayload.width}x${exportPayload.height} content=${exportPayload.contentWidth}x${exportPayload.contentHeight} scale=${exportPayload.scale} strokes=${exportPayload.strokeCount} elements=${exportPayload.elementCount}`
-      );
-      this.editorSnapshot = viewModel.getDebugSnapshot();
-      await this.persistRecognitionUploadImageForDebug(viewModel, 'formula', exportPayload);
-
-      const formulaService = new XfyunFormulaService(XFYUN_FORMULA_CONFIG);
-      const formulaResult = await formulaService.recognize(exportPayload.base64Image);
-      viewModel.appendDebugEvent(
-        'formulaRecognition',
-        `requestSuccess sid=${formulaResult.sid} textLength=${formulaResult.text.length} latexLength=${formulaResult.latex.length}`
-      );
-      this.editorSnapshot = viewModel.getDebugSnapshot();
-      const insertedElement = viewModel.insertRecognizedTextElement(
-        formulaResult.latex.length > 0 ? formulaResult.latex : formulaResult.text,
-        exportPayload.frame,
-        {
-          width: this.pageWidth,
-          height: this.pageHeight
-        },
-        {
-          recognition: {
-            source: 'formula',
-            sid: formulaResult.sid,
-            recognizedAt: Date.now(),
-            rawText: formulaResult.text,
-            latex: formulaResult.latex.length > 0 ? formulaResult.latex : undefined
-          }
-        }
-      );
-      if (insertedElement === null) {
-        throw new Error(viewModel.getErrorMessage() || 'Failed to insert formula recognition result.');
-      }
-
-      this.syncEditorSnapshot();
-      if (!this.tryApplyLatestRenderInvalidation()) {
-        this.redrawCommittedLayer(false);
-      }
-      this.redrawOverlayLayer();
-      this.onContentChanged(true, 'element');
-    } catch (error) {
-      if (viewModel !== null) {
-        viewModel.appendDebugEvent('formulaRecognition', `failed error=${this.stringifyError(error)}`);
-        this.editorSnapshot = viewModel.getDebugSnapshot();
-      }
-      this.updateSnapshotErrorMessage(this.stringifyError(error));
-      this.redrawOverlayLayer();
-    } finally {
-      this.isFormulaRecognizing = false;
     }
   }
 
@@ -5783,8 +5680,7 @@ export struct CanvasBoard {
   }
 
   private async exportRecognitionSelectionImage(
-    viewModel: DrawingEditorViewModel,
-    mode: RecognitionExportMode
+    viewModel: DrawingEditorViewModel
   ): Promise<RecognitionSelectionImagePayload | null> {
     const selectionBounds = viewModel.getSelectionBoundingBox();
     if (selectionBounds === null) {
@@ -5806,9 +5702,9 @@ export struct CanvasBoard {
     }
 
     const contentBounds = this.resolveRecognitionContentBounds(selectionBounds, strokes, elements);
-    const padding = mode === 'ocr' ? OCR_EXPORT_PADDING : FORMULA_EXPORT_PADDING;
-    const scale = mode === 'ocr' ? OCR_EXPORT_SCALE : FORMULA_EXPORT_SCALE;
-    const minOutputEdge = mode === 'ocr' ? OCR_EXPORT_MIN_EDGE : FORMULA_EXPORT_MIN_EDGE;
+    const padding = OCR_EXPORT_PADDING;
+    const scale = OCR_EXPORT_SCALE;
+    const minOutputEdge = OCR_EXPORT_MIN_EDGE;
     const minLogicalEdge = Math.max(1, Math.ceil(minOutputEdge / scale));
     const paddedBounds = clampBoundingBox(
       {
@@ -5848,11 +5744,7 @@ export struct CanvasBoard {
         offscreenContext,
         elements.filter((element: CanvasElement): boolean => element.zIndex < strokeLayerZIndex)
       );
-      if (mode === 'ocr') {
-        this.drawOcrRecognitionStrokes(offscreenContext, strokes);
-      } else {
-        this.drawFormulaRecognitionStrokes(offscreenContext, strokes);
-      }
+      this.drawOcrRecognitionStrokes(offscreenContext, strokes);
       CanvasElementRenderer.drawElements(
         offscreenContext,
         elements.filter((element: CanvasElement): boolean => element.zIndex >= strokeLayerZIndex)
@@ -5931,17 +5823,6 @@ export struct CanvasBoard {
     }
   }
 
-  private drawFormulaRecognitionStrokes(context: CanvasDrawContext, strokes: Stroke[]): void {
-    for (const stroke of strokes) {
-      this.drawHighContrastRecognitionStroke(
-        context,
-        stroke,
-        FORMULA_EXPORT_MIN_STROKE_WIDTH,
-        FORMULA_EXPORT_STROKE_WIDTH_FACTOR
-      );
-    }
-  }
-
   private drawHighContrastRecognitionStroke(
     context: CanvasDrawContext,
     stroke: Stroke,
@@ -5995,21 +5876,18 @@ export struct CanvasBoard {
 
   private async persistRecognitionUploadImageForDebug(
     viewModel: DrawingEditorViewModel,
-    mode: RecognitionExportMode,
     payload: RecognitionSelectionImagePayload
   ): Promise<void> {
-    const debugSource = mode === 'ocr' ? 'ocrRecognition' : 'formulaRecognition';
     try {
-      const title = await this.saveRecognitionUploadImageToGallery(mode, payload);
-      viewModel.appendDebugEvent(debugSource, `savedUploadImage title=${title}.png`);
+      const title = await this.saveRecognitionUploadImageToGallery(payload);
+      viewModel.appendDebugEvent('ocrRecognition', `savedUploadImage title=${title}.png`);
     } catch (error) {
-      viewModel.appendDebugEvent(debugSource, `saveUploadImageFailed error=${this.stringifyError(error)}`);
+      viewModel.appendDebugEvent('ocrRecognition', `saveUploadImageFailed error=${this.stringifyError(error)}`);
     }
     this.editorSnapshot = viewModel.getDebugSnapshot();
   }
 
   private async saveRecognitionUploadImageToGallery(
-    mode: RecognitionExportMode,
     payload: RecognitionSelectionImagePayload
   ): Promise<string> {
     const hostContext: common.Context | undefined = this.getUIContext().getHostContext() as common.Context | undefined;
@@ -6017,7 +5895,7 @@ export struct CanvasBoard {
       throw new Error('Host context is unavailable.');
     }
 
-    const title = this.buildRecognitionUploadImageTitle(mode, payload);
+    const title = this.buildRecognitionUploadImageTitle(payload);
     const photoHelper = photoAccessHelper.getPhotoAccessHelper(hostContext);
     try {
       const request = photoAccessHelper.MediaAssetChangeRequest.createAssetRequest(
@@ -6038,10 +5916,9 @@ export struct CanvasBoard {
   }
 
   private buildRecognitionUploadImageTitle(
-    mode: RecognitionExportMode,
     payload: RecognitionSelectionImagePayload
   ): string {
-    return `hosn_${mode}_upload_${Date.now()}_${payload.width}x${payload.height}`;
+    return `hosn_ocr_upload_${Date.now()}_${payload.width}x${payload.height}`;
   }
 
   private copyBytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {

@@ -8,7 +8,6 @@ import {
 } from '../viewmodels/DrawingEditorViewModel';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
 import { ElementSelectionOverlay } from './ElementSelectionOverlay';
-import { FormulaElementView } from './FormulaElementView';
 import { ShapeElementView } from './ShapeElementView';
 import { StableImageElementView } from './StableImageElementView';
 import { TextElementView } from './TextElementView';
@@ -67,11 +66,7 @@ export struct ElementLayer {
   @Builder
   private buildElement(element: CanvasElement): void {
     if (element.type === 'text') {
-      if (this.shouldRenderFormula(element)) {
-        this.buildFormulaElement(element);
-      } else {
-        this.buildTextElement(element);
-      }
+      this.buildTextElement(element);
     } else if (element.type === 'shape') {
       ShapeElementView({ element: element, renderVersion: this.refreshVersion })
     } else if (element.type === 'image') {
@@ -92,19 +87,8 @@ export struct ElementLayer {
   }
 
   @Builder
-  private buildFormulaElement(element: TextCanvasElement): void {
-    FormulaElementView({ element })
-  }
-
-  @Builder
   private buildTextElement(element: TextCanvasElement): void {
     TextElementView({ element })
-  }
-
-  private shouldRenderFormula(element: TextCanvasElement): boolean {
-    return element.recognition?.source === 'formula' &&
-      typeof element.recognition.latex === 'string' &&
-      element.recognition.latex.trim().length > 0;
   }
 
   private getSelectionRenderKey(element: CanvasElement): string {

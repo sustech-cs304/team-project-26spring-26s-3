@@ -9,7 +9,6 @@ export type SelectionAction =
   'copy' |
   'resize' |
   'ocr' |
-  'formula' |
   'fill' |
   'textColor' |
   'background' |
