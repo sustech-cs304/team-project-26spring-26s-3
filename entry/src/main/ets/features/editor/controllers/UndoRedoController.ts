@@ -612,7 +612,9 @@ export class UndoRedoController {
       originalWidth: element.originalWidth,
       originalHeight: element.originalHeight,
       opacity: element.opacity,
-      outline: this.cloneElementOutline(element.outline)
+      outline: this.cloneElementOutline(element.outline),
+      sourceFileUri: element.sourceFileUri,
+      sourceFileType: element.sourceFileType
     };
   }
 

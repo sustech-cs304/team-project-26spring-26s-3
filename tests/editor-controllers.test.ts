@@ -114,7 +114,9 @@ function imageElement(id: string): ImageCanvasElement {
       lineStyle: 'none',
       color: '#222222',
       width: 0
-    }
+    },
+    sourceFileUri: `file://${id}.pdf`,
+    sourceFileType: '.pdf'
   };
 }
 
@@ -280,6 +282,8 @@ describe('UndoRedoController', () => {
     expect(afterRedo.elements.map((item) => item.id)).toEqual(['element-keep', 'image-new']);
     expect(afterRedo.elements[1].type).toBe('image');
     expect((afterRedo.elements[1] as ImageCanvasElement).uri).toBe('file://image-new.png');
+    expect((afterRedo.elements[1] as ImageCanvasElement).sourceFileUri).toBe('file://image-new.pdf');
+    expect((afterRedo.elements[1] as ImageCanvasElement).sourceFileType).toBe('.pdf');
   });
 
   it('ignores empty deltas and enforces history limit', () => {

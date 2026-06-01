@@ -42,12 +42,14 @@ import { StrokeController } from '../controllers/StrokeController';
 import { StrokeSpatialHashIndex } from '../controllers/StrokeSpatialHashIndex';
 import {
   EditorDeltaLabel,
+  EditorOperation,
   EditorSelectionSnapshot,
   IndexedElementRecord,
   IndexedStrokeRecord,
   UndoRedoApplyResult,
   UndoRedoController,
-  UndoRedoDebugState
+  UndoRedoDebugState,
+  UndoRedoSnapshot
 } from '../controllers/UndoRedoController';
 import { SelectionController } from '../selection/SelectionController';
 import {
@@ -136,6 +138,16 @@ interface SelectionMoveGesture {
   originalElementRecords: IndexedElementRecord[];
   originalTargets: SelectionTarget[];
   selectionBounds: BoundingBox;
+}
+
+export interface PageContentResizeSnapshot {
+  strokes: Stroke[];
+  elements: CanvasElement[];
+  strokeLayerZIndex: number;
+  undoRedoSnapshot: UndoRedoSnapshot;
+  changeSequence: number;
+  lastPersistedChangeSequence: number;
+  persistenceStatus: string;
 }
 
 interface StrokeResizeGesture {
@@ -330,6 +342,94 @@ export class DrawingEditorViewModel {
     } finally {
       this.isLoading = false;
     }
+  }
+
+  createPageContentResizeSnapshot(): PageContentResizeSnapshot {
+    return {
+      strokes: this.cloneStrokes(this.strokes),
+      elements: this.cloneElements(this.elements),
+      strokeLayerZIndex: this.strokeLayerZIndex,
+      undoRedoSnapshot: this.undoRedoController.createSnapshot(),
+      changeSequence: this.changeSequence,
+      lastPersistedChangeSequence: this.lastPersistedChangeSequence,
+      persistenceStatus: this.persistenceStatus
+    };
+  }
+
+  restorePageContentResizeSnapshot(snapshot: PageContentResizeSnapshot): void {
+    this.clearScheduledSave();
+    this.strokes = this.cloneStrokes(snapshot.strokes);
+    this.elements = this.cloneElements(snapshot.elements);
+    this.strokeLayerZIndex = snapshot.strokeLayerZIndex;
+    this.undoRedoController.restoreSnapshot(snapshot.undoRedoSnapshot);
+    this.rebuildStrokeSpatialIndex();
+    this.resetTransientState();
+    this.changeSequence = snapshot.changeSequence;
+    this.lastPersistedChangeSequence = snapshot.lastPersistedChangeSequence;
+    this.persistenceStatus = snapshot.persistenceStatus;
+    this.errorMessage = '';
+    this.markFullRenderInvalidation('resize');
+    this.appendDebugEvent('canvasResize', 'restored rollback snapshot');
+  }
+
+  resizePageContentForCanvasSize(sourceSize: ElementBounds, targetSize: ElementBounds): boolean {
+    const sourceWidth = Math.max(1, Number(sourceSize.width));
+    const sourceHeight = Math.max(1, Number(sourceSize.height));
+    const targetWidth = Math.max(1, Number(targetSize.width));
+    const targetHeight = Math.max(1, Number(targetSize.height));
+    if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) ||
+      !Number.isFinite(targetWidth) || !Number.isFinite(targetHeight)) {
+      return false;
+    }
+
+    if (sourceWidth === targetWidth && sourceHeight === targetHeight) {
+      return false;
+    }
+
+    const hasCurrentContent = this.strokes.length > 0 || this.elements.length > 0;
+    const historyState: UndoRedoDebugState = this.undoRedoController.getDebugState();
+    const hasUndoRedoContent = historyState.undoDepth > 0 || historyState.redoDepth > 0;
+    if (this.pageId.length === 0 || (!hasCurrentContent && !hasUndoRedoContent)) {
+      return false;
+    }
+
+    const sourceBounds: BoundingBox = {
+      minX: 0,
+      minY: 0,
+      maxX: sourceWidth,
+      maxY: sourceHeight
+    };
+    const targetBounds: BoundingBox = {
+      minX: 0,
+      minY: 0,
+      maxX: targetWidth,
+      maxY: targetHeight
+    };
+    const updatedAt = now();
+
+    this.strokes = this.strokes.map((stroke: Stroke): Stroke =>
+      this.scaleStrokeForCanvasResize(stroke, sourceBounds, targetBounds, updatedAt));
+    this.elements = this.elements.map((element: CanvasElement): CanvasElement =>
+      this.scaleElementForCanvasResize(element, sourceBounds, targetBounds, updatedAt));
+    this.undoRedoController.restoreSnapshot(
+      this.scaleUndoRedoSnapshotForCanvasResize(
+        this.undoRedoController.createSnapshot(),
+        sourceBounds,
+        targetBounds
+      )
+    );
+    this.rebuildStrokeSpatialIndex();
+    this.resetTransientState();
+    if (hasCurrentContent) {
+      this.changeSequence += 1;
+      this.persistenceStatus = 'pending canvas resize save';
+    }
+    this.markFullRenderInvalidation('resize');
+    this.appendDebugEvent(
+      'canvasResize',
+      `${Math.round(sourceWidth)}x${Math.round(sourceHeight)} -> ${Math.round(targetWidth)}x${Math.round(targetHeight)}`
+    );
+    return true;
   }
 
   beginStroke(point: StrokePoint): Stroke | null {
@@ -3709,18 +3809,29 @@ export class DrawingEditorViewModel {
   }
 
   private scaleStroke(stroke: Stroke, sourceBounds: BoundingBox, targetBounds: BoundingBox): Stroke {
+    return this.scaleStrokeForCanvasResize(stroke, sourceBounds, targetBounds, now());
+  }
+
+  private scaleStrokeForCanvasResize(
+    stroke: Stroke,
+    sourceBounds: BoundingBox,
+    targetBounds: BoundingBox,
+    updatedAt: number
+  ): Stroke {
     const scaleX = (targetBounds.maxX - targetBounds.minX) / Math.max(1, sourceBounds.maxX - sourceBounds.minX);
     const scaleY = (targetBounds.maxY - targetBounds.minY) / Math.max(1, sourceBounds.maxY - sourceBounds.minY);
     const widthScale = Math.sqrt(Math.max(0.01, Math.abs(scaleX * scaleY)));
     return {
       ...this.cloneStroke(stroke),
+      renderWarmupPoints: stroke.renderWarmupPoints?.map((point: StrokePoint): StrokePoint =>
+        this.scalePoint(point, sourceBounds, targetBounds, scaleX, scaleY)) ?? [],
       points: stroke.points.map((point: StrokePoint): StrokePoint =>
         this.scalePoint(point, sourceBounds, targetBounds, scaleX, scaleY)),
       style: {
         ...stroke.style,
         width: Math.max(MIN_STROKE_RESIZE_WIDTH, stroke.style.width * widthScale)
       },
-      updatedAt: now()
+      updatedAt: updatedAt
     };
   }
 
@@ -3774,6 +3885,192 @@ export class DrawingEditorViewModel {
       maxX: Math.max(topLeft.x, bottomRight.x),
       maxY: Math.max(topLeft.y, bottomRight.y)
     };
+  }
+
+  private scaleUndoRedoSnapshotForCanvasResize(
+    snapshot: UndoRedoSnapshot,
+    sourceBounds: BoundingBox,
+    targetBounds: BoundingBox
+  ): UndoRedoSnapshot {
+    return {
+      undoStack: snapshot.undoStack.map((operation: EditorOperation): EditorOperation =>
+        this.scaleUndoRedoOperationForCanvasResize(operation, sourceBounds, targetBounds)),
+      redoStack: snapshot.redoStack.map((operation: EditorOperation): EditorOperation =>
+        this.scaleUndoRedoOperationForCanvasResize(operation, sourceBounds, targetBounds))
+    };
+  }
+
+  private scaleUndoRedoOperationForCanvasResize(
+    operation: EditorOperation,
+    sourceBounds: BoundingBox,
+    targetBounds: BoundingBox
+  ): EditorOperation {
+    const updatedAt = now();
+    if (operation.type === 'append_stroke') {
+      return {
+        type: 'append_stroke',
+        index: operation.index,
+        stroke: this.scaleStrokeForCanvasResize(operation.stroke, sourceBounds, targetBounds, updatedAt)
+      };
+    }
+
+    return {
+      type: 'replace_page_delta',
+      removed: operation.removed.map((record: IndexedStrokeRecord): IndexedStrokeRecord => ({
+        index: record.index,
+        stroke: this.scaleStrokeForCanvasResize(record.stroke, sourceBounds, targetBounds, updatedAt)
+      })),
+      added: operation.added.map((record: IndexedStrokeRecord): IndexedStrokeRecord => ({
+        index: record.index,
+        stroke: this.scaleStrokeForCanvasResize(record.stroke, sourceBounds, targetBounds, updatedAt)
+      })),
+      removedElements: operation.removedElements.map((record: IndexedElementRecord): IndexedElementRecord => ({
+        index: record.index,
+        element: this.scaleElementForCanvasResize(record.element, sourceBounds, targetBounds, updatedAt)
+      })),
+      addedElements: operation.addedElements.map((record: IndexedElementRecord): IndexedElementRecord => ({
+        index: record.index,
+        element: this.scaleElementForCanvasResize(record.element, sourceBounds, targetBounds, updatedAt)
+      })),
+      beforeSelection: operation.beforeSelection === undefined
+        ? undefined
+        : this.scaleSelectionSnapshotForCanvasResize(operation.beforeSelection, sourceBounds, targetBounds),
+      afterSelection: operation.afterSelection === undefined
+        ? undefined
+        : this.scaleSelectionSnapshotForCanvasResize(operation.afterSelection, sourceBounds, targetBounds),
+      beforeStrokeLayerZIndex: operation.beforeStrokeLayerZIndex,
+      afterStrokeLayerZIndex: operation.afterStrokeLayerZIndex,
+      label: operation.label
+    };
+  }
+
+  private scaleSelectionSnapshotForCanvasResize(
+    snapshot: EditorSelectionSnapshot,
+    sourceBounds: BoundingBox,
+    targetBounds: BoundingBox
+  ): EditorSelectionSnapshot {
+    return {
+      strokeIds: [...snapshot.strokeIds],
+      strokeTargets: this.scaleSelectionTargets(snapshot.strokeTargets, sourceBounds, targetBounds),
+      elementIds: [...snapshot.elementIds]
+    };
+  }
+
+  private scaleElementForCanvasResize(
+    element: CanvasElement,
+    sourceBounds: BoundingBox,
+    targetBounds: BoundingBox,
+    updatedAt: number
+  ): CanvasElement {
+    switch (element.type) {
+      case 'text':
+        return this.scaleTextElementForCanvasResize(element, sourceBounds, targetBounds, updatedAt);
+      case 'shape':
+        return this.scaleShapeElementForCanvasResize(element, sourceBounds, targetBounds, updatedAt);
+      case 'image':
+        return this.scaleImageElementForCanvasResize(element, sourceBounds, targetBounds, updatedAt);
+      default:
+        return this.scaleTextElementForCanvasResize(element as TextCanvasElement, sourceBounds, targetBounds, updatedAt);
+    }
+  }
+
+  private scaleTextElementForCanvasResize(
+    element: TextCanvasElement,
+    sourceBounds: BoundingBox,
+    targetBounds: BoundingBox,
+    updatedAt: number
+  ): TextCanvasElement {
+    const frame = this.scaleElementFrameForCanvasResize(element, sourceBounds, targetBounds);
+    const sizeScale = this.getCanvasResizeStrokeWidthScale(sourceBounds, targetBounds);
+    return {
+      ...this.cloneTextElement(element),
+      x: frame.x,
+      y: frame.y,
+      width: frame.width,
+      height: frame.height,
+      fontSize: Math.max(1, element.fontSize * sizeScale),
+      outline: this.scaleElementOutlineForCanvasResize(element.outline ?? DEFAULT_TEXT_OUTLINE, sizeScale),
+      updatedAt: updatedAt
+    };
+  }
+
+  private scaleShapeElementForCanvasResize(
+    element: ShapeCanvasElement,
+    sourceBounds: BoundingBox,
+    targetBounds: BoundingBox,
+    updatedAt: number
+  ): ShapeCanvasElement {
+    const frame = this.scaleElementFrameForCanvasResize(element, sourceBounds, targetBounds);
+    const sizeScale = this.getCanvasResizeStrokeWidthScale(sourceBounds, targetBounds);
+    const scaleX = (targetBounds.maxX - targetBounds.minX) / Math.max(1, sourceBounds.maxX - sourceBounds.minX);
+    const scaleY = (targetBounds.maxY - targetBounds.minY) / Math.max(1, sourceBounds.maxY - sourceBounds.minY);
+    return {
+      ...this.cloneShapeElement(element),
+      x: frame.x,
+      y: frame.y,
+      width: frame.width,
+      height: frame.height,
+      geometry: {
+        kind: element.geometry.kind,
+        points: element.geometry.points.map((point: ShapeGeometryPoint): ShapeGeometryPoint => ({
+          x: targetBounds.minX + (point.x - sourceBounds.minX) * scaleX,
+          y: targetBounds.minY + (point.y - sourceBounds.minY) * scaleY
+        }))
+      },
+      outline: this.scaleElementOutlineForCanvasResize(element.outline, sizeScale),
+      updatedAt: updatedAt
+    };
+  }
+
+  private scaleImageElementForCanvasResize(
+    element: ImageCanvasElement,
+    sourceBounds: BoundingBox,
+    targetBounds: BoundingBox,
+    updatedAt: number
+  ): ImageCanvasElement {
+    const frame = this.scaleElementFrameForCanvasResize(element, sourceBounds, targetBounds);
+    const sizeScale = this.getCanvasResizeStrokeWidthScale(sourceBounds, targetBounds);
+    return {
+      ...this.cloneImageElement(element),
+      x: frame.x,
+      y: frame.y,
+      width: frame.width,
+      height: frame.height,
+      outline: this.scaleElementOutlineForCanvasResize(element.outline, sizeScale),
+      updatedAt: updatedAt
+    };
+  }
+
+  private scaleElementFrameForCanvasResize(
+    element: CanvasElement,
+    sourceBounds: BoundingBox,
+    targetBounds: BoundingBox
+  ): ElementFrame {
+    const scaleX = (targetBounds.maxX - targetBounds.minX) / Math.max(1, sourceBounds.maxX - sourceBounds.minX);
+    const scaleY = (targetBounds.maxY - targetBounds.minY) / Math.max(1, sourceBounds.maxY - sourceBounds.minY);
+    return {
+      x: targetBounds.minX + (element.x - sourceBounds.minX) * scaleX,
+      y: targetBounds.minY + (element.y - sourceBounds.minY) * scaleY,
+      width: Math.max(1, element.width * scaleX),
+      height: Math.max(1, element.height * scaleY)
+    };
+  }
+
+  private scaleElementOutlineForCanvasResize(
+    outline: ElementOutlineStyle,
+    sizeScale: number
+  ): ElementOutlineStyle {
+    return {
+      lineStyle: outline.lineStyle,
+      color: outline.color,
+      width: Math.max(0, outline.width * sizeScale)
+    };
+  }
+
+  private getCanvasResizeStrokeWidthScale(sourceBounds: BoundingBox, targetBounds: BoundingBox): number {
+    const scaleX = (targetBounds.maxX - targetBounds.minX) / Math.max(1, sourceBounds.maxX - sourceBounds.minX);
+    const scaleY = (targetBounds.maxY - targetBounds.minY) / Math.max(1, sourceBounds.maxY - sourceBounds.minY);
+    return Math.sqrt(Math.max(0.01, Math.abs(scaleX * scaleY)));
   }
 
   private cloneBoundingBox(bounds: BoundingBox): BoundingBox {
@@ -4863,7 +5160,9 @@ export class DrawingEditorViewModel {
       originalWidth: element.originalWidth,
       originalHeight: element.originalHeight,
       opacity: element.opacity,
-      outline: this.cloneElementOutline(element.outline)
+      outline: this.cloneElementOutline(element.outline),
+      sourceFileUri: element.sourceFileUri,
+      sourceFileType: element.sourceFileType
     };
   }
 

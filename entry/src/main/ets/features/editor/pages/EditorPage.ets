@@ -27,7 +27,7 @@ import {
   stripNotebookExportExtension
 } from '../../notebook/models/NotebookExportOptions';
 import { NotebookExportResult, NotebookExportService } from '../../notebook/services/NotebookExportService';
-import { DrawingEditorViewModel } from '../viewmodels/DrawingEditorViewModel';
+import { DrawingEditorViewModel, PageContentResizeSnapshot } from '../viewmodels/DrawingEditorViewModel';
 import { EditorDebugSnapshot } from '../viewmodels/EditorDebugSnapshot';
 import { EditorSessionRegistry } from '../viewmodels/EditorSessionRegistry';
 import { EditorViewModel } from '../viewmodels/EditorViewModel';
@@ -4788,9 +4788,38 @@ struct EditorPage {
       width: cachedRollbackSize.width,
       height: cachedRollbackSize.height
     };
+    const sourceSize: PageCanvasRenderSize = this.getActiveCanvasBounds();
+    let activeSession: DrawingEditorViewModel | null = EditorSessionRegistry.get(pageId);
+    let rollbackContentSnapshot: PageContentResizeSnapshot | null = null;
+    let hasResizedPageContent = false;
 
     this.isUpdatingPageTemplate = true;
     this.closeToolDropdown();
+    if (activeSession === null || !activeSession.isLoadedForPage(pageId)) {
+      const hostContext: common.Context | undefined = this.getUIContext().getHostContext() as common.Context | undefined;
+      if (hostContext !== undefined) {
+        try {
+          activeSession = await EditorSessionRegistry.ensureLoaded(
+            pageId,
+            hostContext,
+            this.cloneToolSetting(this.toolSetting)
+          );
+        } catch (_loadSessionError) {
+          activeSession = null;
+        }
+      }
+    }
+    const canResizePageContent: boolean = activeSession !== null && activeSession.isLoadedForPage(pageId);
+    rollbackContentSnapshot = canResizePageContent && activeSession !== null
+      ? activeSession.createPageContentResizeSnapshot()
+      : null;
+    if (canResizePageContent && activeSession !== null) {
+      hasResizedPageContent = activeSession.resizePageContentForCanvasSize(sourceSize, targetSize);
+      if (hasResizedPageContent) {
+        this.captureThumbnailSession(pageId, activeSession);
+        this.refreshElementLayer();
+      }
+    }
     this.applyActivePageCanvasSizeLocally(activePage, targetSize.width, targetSize.height);
     this.bumpCanvasVersionForPage(pageId);
     this.documentViewportRefreshVersion += 1;
@@ -4806,6 +4835,12 @@ struct EditorPage {
       );
 
       if (updatedNotebookPageCanvas === null) {
+        this.restorePageContentAfterFailedCanvasSizeUpdate(
+          pageId,
+          activeSession,
+          rollbackContentSnapshot,
+          hasResizedPageContent
+        );
         this.restoreActivePageCanvasAfterFailedSizeUpdate(pageId, rollbackCanvas, rollbackSize);
         return;
       }
@@ -4825,8 +4860,19 @@ struct EditorPage {
       this.applyDocumentScrollOffset(this.documentScrollOffsetY);
       this.bumpCanvasVersionForPage(pageId);
       this.documentViewportRefreshVersion += 1;
+      if (hasResizedPageContent && activeSession !== null) {
+        await activeSession.flushPendingSave();
+        this.syncDrawingSnapshot(false, activeSession, pageId, true);
+        this.captureThumbnailSession(pageId, activeSession);
+      }
       this.requestThumbnailRender(true);
     } catch (_error) {
+      this.restorePageContentAfterFailedCanvasSizeUpdate(
+        pageId,
+        activeSession,
+        rollbackContentSnapshot,
+        hasResizedPageContent
+      );
       this.restoreActivePageCanvasAfterFailedSizeUpdate(pageId, rollbackCanvas, rollbackSize);
     } finally {
       this.isUpdatingPageTemplate = false;
@@ -4943,6 +4989,22 @@ struct EditorPage {
     this.syncActivePageId(rollbackActivePageId);
     this.bumpCanvasVersionForPage(rollbackActivePageId);
     this.requestThumbnailRender(true);
+  }
+
+  private restorePageContentAfterFailedCanvasSizeUpdate(
+    pageId: string,
+    viewModel: DrawingEditorViewModel | null,
+    snapshot: PageContentResizeSnapshot | null,
+    hasResizedPageContent: boolean
+  ): void {
+    if (!hasResizedPageContent || viewModel === null || snapshot === null) {
+      return;
+    }
+
+    viewModel.restorePageContentResizeSnapshot(snapshot);
+    this.syncDrawingSnapshot(false, viewModel, pageId);
+    this.refreshElementLayer();
+    this.captureThumbnailSession(pageId, viewModel);
   }
 
   private applyActivePageCanvasSizeLocally(activePage: NotebookPage, width: number, height: number): void {
