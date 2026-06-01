@@ -1980,14 +1980,15 @@ export class DrawingEditorViewModel {
     const timestamp = now();
     const clampedFrame = clampElementFrameToBounds(frame, bounds);
     const fontSize = Math.max(16, Math.min(28, Math.round(clampedFrame.height / 4)));
+    const textDimensions = this.estimateRecognitionTextDimensions(normalizedContent, fontSize, bounds);
     const nextElement: TextCanvasElement = {
       id: createId('text'),
       pageId: this.pageId,
       type: 'text',
       x: clampedFrame.x,
       y: clampedFrame.y,
-      width: clampedFrame.width,
-      height: clampedFrame.height,
+      width: textDimensions.width,
+      height: textDimensions.height,
       rotation: 0,
       zIndex: this.getNextElementZIndex(),
       createdAt: timestamp,
@@ -2002,6 +2003,29 @@ export class DrawingEditorViewModel {
 
     const insertionIndex = this.elements.length;
     this.elements = [...this.elements, nextElement];
+
+    // Delete the original selected strokes so they don't overlap with the OCR text
+    const removedStrokeRecords = this.getSelectedStrokeRecords();
+    if (removedStrokeRecords.length > 0) {
+      const beforeSnapshot = this.getCurrentSelectionSnapshot();
+      const removedStrokeIdSet = new Set<string>();
+      for (const record of removedStrokeRecords) {
+        removedStrokeIdSet.add(record.stroke.id);
+      }
+      this.strokes = this.strokes.filter((stroke: Stroke): boolean => !removedStrokeIdSet.has(stroke.id));
+      this.applyStrokeSpatialIndexMutation(removedStrokeRecords, []);
+      this.markPartialRenderInvalidation('delete', removedStrokeRecords, []);
+      this.undoRedoController.recordDelta(
+        removedStrokeRecords,
+        [],
+        'delete',
+        [],
+        [],
+        beforeSnapshot,
+        { strokeIds: [], strokeTargets: [], elementIds: [nextElement.id] }
+      );
+    }
+
     this.selectedStrokeTargets = [];
     this.selectedElementIds = [nextElement.id];
     this.selectedElementId = nextElement.id;
@@ -2014,12 +2038,57 @@ export class DrawingEditorViewModel {
     this.persistenceStatus = 'pending recognition text save';
     this.schedulePersistCurrentStrokes('recognitionText', 0);
     this.errorMessage = '';
-    const recognitionEventSource = options.recognition?.source === 'ocr' ? 'ocrRecognition' : 'formulaRecognition';
     this.appendDebugEvent(
-      recognitionEventSource,
+      'ocrRecognition',
       `element=${nextElement.id} length=${normalizedContent.length} x=${Math.round(nextElement.x)} y=${Math.round(nextElement.y)}`
     );
     return this.cloneTextElement(nextElement);
+  }
+
+  private estimateRecognitionTextDimensions(
+    content: string,
+    fontSize: number,
+    bounds: ElementBounds
+  ): { width: number; height: number } {
+    const TEXT_PADDING_H = 16;
+    const TEXT_PADDING_V = 12;
+    const LINE_HEIGHT_FACTOR = 1.35;
+    const MAX_WIDTH_RATIO = 0.8;
+    const maxWidth = Math.max(fontSize * 3, Math.min(bounds.width * MAX_WIDTH_RATIO, 600));
+    const lineHeight = fontSize * LINE_HEIGHT_FACTOR;
+
+    let estimatedContentWidth = 0;
+    for (let index = 0; index < content.length; index += 1) {
+      const char = content.charAt(index);
+      estimatedContentWidth += char.charCodeAt(0) > 127 ? fontSize : fontSize * 0.6;
+    }
+
+    const totalWidth = estimatedContentWidth + TEXT_PADDING_H;
+    if (totalWidth <= maxWidth) {
+      return {
+        width: Math.max(fontSize * 3, totalWidth),
+        height: lineHeight + TEXT_PADDING_V
+      };
+    }
+
+    const availableLineWidth = maxWidth - TEXT_PADDING_H;
+    let lines = 1;
+    let lineRemaining = availableLineWidth;
+    for (let index = 0; index < content.length; index += 1) {
+      const char = content.charAt(index);
+      const charWidth = char.charCodeAt(0) > 127 ? fontSize : fontSize * 0.6;
+      if (lineRemaining < charWidth) {
+        lines += 1;
+        lineRemaining = availableLineWidth - charWidth;
+      } else {
+        lineRemaining -= charWidth;
+      }
+    }
+
+    return {
+      width: maxWidth,
+      height: lines * lineHeight + TEXT_PADDING_V
+    };
   }
 
   getActiveStroke(): Stroke | null {
