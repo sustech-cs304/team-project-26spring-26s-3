@@ -277,11 +277,19 @@ java -version
       }
     }
 
-    stage('Static Project Checks') {
+    stage('Prepare Project Config') {
       steps {
         script {
           runCi(
             '''
+if not exist build-profile.json5 (
+  if exist build-profile.json5.template (
+    copy /y build-profile.json5.template build-profile.json5
+  ) else (
+    echo Missing build-profile.json5 and build-profile.json5.template
+    exit /b 1
+  )
+)
 if not exist build-profile.json5 exit /b 1
 if not exist hvigorfile.ts exit /b 1
 if not exist entry\\src\\main\\module.json5 exit /b 1
@@ -292,6 +300,14 @@ if not exist tsconfig.ci.json exit /b 1
 if not exist oh-package-lock.json5 exit /b 1
 ''',
             '''
+if [ ! -f build-profile.json5 ]; then
+  if [ -f build-profile.json5.template ]; then
+    cp build-profile.json5.template build-profile.json5
+  else
+    echo "Missing build-profile.json5 and build-profile.json5.template"
+    exit 1
+  fi
+fi
 test -f build-profile.json5
 test -f hvigorfile.ts
 test -f entry/src/main/module.json5
