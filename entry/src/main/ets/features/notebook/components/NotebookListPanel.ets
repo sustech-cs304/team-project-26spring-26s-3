@@ -3658,6 +3658,10 @@ export struct NotebookListPanel {
     this.draftNotebookColor = this.composeHexFromRgb(this.notebookColorR, this.notebookColorG, this.notebookColorB);
   }
 
+  private getFolderTabColor(color: string): string {
+    return `#CC${NotebookFolderEntity.normalizeColor(color).slice(1)}`;
+  }
+
   private pickRandomAvailableFolderColor(): string {
     const usedColors: string[] = [];
     for (const folder of this.folderList) {
@@ -3685,11 +3689,24 @@ export struct NotebookListPanel {
   }
 
   @Builder
-  private buildFolderIcon(width: number = 34): void {
-    Image($rawfile('icons/folder_icon.svg'))
+  private buildFolderIcon(width: number = 34, color: string = NotebookFolderEntity.DEFAULT_COLOR): void {
+    Stack({ alignContent: Alignment.TopStart }) {
+      Column() {}
+        .width(width * 0.48)
+        .height(width * 0.24)
+        .backgroundColor(this.getFolderTabColor(color))
+        .borderRadius(width * 0.1)
+        .margin({ left: width * 0.09, top: width * 0.08 })
+
+      Column() {}
+        .width(width * 0.82)
+        .height(width * 0.65)
+        .backgroundColor(NotebookFolderEntity.normalizeColor(color))
+        .borderRadius(width * 0.12)
+        .margin({ left: width * 0.09, top: width * 0.23 })
+    }
       .width(width)
       .height(width)
-      .objectFit(ImageFit.Contain)
   }
 
   @Builder
@@ -3749,7 +3766,7 @@ export struct NotebookListPanel {
   @Builder
   private buildSidebarFolderItem(folder: NotebookFolder): void {
     Row({ space: 8 }) {
-      this.buildFolderIcon(24)
+      this.buildFolderIcon(24, folder.color)
 
       Text(folder.title)
         .layoutWeight(1)
@@ -4912,11 +4929,12 @@ export struct NotebookListPanel {
         Blank()
           .layoutWeight(1)
 
-        Row() {
+        Row({ space: 6 }) {
           Blank()
           if (this.isNotebookBatchSelectionModeActive()) {
             this.buildBatchSelectionMark(this.isNotebookSelectedForBatch(notebook.id), 28)
           } else {
+            this.buildNotebookFavoriteButton(notebook, 30, 18)
             this.buildNotebookActionMenuButton(notebook, 30, 18)
           }
         }
@@ -5359,7 +5377,7 @@ export struct NotebookListPanel {
   private buildAllNotesFolderCard(folder: NotebookFolder): void {
     Column({ space: 10 }) {
       Row({ space: 12 }) {
-        this.buildFolderIcon(58)
+        this.buildFolderIcon(58, folder.color)
 
         Column({ space: 6 }) {
           Text(folder.title)
@@ -5891,7 +5909,8 @@ export struct NotebookListPanel {
               Column({ space: 4 }) {
                 ForEach(this.folderList, (folder: NotebookFolder) => {
                   this.buildSidebarFolderItem(folder)
-                }, (folder: NotebookFolder): string => folder.id)
+                }, (folder: NotebookFolder): string =>
+                  `sidebar-folder-${this.folderListRenderVersion}-${folder.id}-${NotebookFolderEntity.normalizeColor(folder.color)}`)
               }
               .width('100%')
             }
