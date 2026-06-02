@@ -54,7 +54,7 @@ export struct TextElementView {
         .wordBreak(WordBreak.BREAK_ALL)
         .maxLines(1000)
         .barState(BarState.Off)
-        .backgroundColor(this.element.backgroundColor)
+        .backgroundColor(Color.Transparent)
         .zIndex(this.element.zIndex)
         .hitTestBehavior(HitTestMode.None)
 
@@ -66,6 +66,7 @@ export struct TextElementView {
       x: this.element.x,
       y: this.element.y
     })
+    .backgroundColor(this.element.backgroundColor)
     .zIndex(this.element.zIndex)
     .hitTestBehavior(HitTestMode.None)
   }

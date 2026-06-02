@@ -1394,7 +1394,6 @@ export struct CanvasBoard {
         width: 2,
         color: '#2563EB'
       })
-      .borderRadius(2)
       .zIndex(element.zIndex + 20000)
   }
 
