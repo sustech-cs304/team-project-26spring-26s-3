@@ -1686,7 +1686,7 @@ export class DrawingEditorViewModel {
       zIndex: this.getNextElementZIndex(),
       createdAt: timestamp,
       updatedAt: timestamp,
-      content: 'Text',
+      content: '',
       color: this.toolSetting.color,
       fontSize,
       backgroundColor: TRANSPARENT_ELEMENT_BACKGROUND_COLOR,

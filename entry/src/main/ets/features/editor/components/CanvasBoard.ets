@@ -1401,8 +1401,7 @@ export struct CanvasBoard {
   @Builder
   private buildInlineTextSizeProbe(element: TextCanvasElement): void {
     TextArea({
-      placeholder: 'Text',
-      text: this.inlineTextEditContent
+      text: this.getInlineTextMeasureContent()
     })
       .width(this.getScaledInlineTextWidth())
       .padding({
@@ -1458,7 +1457,6 @@ export struct CanvasBoard {
   @Builder
   private buildInlineTextInputProxy(element: TextCanvasElement): void {
     TextArea({
-      placeholder: 'Text',
       text: this.inlineTextEditContent
     })
       .width(this.getScaledInlineTextWidth())
@@ -4275,7 +4273,11 @@ export struct CanvasBoard {
   }
 
   private getInlineTextDisplayContent(): string {
-    return this.inlineTextEditContent.length === 0 ? 'Text' : this.inlineTextEditContent;
+    return this.inlineTextEditContent;
+  }
+
+  private getInlineTextMeasureContent(): string {
+    return this.inlineTextEditContent.length === 0 ? ' ' : this.inlineTextEditContent;
   }
 
   private cloneTextElement(element: TextCanvasElement): TextCanvasElement {
