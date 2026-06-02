@@ -41,6 +41,9 @@ build-profile.json5
 *.csr
 *.p7b
 
+# CI archive (local reference only)
+archive/
+
 # OS metadata
 .DS_Store
 Thumbs.db
