@@ -9,6 +9,7 @@
 # Dependency install directories
 node_modules/
 oh_modules/
+.ci-cache/
 
 # Logs and temporary files
 *.log
