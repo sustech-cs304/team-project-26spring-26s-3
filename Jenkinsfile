@@ -518,8 +518,17 @@ echo "Connected hdc target: $target"
 
   post {
     always {
-      junit allowEmptyResults: true, testResults: 'reports/tests/*.xml'
-      archiveArtifacts artifacts: 'reports/tests/*.xml,reports/metrics/**/*,reports/pmd/**/*,reports/coverage/**/*,build/outputs/**/*.app,build/outputs/**/*.zip,entry/build/**/outputs/**/*.hap,entry/build/**/*coverage*/**,.hvigor/outputs/build-logs/*.log', fingerprint: true, allowEmptyArchive: true
+      script {
+        String archiveRoot = params.REPO_DIR?.trim()
+        if (!archiveRoot) {
+          archiveRoot = env.WORKSPACE
+        }
+
+        dir(archiveRoot) {
+          junit allowEmptyResults: true, testResults: 'reports/tests/*.xml'
+          archiveArtifacts artifacts: 'reports/tests/*.xml,reports/metrics/**/*,reports/pmd/**/*,reports/coverage/**/*,build/outputs/**/*.app,build/outputs/**/*.zip,entry/build/**/outputs/**/*.hap,entry/build/**/*coverage*/**,.hvigor/outputs/build-logs/*.log', fingerprint: true, allowEmptyArchive: true
+        }
+      }
     }
   }
 }
