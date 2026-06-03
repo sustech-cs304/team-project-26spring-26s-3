@@ -1,4 +1,5 @@
 import common from '@ohos.app.ability.common';
+import fileUri from '@ohos.file.fileuri';
 import picker from '@ohos.file.picker';
 import router from '@ohos.router';
 
@@ -185,11 +186,10 @@ struct EditorPage {
   @State private deleteTargetPageLabel: string = '';
   @State private deleteTargetPageOrder: number = -1;
   @State private isExportDialogVisible: boolean = false;
-  @State private isPickingExportPath: boolean = false;
+  @State private isPickingExportOutput: boolean = false;
   @State private isExportingNotebook: boolean = false;
   @State private exportFailureMessage: string = '';
   @State private draftExportFileName: string = '';
-  @State private draftExportPath: string = '';
   @State private draftExportFormat: string = 'pdf';
   @State private draftExportScope: string = 'all';
   @State private draftExportPageRange: string = '';
@@ -1779,19 +1779,15 @@ struct EditorPage {
     Column() {
       NotebookExportDialog({
         fileName: $draftExportFileName,
-        outputPath: $draftExportPath,
         selectedFormat: $draftExportFormat,
         selectedScope: $draftExportScope,
         pageRange: $draftExportPageRange,
         notebookTitle: this.notebookTitle,
-        isChoosingPath: this.isPickingExportPath,
-        isExporting: this.isExportingNotebook,
+        isExporting: this.isPickingExportOutput || this.isExportingNotebook,
         showScopeOptions: true,
+        previewFileNames: this.getNotebookExportPreviewFileNames(),
         onCancel: (): void => {
           this.closeNotebookExportDialog();
-        },
-        onChoosePath: (): void => {
-          void this.selectNotebookExportPath();
         },
         onConfirm: (): void => {
           void this.confirmNotebookExportDialog();
@@ -4238,13 +4234,12 @@ struct EditorPage {
 
   private openNotebookExportDialog(): void {
     if (this.isLoading || this.hasMissingNotebookId || this.isNotebookMissing || this.notebookId.length === 0 ||
-      this.isPickingExportPath || this.isExportingNotebook) {
+      this.isPickingExportOutput || this.isExportingNotebook) {
       return;
     }
 
     this.closeTransientDropdowns();
     this.draftExportFileName = createNotebookExportBaseName(this.notebookTitle);
-    this.draftExportPath = '';
     this.draftExportFormat = 'pdf';
     this.draftExportScope = 'all';
     this.draftExportPageRange = '';
@@ -4252,7 +4247,7 @@ struct EditorPage {
   }
 
   private closeNotebookExportDialog(): void {
-    if (this.isPickingExportPath || this.isExportingNotebook) {
+    if (this.isPickingExportOutput || this.isExportingNotebook) {
       return;
     }
 
@@ -4260,7 +4255,7 @@ struct EditorPage {
   }
 
   private async confirmNotebookExportDialog(): Promise<void> {
-    if (this.isPickingExportPath || this.isExportingNotebook) {
+    if (this.isPickingExportOutput || this.isExportingNotebook) {
       return;
     }
 
@@ -4271,23 +4266,20 @@ struct EditorPage {
       return;
     }
 
-    const outputUris: string[] = this.parseExportOutputUris(this.draftExportPath);
+    await this.flushActiveDrawingSession();
+    const outputUris: string[] = await this.pickNotebookExportOutputUris();
     if (outputUris.length === 0) {
-      await this.selectNotebookExportPath();
-      if (this.parseExportOutputUris(this.draftExportPath).length === 0) {
-        return;
-      }
+      return;
     }
 
     this.isExportingNotebook = true;
     this.exportFailureMessage = '';
     try {
-      await this.flushActiveDrawingSession();
       const exportResult: NotebookExportResult = await this.ensureNotebookExportService().exportNotebook({
         notebookId: this.notebookId,
         fileName: this.getExportPickerBaseFileName(),
         format: this.draftExportFormat,
-        outputUris: this.parseExportOutputUris(this.draftExportPath),
+        outputUris,
         pageIds: exportPageIds
       });
       if (exportResult.success) {
@@ -4306,45 +4298,45 @@ struct EditorPage {
     this.isExportDialogVisible = false;
     this.isExportingNotebook = false;
     this.draftExportFileName = '';
-    this.draftExportPath = '';
     this.draftExportFormat = 'pdf';
     this.draftExportScope = 'all';
     this.draftExportPageRange = '';
   }
 
-  private async selectNotebookExportPath(): Promise<void> {
-    if (this.isPickingExportPath || this.isExportingNotebook) {
-      return;
+  private async pickNotebookExportOutputUris(): Promise<string[]> {
+    if (this.isPickingExportOutput || this.isExportingNotebook) {
+      return [];
     }
 
     const hostContext: common.Context | undefined = this.getUIContext().getHostContext() as common.Context | undefined;
     if (hostContext === undefined) {
-      return;
+      return [];
     }
     const pageCount: number = this.getNotebookExportPageCount();
     if (pageCount <= 0) {
       this.exportFailureMessage = this.getNotebookExportPageRangeMessage();
-      return;
+      return [];
     }
 
-    this.isPickingExportPath = true;
+    this.isPickingExportOutput = true;
     try {
       const saveOptions = new picker.DocumentSaveOptions();
       const exportService: NotebookExportService = this.ensureNotebookExportService();
       saveOptions.newFileNames = exportService.buildExportFileNames(
         this.getExportPickerBaseFileName(),
         this.draftExportFormat,
-        this.getNotebookExportPageCount()
+        pageCount
       );
       saveOptions.fileSuffixChoices = [buildNotebookExportSuffixChoice(this.draftExportFormat)];
       const documentPicker = new picker.DocumentViewPicker(hostContext);
       const selectedUris: string[] = await documentPicker.save(saveOptions);
-      if (selectedUris.length > 0) {
-        this.draftExportPath = selectedUris.join('\n');
-      }
+      const outputUris: string[] = this.normalizeExportOutputUris(selectedUris);
+      this.syncDraftExportFileNameFromOutputUris(outputUris);
+      return outputUris;
     } catch (_error) {
+      return [];
     } finally {
-      this.isPickingExportPath = false;
+      this.isPickingExportOutput = false;
     }
   }
 
@@ -4356,10 +4348,49 @@ struct EditorPage {
     return createNotebookExportBaseName(this.notebookTitle);
   }
 
+  private getNotebookExportPreviewFileNames(): string[] {
+    const pageCount: number = this.getNotebookExportPageCount();
+    if (pageCount <= 0) {
+      return [];
+    }
+    return this.ensureNotebookExportService().buildExportFileNames(
+      this.getExportPickerBaseFileName(),
+      this.draftExportFormat,
+      pageCount
+    ).slice(0, 4);
+  }
+
+  private syncDraftExportFileNameFromOutputUris(outputUris: string[]): void {
+    if (outputUris.length !== 1) {
+      return;
+    }
+    const outputFileName: string = this.getOutputUriFileName(outputUris[0]);
+    const outputBaseName: string = stripNotebookExportExtension(outputFileName);
+    if (outputBaseName.length > 0) {
+      this.draftExportFileName = outputBaseName;
+    }
+  }
+
+  private getOutputUriFileName(outputUri: string): string {
+    try {
+      return new fileUri.FileUri(outputUri).name;
+    } catch (_error) {
+      const normalizedUri: string = outputUri.trim();
+      const queryIndex: number = normalizedUri.indexOf('?');
+      const uriWithoutQuery: string = queryIndex >= 0 ? normalizedUri.substring(0, queryIndex) : normalizedUri;
+      const lastSlashIndex: number = uriWithoutQuery.lastIndexOf('/');
+      const encodedName: string = lastSlashIndex >= 0 ? uriWithoutQuery.substring(lastSlashIndex + 1) : uriWithoutQuery;
+      try {
+        return decodeURIComponent(encodedName);
+      } catch (_decodeError) {
+        return encodedName;
+      }
+    }
+  }
+
   private changeNotebookExportScope(scope: string): void {
     const normalizedScope: string = normalizeNotebookExportScope(scope);
     this.draftExportScope = normalizedScope;
-    this.draftExportPath = '';
     if (normalizedScope !== 'range') {
       this.draftExportPageRange = '';
     }
@@ -4367,12 +4398,10 @@ struct EditorPage {
 
   private changeNotebookExportFormat(format: string): void {
     this.draftExportFormat = format;
-    this.draftExportPath = '';
   }
 
   private changeNotebookExportPageRange(range: string): void {
     this.draftExportPageRange = range;
-    this.draftExportPath = '';
   }
 
   private getNotebookExportPageIds(): string[] | undefined {
@@ -4487,13 +4516,12 @@ struct EditorPage {
     return this.notebookPageList[0].id;
   }
 
-  private parseExportOutputUris(rawPath: string): string[] {
-    const rawParts: string[] = rawPath.split('\n');
+  private normalizeExportOutputUris(rawUris: string[]): string[] {
     const result: string[] = [];
-    for (const rawPart of rawParts) {
-      const normalizedPart: string = rawPart.trim();
-      if (normalizedPart.length > 0 && !result.includes(normalizedPart)) {
-        result.push(normalizedPart);
+    for (const rawUri of rawUris) {
+      const normalizedUri: string = rawUri.trim();
+      if (normalizedUri.length > 0 && !result.includes(normalizedUri)) {
+        result.push(normalizedUri);
       }
     }
     return result;

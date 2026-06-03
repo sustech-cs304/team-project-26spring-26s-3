@@ -12,20 +12,19 @@ import { AppTheme } from '../../../common/theme/AppTheme';
 @Component
 export struct NotebookExportDialog {
   @Link fileName: string;
-  @Link outputPath: string;
   @Link selectedFormat: string;
   @Link selectedScope: string;
   @Link pageRange: string;
   @Prop notebookTitle: string = '';
-  @Prop isChoosingPath: boolean = false;
   @Prop isExporting: boolean = false;
   @Prop showScopeOptions: boolean = true;
   @Prop isBatchMode: boolean = false;
   @Prop batchItemCount: number = 0;
+  @Prop previewFileNames: string[] = [];
   @StorageLink('storage.app.theme.color') private themeColor: string = AppTheme.DEFAULT_COLOR;
   onCancel: () => void = (): void => {};
-  onChoosePath: () => void = (): void => {};
   onConfirm: () => void = (): void => {};
+  onFileNameChange: (fileName: string) => void = (_fileName: string): void => {};
   onFormatChange: (format: string) => void = (_format: string): void => {};
   onScopeChange: (scope: string) => void = (_scope: string): void => {};
   onPageRangeChange: (range: string) => void = (_range: string): void => {};
@@ -33,7 +32,7 @@ export struct NotebookExportDialog {
   build() {
     Column({ space: 16 }) {
       Column({ space: 6 }) {
-        Text('导出为…')
+        Text('导出笔记')
           .fontSize($r('app.float.section_title_size'))
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.primary_text'))
@@ -67,6 +66,7 @@ export struct NotebookExportDialog {
             .padding({ left: 16, right: 16 })
             .onChange((value: string) => {
               this.fileName = value;
+              this.onFileNameChange(value);
             })
         }
         .width('100%')
@@ -126,60 +126,14 @@ export struct NotebookExportDialog {
         .alignItems(HorizontalAlign.Start)
       }
 
-      Column({ space: 8 }) {
-        Text('保存位置')
-          .fontSize(13)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.primary_text'))
-
-        Row({ space: 10 }) {
-          TextInput({
-            placeholder: '选择或输入保存路径',
-            text: this.outputPath
-          })
-            .layoutWeight(1)
-            .height($r('app.float.button_height'))
-            .fontSize(13)
-            .backgroundColor($r('app.color.app_background'))
-            .borderRadius(14)
-            .padding({ left: 14, right: 14 })
-            .onChange((value: string) => {
-              this.outputPath = value;
-            })
-
-          Button(this.isChoosingPath ? '选择中...' : '选择路径')
-            .height($r('app.float.button_height'))
-            .padding({ left: 14, right: 14 })
-            .fontSize(13)
-            .enabled(!this.isDialogBusy())
-            .backgroundColor(this.getThemeColor())
-            .fontColor($r('app.color.inverse_text'))
-            .borderRadius(14)
-            .onClick(() => {
-              if (!this.isDialogBusy()) {
-                this.onChoosePath();
-              }
-            })
-        }
+      Text(`预览文件：${this.getPreviewFileNamesText()}`)
         .width('100%')
-        .alignItems(VerticalAlign.Center)
-      }
-      .width('100%')
-      .alignItems(HorizontalAlign.Start)
+        .fontSize($r('app.float.caption_text_size'))
+        .fontColor($r('app.color.secondary_text'))
+        .maxLines(this.previewFileNames.length > 1 ? 3 : 1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
 
-      if (this.isBatchMode) {
-        Text('将使用每个笔记本名称分别生成导出文件。')
-          .width('100%')
-          .fontSize($r('app.float.caption_text_size'))
-          .fontColor($r('app.color.secondary_text'))
-      } else {
-        Text(`预览文件：${this.getPreviewFileName()}`)
-          .width('100%')
-          .fontSize($r('app.float.caption_text_size'))
-          .fontColor($r('app.color.secondary_text'))
-      }
-
-      Text('PDF 会导出为单个文件，图片格式会按页面导出。')
+      Text('点击导出后会打开系统保存窗口；确认保存后应用会立即写入文件。')
         .width('100%')
         .fontSize(12)
         .fontColor('#8A94A6')
@@ -197,7 +151,7 @@ export struct NotebookExportDialog {
             }
           })
 
-        Button(this.isExporting ? '导出中...' : '确认')
+        Button(this.isExporting ? '导出中...' : '导出')
           .layoutWeight(1)
           .height($r('app.float.button_height'))
           .enabled(!this.isDialogBusy())
@@ -310,14 +264,21 @@ export struct NotebookExportDialog {
   }
 
   private isDialogBusy(): boolean {
-    return this.isChoosingPath || this.isExporting;
+    return this.isExporting;
   }
 
   private getThemeColor(): string {
     return AppTheme.getAccentColor(this.themeColor);
   }
 
-  private getPreviewFileName(): string {
-    return buildNotebookExportFileName(this.fileName, this.selectedFormat);
+  private getPreviewFileNamesText(): string {
+    const fileNames: string[] = this.previewFileNames.length > 0 ?
+      this.previewFileNames : [buildNotebookExportFileName(this.fileName, this.selectedFormat)];
+    if (fileNames.length === 0) {
+      return '准备导出文件...';
+    }
+    const visibleNames: string[] = fileNames.slice(0, 3);
+    const suffix: string = fileNames.length > visibleNames.length ? ' ...' : '';
+    return `${visibleNames.join('，')}${suffix}`;
   }
 }

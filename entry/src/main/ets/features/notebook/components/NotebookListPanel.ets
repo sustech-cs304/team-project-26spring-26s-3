@@ -1,4 +1,5 @@
 import common from '@ohos.app.ability.common';
+import fileUri from '@ohos.file.fileuri';
 import picker from '@ohos.file.picker';
 import { AppRouter, RouterParams } from '../../../app/AppRouter';
 import { AppTheme } from '../../../common/theme/AppTheme';
@@ -248,13 +249,13 @@ export struct NotebookListPanel {
   @State private pendingTagNewText: string = '';
 
   @State private isExportDialogVisible: boolean = false;
-  @State private isPickingExportPath: boolean = false;
+  @State private isPickingExportOutput: boolean = false;
   @State private isExportingNotebook: boolean = false;
   @State private exportFailureMessage: string = '';
   @State private exportTargetNotebookId: string = '';
   @State private exportTargetNotebookTitle: string = '';
   @State private draftExportFileName: string = '';
-  @State private draftExportPath: string = '';
+  @State private exportPreviewFileNames: string[] = [];
   @State private draftExportFormat: string = 'pdf';
   @State private draftExportScope: string = 'all';
   @State private draftExportPageRange: string = '';
@@ -465,7 +466,7 @@ export struct NotebookListPanel {
   private isActionBusy(): boolean {
     return this.isDeletingNotebook || this.isSubmittingDialog || this.isCreatingFolder || this.isMovingNotebook || this.isUpdatingTags ||
       this.isRenamingFolder || this.isUpdatingFolderColor || this.isDeletingFolder || this.isPickingNotebookCover ||
-      this.isUpdatingNotebookCover || this.isPickingExportPath || this.isExportingNotebook || this.isAddingNotebookToFolder ||
+      this.isUpdatingNotebookCover || this.isPickingExportOutput || this.isExportingNotebook || this.isAddingNotebookToFolder ||
       this.isBatchDeleting || this.isBatchMoving;
   }
 
@@ -561,7 +562,7 @@ export struct NotebookListPanel {
     this.isBatchExportMode = false;
     this.batchExportNotebookCount = 0;
     this.draftExportFileName = '';
-    this.draftExportPath = '';
+    this.exportPreviewFileNames = [];
     this.draftExportFormat = 'pdf';
     this.draftExportScope = 'all';
     this.draftExportPageRange = '';
@@ -628,7 +629,7 @@ export struct NotebookListPanel {
       this.dismissNotebookCoverDialog();
     }
 
-    if (!this.isPickingExportPath) {
+    if (!this.isPickingExportOutput) {
       this.dismissExportDialog();
     }
 
@@ -1021,15 +1022,16 @@ export struct NotebookListPanel {
     this.exportTargetNotebookId = notebook.id;
     this.exportTargetNotebookTitle = notebook.title;
     this.draftExportFileName = createNotebookExportBaseName(notebook.title);
-    this.draftExportPath = '';
+    this.exportPreviewFileNames = [];
     this.draftExportFormat = 'pdf';
     this.draftExportScope = 'all';
     this.draftExportPageRange = '';
     this.isExportDialogVisible = true;
+    void this.refreshExportPreviewFileNames();
   }
 
   private closeExportDialog(): void {
-    if (this.isPickingExportPath || this.isExportingNotebook) {
+    if (this.isPickingExportOutput || this.isExportingNotebook) {
       return;
     }
 
@@ -1056,15 +1058,16 @@ export struct NotebookListPanel {
     this.exportTargetNotebookId = '';
     this.exportTargetNotebookTitle = `已选择 ${notebookList.length} 个笔记本`;
     this.draftExportFileName = '';
-    this.draftExportPath = '';
+    this.exportPreviewFileNames = [];
     this.draftExportFormat = 'pdf';
     this.draftExportScope = 'all';
     this.draftExportPageRange = '';
     this.isExportDialogVisible = true;
+    void this.refreshExportPreviewFileNames();
   }
 
   private async confirmExportDialog(): Promise<void> {
-    if (this.isPickingExportPath || this.isExportingNotebook) {
+    if (this.isPickingExportOutput || this.isExportingNotebook) {
       return;
     }
 
@@ -1073,12 +1076,9 @@ export struct NotebookListPanel {
       return;
     }
 
-    const outputUris: string[] = this.parseExportOutputUris(this.draftExportPath);
+    const outputUris: string[] = await this.pickExportOutputUrisFromDialog();
     if (outputUris.length === 0) {
-      await this.selectExportPathFromDialog();
-      if (this.parseExportOutputUris(this.draftExportPath).length === 0) {
-        return;
-      }
+      return;
     }
 
     this.isExportingNotebook = true;
@@ -1088,7 +1088,7 @@ export struct NotebookListPanel {
         notebookId: this.exportTargetNotebookId,
         fileName: this.getExportPickerBaseFileName(),
         format: this.draftExportFormat,
-        outputUris: this.parseExportOutputUris(this.draftExportPath)
+        outputUris
       });
       if (exportResult.success) {
         this.dismissExportDialog();
@@ -1102,17 +1102,17 @@ export struct NotebookListPanel {
     }
   }
 
-  private async selectExportPathFromDialog(): Promise<void> {
-    if (this.isPickingExportPath || this.isExportingNotebook) {
-      return;
+  private async pickExportOutputUrisFromDialog(): Promise<string[]> {
+    if (this.isPickingExportOutput || this.isExportingNotebook) {
+      return [];
     }
 
     const hostContext: common.Context | undefined = this.getUIContext().getHostContext() as common.Context | undefined;
     if (hostContext === undefined) {
-      return;
+      return [];
     }
 
-    this.isPickingExportPath = true;
+    this.isPickingExportOutput = true;
     try {
       const saveOptions = new picker.DocumentSaveOptions();
       if (this.isBatchExportMode) {
@@ -1129,12 +1129,13 @@ export struct NotebookListPanel {
       saveOptions.fileSuffixChoices = [buildNotebookExportSuffixChoice(this.draftExportFormat)];
       const documentPicker = new picker.DocumentViewPicker(hostContext);
       const selectedUris: string[] = await documentPicker.save(saveOptions);
-      if (selectedUris.length > 0) {
-        this.draftExportPath = selectedUris.join('\n');
-      }
+      const outputUris: string[] = this.normalizeExportOutputUris(selectedUris);
+      this.syncDraftExportFileNameFromOutputUris(outputUris);
+      return outputUris;
     } catch (_error) {
+      return [];
     } finally {
-      this.isPickingExportPath = false;
+      this.isPickingExportOutput = false;
     }
   }
 
@@ -1144,6 +1145,34 @@ export struct NotebookListPanel {
       return cleanName;
     }
     return createNotebookExportBaseName(this.exportTargetNotebookTitle);
+  }
+
+  private syncDraftExportFileNameFromOutputUris(outputUris: string[]): void {
+    if (this.isBatchExportMode || outputUris.length !== 1) {
+      return;
+    }
+    const outputFileName: string = this.getOutputUriFileName(outputUris[0]);
+    const outputBaseName: string = stripNotebookExportExtension(outputFileName);
+    if (outputBaseName.length > 0) {
+      this.draftExportFileName = outputBaseName;
+    }
+  }
+
+  private getOutputUriFileName(outputUri: string): string {
+    try {
+      return new fileUri.FileUri(outputUri).name;
+    } catch (_error) {
+      const normalizedUri: string = outputUri.trim();
+      const queryIndex: number = normalizedUri.indexOf('?');
+      const uriWithoutQuery: string = queryIndex >= 0 ? normalizedUri.substring(0, queryIndex) : normalizedUri;
+      const lastSlashIndex: number = uriWithoutQuery.lastIndexOf('/');
+      const encodedName: string = lastSlashIndex >= 0 ? uriWithoutQuery.substring(lastSlashIndex + 1) : uriWithoutQuery;
+      try {
+        return decodeURIComponent(encodedName);
+      } catch (_decodeError) {
+        return encodedName;
+      }
+    }
   }
 
   private buildUniqueBatchExportBaseName(notebook: Notebook, usedBaseNames: string[]): string {
@@ -1177,6 +1206,40 @@ export struct NotebookListPanel {
     return result;
   }
 
+  private async refreshExportPreviewFileNames(): Promise<void> {
+    const format: string = this.draftExportFormat;
+    const targetNotebookId: string = this.exportTargetNotebookId;
+    const isBatchMode: boolean = this.isBatchExportMode;
+    const previewFileNames: string[] = await this.buildExportPreviewFileNames(format, 4);
+    if (this.draftExportFormat === format && this.exportTargetNotebookId === targetNotebookId &&
+      this.isBatchExportMode === isBatchMode) {
+      this.exportPreviewFileNames = previewFileNames;
+    }
+  }
+
+  private async buildExportPreviewFileNames(format: string, limit: number): Promise<string[]> {
+    const result: string[] = [];
+    const exportService: NotebookExportService = this.ensureExportService();
+    if (!this.isBatchExportMode) {
+      const pageCount: number = await exportService.getNotebookPageCount(this.exportTargetNotebookId);
+      return exportService.buildExportFileNames(this.getExportPickerBaseFileName(), format, pageCount).slice(0, limit);
+    }
+
+    const usedBaseNames: string[] = [];
+    for (const notebook of this.getBatchExportNotebookList()) {
+      const baseName: string = this.buildUniqueBatchExportBaseName(notebook, usedBaseNames);
+      const pageCount: number = await exportService.getNotebookPageCount(notebook.id);
+      const fileNames: string[] = exportService.buildExportFileNames(baseName, format, pageCount);
+      for (const fileName of fileNames) {
+        result.push(fileName);
+        if (result.length >= limit) {
+          return result;
+        }
+      }
+    }
+    return result;
+  }
+
   private async getBatchExpectedExportFileCount(notebookList: Notebook[]): Promise<number> {
     const exportService: NotebookExportService = this.ensureExportService();
     const usedBaseNames: string[] = [];
@@ -1196,19 +1259,14 @@ export struct NotebookListPanel {
       return;
     }
 
-    const outputUris: string[] = this.parseExportOutputUris(this.draftExportPath);
-    if (outputUris.length === 0) {
-      await this.selectExportPathFromDialog();
-      if (this.parseExportOutputUris(this.draftExportPath).length === 0) {
-        return;
-      }
+    const selectedOutputUris: string[] = await this.pickExportOutputUrisFromDialog();
+    if (selectedOutputUris.length === 0) {
+      return;
     }
 
-    const selectedOutputUris: string[] = this.parseExportOutputUris(this.draftExportPath);
     const expectedOutputFileCount: number = await this.getBatchExpectedExportFileCount(notebookList);
     if (selectedOutputUris.length < expectedOutputFileCount) {
       this.exportFailureMessage = '保存位置数量不足，请重新选择导出位置。';
-      this.draftExportPath = '';
       return;
     }
 
@@ -1250,13 +1308,12 @@ export struct NotebookListPanel {
     }
   }
 
-  private parseExportOutputUris(rawPath: string): string[] {
-    const rawParts: string[] = rawPath.split('\n');
+  private normalizeExportOutputUris(rawUris: string[]): string[] {
     const result: string[] = [];
-    for (const rawPart of rawParts) {
-      const normalizedPart: string = rawPart.trim();
-      if (normalizedPart.length > 0 && !result.includes(normalizedPart)) {
-        result.push(normalizedPart);
+    for (const rawUri of rawUris) {
+      const normalizedUri: string = rawUri.trim();
+      if (normalizedUri.length > 0 && !result.includes(normalizedUri)) {
+        result.push(normalizedUri);
       }
     }
     return result;
@@ -1264,7 +1321,16 @@ export struct NotebookListPanel {
 
   private changeExportFormat(format: string): void {
     this.draftExportFormat = format;
-    this.draftExportPath = '';
+    this.exportPreviewFileNames = [];
+    void this.refreshExportPreviewFileNames();
+  }
+
+  private changeExportFileName(fileName: string): void {
+    this.draftExportFileName = fileName;
+    if (!this.isBatchExportMode) {
+      this.exportPreviewFileNames = [];
+      void this.refreshExportPreviewFileNames();
+    }
   }
 
   private normalizeTagList(rawTags?: string[]): string[] {
@@ -6013,24 +6079,23 @@ export struct NotebookListPanel {
         Column() {
           NotebookExportDialog({
             fileName: $draftExportFileName,
-            outputPath: $draftExportPath,
             selectedFormat: $draftExportFormat,
             selectedScope: $draftExportScope,
             pageRange: $draftExportPageRange,
             notebookTitle: this.exportTargetNotebookTitle,
-            isChoosingPath: this.isPickingExportPath,
-            isExporting: this.isExportingNotebook,
+            isExporting: this.isPickingExportOutput || this.isExportingNotebook,
             showScopeOptions: false,
             isBatchMode: this.isBatchExportMode,
             batchItemCount: this.batchExportNotebookCount,
+            previewFileNames: this.exportPreviewFileNames,
             onCancel: (): void => {
               this.closeExportDialog();
             },
-            onChoosePath: (): void => {
-              void this.selectExportPathFromDialog();
-            },
             onConfirm: (): void => {
               void this.confirmExportDialog();
+            },
+            onFileNameChange: (fileName: string): void => {
+              this.changeExportFileName(fileName);
             },
             onFormatChange: (format: string): void => {
               this.changeExportFormat(format);
