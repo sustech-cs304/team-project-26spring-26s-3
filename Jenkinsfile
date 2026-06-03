@@ -212,8 +212,8 @@ pipeline {
     string(name: 'PMD_BIN_OVERRIDE', defaultValue: '', description: 'Optional PMD executable path, e.g. pmd-bin-x.y.z/bin/pmd.bat. Leave empty when pmd is on PATH.')
     string(name: 'PMD_CPD_MINIMUM_TOKENS', defaultValue: '80', description: 'Minimum token threshold for PMD CPD duplicate-code detection.')
     booleanParam(name: 'ALLOW_UNSIGNED_HAP', defaultValue: true, description: 'Allow signing failure when an unsigned HAP is still produced. Keep true until Jenkins signing credentials are configured.')
-    booleanParam(name: 'RUN_SCC_METRICS', defaultValue: false, description: 'Run third-party scc LOC/complexity metrics. Requires scc on PATH or SCC_BIN configured on the Jenkins node.')
-    booleanParam(name: 'RUN_PMD_CPD', defaultValue: false, description: 'Run PMD CPD duplicate-code detection. Requires pmd on PATH or PMD_BIN configured on the Jenkins node.')
+    booleanParam(name: 'RUN_SCC_METRICS', defaultValue: true, description: 'Run third-party scc LOC/complexity metrics. Requires scc on PATH or SCC_BIN configured on the Jenkins node.')
+    booleanParam(name: 'RUN_PMD_CPD', defaultValue: true, description: 'Run PMD CPD duplicate-code detection. Requires pmd on PATH or PMD_BIN configured on the Jenkins node.')
     booleanParam(name: 'RUN_DEVICE_SMOKE', defaultValue: false, description: 'Run a connected-device hdc smoke check. Enable only on nodes with a device or emulator attached.')
     booleanParam(name: 'RUN_HARMONYOS_DEVICE_TESTS', defaultValue: false, description: 'Run official HarmonyOS ohosTest/Hypium tests on a connected device or emulator.')
     booleanParam(name: 'COLLECT_HARMONYOS_COVERAGE', defaultValue: true, description: 'Run hvigor collectCoverage after HarmonyOS device tests.')
@@ -277,11 +277,19 @@ java -version
       }
     }
 
-    stage('Static Project Checks') {
+    stage('Prepare Project Config') {
       steps {
         script {
           runCi(
             '''
+if not exist build-profile.json5 (
+  if exist build-profile.json5.template (
+    copy /y build-profile.json5.template build-profile.json5
+  ) else (
+    echo Missing build-profile.json5 and build-profile.json5.template
+    exit /b 1
+  )
+)
 if not exist build-profile.json5 exit /b 1
 if not exist hvigorfile.ts exit /b 1
 if not exist entry\\src\\main\\module.json5 exit /b 1
@@ -292,6 +300,14 @@ if not exist tsconfig.ci.json exit /b 1
 if not exist oh-package-lock.json5 exit /b 1
 ''',
             '''
+if [ ! -f build-profile.json5 ]; then
+  if [ -f build-profile.json5.template ]; then
+    cp build-profile.json5.template build-profile.json5
+  else
+    echo "Missing build-profile.json5 and build-profile.json5.template"
+    exit 1
+  fi
+fi
 test -f build-profile.json5
 test -f hvigorfile.ts
 test -f entry/src/main/module.json5
@@ -518,8 +534,17 @@ echo "Connected hdc target: $target"
 
   post {
     always {
-      junit allowEmptyResults: true, testResults: 'reports/tests/*.xml'
-      archiveArtifacts artifacts: 'reports/tests/*.xml,reports/metrics/**/*,reports/pmd/**/*,reports/coverage/**/*,build/outputs/**/*.app,build/outputs/**/*.zip,entry/build/**/outputs/**/*.hap,entry/build/**/*coverage*/**,.hvigor/outputs/build-logs/*.log', fingerprint: true, allowEmptyArchive: true
+      script {
+        String archiveRoot = params.REPO_DIR?.trim()
+        if (!archiveRoot) {
+          archiveRoot = env.WORKSPACE
+        }
+
+        dir(archiveRoot) {
+          junit allowEmptyResults: true, testResults: 'reports/tests/*.xml'
+          archiveArtifacts artifacts: 'reports/tests/*.xml,reports/metrics/**/*,reports/pmd/**/*,reports/coverage/**/*,build/outputs/**/*.app,build/outputs/**/*.zip,entry/build/**/outputs/**/*.hap,entry/build/**/*coverage*/**,.hvigor/outputs/build-logs/*.log', fingerprint: true, allowEmptyArchive: true
+        }
+      }
     }
   }
 }
